@@ -3,6 +3,7 @@ import sys
 import os
 import os.path
 import shutil
+import subprocess
 
 from os import O_TRUNC, listdir
 from os.path import isfile, join
@@ -21,9 +22,7 @@ from time import sleep
 
 
 
-def main(csource, function, config= "config/default_config.yaml"):
-
-  runmode = 'runall' # runall, dfg_gen_only, mapper_only, sim_only
+def main(csource, function, config="config/default_config.yaml", runmode='runall'):
 
   print(r"""
     __  ___                 __                 ________________  ___       ____            _                ______                                             __  
@@ -45,7 +44,6 @@ def main(csource, function, config= "config/default_config.yaml"):
   json_arch_before_memupdate = config_dict["json_arch_before_memupdate"]
   json_arch = config_dict["json_arch"]
   mapper_subfolder = config_dict["mapper_subfolder"]
-  dfg_type = config_dict["dfg_type"]
   init_II = config_dict["init_II"]
   ydim = config_dict["ydim"]
   xdim = config_dict["xdim"]
@@ -82,11 +80,6 @@ def main(csource, function, config= "config/default_config.yaml"):
   # print('\n\n############## Morpher CGRA Framework #################\n')
   print('\n Kernel: %s \n C source: %s/benchmarks/%s \n CGRA arch: %s/json_arch/%s \n Config: %s\n Run mode: %s\n'% (kernel, DFG_GEN_HOME,csource, MAPPER_HOME, json_arch, config, runmode))
 
-  if morpher_light and dfg_type!="PartPredLight":
-     dfg_type="PartPredLight"
-     print('When setting morpher_light to yes, the morpher will force the dfg_type to be partPredLight\n')
-
-  
 
 ##############################################################################################################################################
   if runmode == 'runall' or runmode == 'dfg_gen_only':
@@ -94,52 +87,47 @@ def main(csource, function, config= "config/default_config.yaml"):
     os.chdir(DFG_GEN_KERNEL)
   
     
-    # os.system('./run_pass.sh %s 2 2048' % (kernel))
-    os.system('rm memtraces/*')
-    os.system('rm *.xml')
-    os.system('rm *.dot')
+    subprocess.run('rm memtraces/*', shell=True, check=False)
+    subprocess.run('rm *.xml', shell=True, check=False)
+    subprocess.run('rm *.dot', shell=True, check=False)
     print('Generating IR..\n')
-    os.system('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -Wno-implicit-function-declaration -Wno-format -Wno-main-return-type -c -emit-llvm -O2 -fno-tree-vectorize -fno-unroll-loops %s -S -o %s.ll'%(csourcefile,kernel))
-    #os.system('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -Wno-implicit-function-declaration -Wno-format -Wno-main-return-type -c -emit-llvm -O2 -fno-vectorize -fno-slp-vectorize -fno-tree-vectorize -fno-inline -fno-unroll-loops %s -S -o %s.ll'%(csourcefile,kernel))
+    subprocess.run('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -Wno-implicit-function-declaration -Wno-format -Wno-main-return-type -c -emit-llvm -O2 -fno-tree-vectorize -fno-unroll-loops %s -S -o %s.ll'%(csourcefile,kernel), shell=True, check=True)
 
     print('Optimizing IR..\n')
-    os.system('opt -gvn -mem2reg -memdep -memcpyopt -lcssa -loop-simplify -licm -loop-deletion -indvars -simplifycfg -mergereturn -indvars  %s.ll -S -o %s_opt.ll' % (kernel,kernel))
+    subprocess.run('opt -gvn -mem2reg -memdep -memcpyopt -lcssa -loop-simplify -licm -loop-deletion -indvars -simplifycfg -mergereturn -indvars  %s.ll -S -o %s_opt.ll' % (kernel,kernel), shell=True, check=True)
 
     print('Generating DFG (%s_PartPredDFG.xml/dot) and data layout (%s_mem_alloc.txt)..\n' % (kernel,kernel))
-    print('dfgtype:%s'%(dfg_type))
-    
-    # dfg_type="PartPred"
-    os.system('opt -load %s/build/src/libdfggenPass.so -fn %s -nobanks %d -banksize %d -type %s  -skeleton %s_opt.ll -S -o %s_opt_instrument.ll' % (DFG_GEN_HOME,kernel,numberofbanks,banksize, dfg_type,kernel,kernel))
+    subprocess.run('opt -load %s/build/src/libdfggenPass.so -fn %s -nobanks %d -banksize %d -skeleton %s_opt.ll -S -o %s_opt_instrument.ll' % (DFG_GEN_HOME,kernel,numberofbanks,banksize,kernel,kernel), shell=True, check=True)
 
-    dfg_type=config_dict["dfg_type"]
-    os.system('dot -Tpdf %s_PartPredDFG.dot -o %s_PartPredDFG.pdf' % (kernel,kernel))
-    os.system('cp '+kernel+'_PartPredDFG.xml '+ MAPPER_KERNEL )
-    os.system('rm *.log')
+    subprocess.run('dot -Tpdf %s_PartPredDFG.dot -o %s_PartPredDFG.pdf' % (kernel,kernel), shell=True, check=True)
+    subprocess.run('cp '+kernel+'_PartPredDFG.xml '+ MAPPER_KERNEL, shell=True, check=True)
+    # Copy mem_alloc early so the mapper can proceed even if instrumentation fails.
+    subprocess.run('cp '+kernel+'_mem_alloc.txt '+MAPPER_KERNEL, shell=True, check=True)
+    subprocess.run('rm *.log', shell=True, check=False)
 
     #if json_arch == 'hycube_original_mem.json':
     ###
     if morpher_light==False:
       print('\nCode instrumentation..\n')
-      os.system('clang -target i386-unknown-linux-gnu -c -emit-llvm -S %s/src/instrumentation/instrumentation.cpp -o instrumentation.ll' % DFG_GEN_HOME)
+      subprocess.run('clang -target i386-unknown-linux-gnu -c -emit-llvm -S %s/src/instrumentation/instrumentation.cpp -o instrumentation.ll' % DFG_GEN_HOME, shell=True, check=True)
       if kernel=='kernel_symm':
-          os.system('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -c -emit-llvm -O2 -fno-tree-vectorize -fno-inline -fno-unroll-loops polybench.c -S -o polybench.ll')
-          os.system('llvm-link %s_opt_instrument.ll instrumentation.ll polybench.ll -o final.ll' % (kernel))
+          subprocess.run('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -c -emit-llvm -O2 -fno-tree-vectorize -fno-inline -fno-unroll-loops polybench.c -S -o polybench.ll', shell=True, check=True)
+          subprocess.run('llvm-link %s_opt_instrument.ll instrumentation.ll polybench.ll -o final.ll' % (kernel), shell=True, check=True)
       else:
-          os.system('llvm-link %s_opt_instrument.ll instrumentation.ll -o final.ll' % (kernel))
+          subprocess.run('llvm-link %s_opt_instrument.ll instrumentation.ll -o final.ll' % (kernel), shell=True, check=True)
 
-      os.system('llc -filetype=obj final.ll -o final.o')
-      os.system('clang++ -m32 final.o -o final')
+      subprocess.run('llc -filetype=obj final.ll -o final.o', shell=True, check=True)
+      subprocess.run('clang++ -m32 final.o -o final', shell=True, check=True)
 
-
-    
       print('Running instrumented code to generate the data memory content (memtraces/%s_trace_x.txt)..\n' % kernel)
-      os.system('./final 1> final_log.txt 2> final_err_log.txt')
-      # os.system('./final')
-      os.system('cp memtraces/'+kernel+'_trace_0.txt '+SIMULATOR_KERNEL)
-      os.system('cp '+kernel+'_mem_alloc.txt '+SIMULATOR_KERNEL )
-      os.system('cp '+kernel+'_mem_alloc.txt '+MAPPER_KERNEL )
+      result = subprocess.run('./final 1> final_log.txt 2> final_err_log.txt', shell=True, check=False)
+      if result.returncode != 0:
+        print('Warning: instrumented binary ./final exited with code %d; simulation traces will not be available.' % result.returncode)
+      else:
+        subprocess.run('cp memtraces/'+kernel+'_trace_0.txt '+SIMULATOR_KERNEL, shell=True, check=True)
+        subprocess.run('cp '+kernel+'_mem_alloc.txt '+SIMULATOR_KERNEL, shell=True, check=True)
     ###
-    os.system('rm *.ll')
+    subprocess.run('rm *.ll', shell=True, check=False)
  
   
 ##############################################################################################################################################
@@ -153,35 +141,21 @@ def main(csource, function, config= "config/default_config.yaml"):
     # os.system('rm *.bin')  
     if '_mem' in json_arch:
       print('\nUpdating memory allocation..\n')
-      os.system('python %s/update_mem_alloc.py %s/json_arch/%s %s_mem_alloc.txt %d %d %s' % (MAPPER_HOME,MAPPER_HOME, json_arch_before_memupdate,kernel,banksize,numberofbanks, json_arch))
-      os.system('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d %s' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, light_mapper))
+      subprocess.run('python %s/update_mem_alloc.py %s/json_arch/%s %s_mem_alloc.txt %d %d %s' % (MAPPER_HOME,MAPPER_HOME, json_arch_before_memupdate,kernel,banksize,numberofbanks, json_arch), shell=True, check=True)
+      subprocess.run('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d %s' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, light_mapper), shell=True, check=True)
       print('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d %s' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, light_mapper))
       os.chdir(SIMULATOR_KERNEL)
-      os.system('rm *.bin')  
-  
+      subprocess.run('rm *.bin', shell=True, check=False)
+
       os.chdir(MAPPER_KERNEL)
-      os.system('cp *.bin '+ SIMULATOR_KERNEL)
+      subprocess.run('cp *.bin '+ SIMULATOR_KERNEL, shell=True, check=True)
     else:
-      os.system('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d %s' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, light_mapper))
+      subprocess.run('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d %s' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, light_mapper), shell=True, check=True)
       print('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d %s' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, light_mapper))
      
   
 
 ##############################################################################################################################################
-  # if (runmode == 'runall' or runmode == 'sim_only'):
-  #   print('\n-----Running hycube_simulator-----\n')
-  #   os.chdir(SIMULATOR_KERNEL)
-  
-  #   os.system('%s/src/build/hycube_simulator -c *.bin -d %s_trace_0.txt -a %s_mem_alloc.txt' % (SIMULATOR_HOME,kernel,kernel))
-    
-  #   f = open("sim_result.txt", "r")
-  #   sim_result = f.read()
-  #   sim_result_ = sim_result.split(",")
-  #   sim_result__ = [int(e) for e in sim_result_]
-  #   matches, mismatches = sim_result__
-  #   if mismatches == 0:
-  #     print('Simulation test passed!')
-
   if ((runmode == 'runall' or runmode == 'sim_only') and not morpher_light):
     print('\n-----Running hycube_simulator-----\n')
     os.chdir(SIMULATOR_KERNEL) 
@@ -198,7 +172,7 @@ def main(csource, function, config= "config/default_config.yaml"):
         # os.system('cp '+join(MEM_TRACE, file)+' '+SIMULATOR_KERNEL)
         command = SIMULATOR_HOME+'/src/build/hycube_simulator -x '+str(xdim)+' -y '+str(ydim)+ ' -c '+SIMULATOR_KERNEL+'*.bin -d '+join(MEM_TRACE, file)+' -a '+SIMULATOR_KERNEL+kernel+'_mem_alloc.txt -m ' + str(totalsize)
         print(command)
-        os.system(command)
+        subprocess.run(command, shell=True, check=True)
         f = open("sim_result.txt", "r")
         sim_result = f.read()
         sim_result_ = sim_result.split(",")
@@ -213,17 +187,12 @@ def main(csource, function, config= "config/default_config.yaml"):
   
 
 def my_mkdir(dir):
-    try:
-        os.makedirs(dir) 
-    except:
-        pass
+    os.makedirs(dir, exist_ok=True)
 
 if __name__ == '__main__':
   csource = sys.argv[1]
   function = sys.argv[2]
-  if len(sys.argv) == 4:
-    config = sys.argv[3]
-    main(csource, function, config)
-  else:
-    main(csource, function)
+  config = sys.argv[3] if len(sys.argv) >= 4 else 'config/default_config.yaml'
+  runmode = sys.argv[4] if len(sys.argv) >= 5 else 'runall'
+  main(csource, function, config, runmode)
 
