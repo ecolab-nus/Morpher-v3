@@ -26,7 +26,7 @@ Port::Port(std::string name, PortType pType, Module *mod)
 	this->pe = mod->getPE();
 }
 
-void Port::increaseUse(HeuristicMapper *hm)
+void Port::increaseUse(PathFinderMapper *hm)
 {
 	assert(mapped_nodes.size() > 0);
 	DFGNode * last_mapped_node = std::get<0>(*(this->mapped_nodes.rbegin()));
@@ -66,7 +66,7 @@ void Port::increaseUse(HeuristicMapper *hm)
 
 }
 
-void Port::decreaseUse(DFGNode *extnode, HeuristicMapper *hm)
+void Port::decreaseUse(DFGNode *extnode, PathFinderMapper *hm)
 {
 	if (number_signals > 0)
 	{
@@ -89,7 +89,7 @@ void Port::decreaseUse(DFGNode *extnode, HeuristicMapper *hm)
 	}
 }
 
-void Port::setNode(DFGNode *node, int latency,  int dest ,  HeuristicMapper *hm)
+void Port::setNode(DFGNode *node, int latency,  int dest ,  PathFinderMapper *hm)
 {
 	// std::cout<<this->getFullName()<<"\n";
 
@@ -135,7 +135,7 @@ void Port::setNode(DFGNode *node, int latency,  int dest ,  HeuristicMapper *hm)
 	}
 }
 
-void Port::increaseConflictedUse(DFGNode *node, HeuristicMapper *hm)
+void Port::increaseConflictedUse(DFGNode *node, PathFinderMapper *hm)
 {
 	increaseUse();
 

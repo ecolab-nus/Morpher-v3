@@ -15,10 +15,8 @@
 #include <morpher/util/util.h>
 #include <morpher/dfg/DFG.h>
 #include <morpher/arch/CGRA.h>
-#include <morpher/mapper/HeuristicMapper.h>
 #include <morpher/mapper/PathFinderMapper.h>
 #include <morpher/mapper/SimulatedAnnealingMapper.h>
-#include <morpher/lisa/LISAMapper.h>
 #include <math.h>
 
 #include <ctype.h>
@@ -55,9 +53,6 @@ int main(int argn, char *argc[])
 
 	
 	DFG currDFG;
-	if(args.lisa_arg.training){
-		currDFG.dfg_parse_self_made_dfg = true;
-	}
 	currDFG.parseXML(inputDFG_filename);
 	currDFG.printDFG();
 
@@ -81,19 +76,15 @@ int main(int argn, char *argc[])
 
 	
 
-	//	HeuristicMapper mapper(inputDFG_filename);
 	TimeDistInfo tdi = testCGRA->analyzeTimeDist();
 	PathFinderMapper * mapper;
 	if (mapping_method == 0){
 		mapper = new PathFinderMapper(inputDFG_filename);
 	}else if(mapping_method  == 1){
 		mapper = new SAMapper(inputDFG_filename);
-		
-		// assert(false && "convert to SA");
-	}else if(mapping_method  == 2){
-		mapper = new LISAMapper(inputDFG_filename);
 	}else{
-		assert(false && "did not set a valid mapping method");
+		std::cerr << "Error: invalid mapping method " << mapping_method << " (valid: 0=PathFinder, 1=SA)\n";
+		return 1;
 	}
 
 	
@@ -128,9 +119,6 @@ int main(int argn, char *argc[])
 	while (!mappingSuccess)
 	{
 		DFG tempDFG;
-		if(args.lisa_arg.training){
-			tempDFG.dfg_parse_self_made_dfg= true;
-		}
 		tempDFG.parseXML(inputDFG_filename);
 		tempDFG.printDFG();
 
@@ -155,21 +143,11 @@ int main(int argn, char *argc[])
 		mapper->getcongestedPortsPtr()->clear();
 		mapper->getconflictedPortsPtr()->clear();
 		tempCGRA->analyzeTimeDist(tdi);
-		// mappingSuccess = mapper->Map(tempCGRA, &tempDFG);
 		if (mapping_method == 0){
 			mappingSuccess = mapper->Map(tempCGRA, &tempDFG);
 		}else if(mapping_method  == 1){
 			SAMapper * sa_mapper = static_cast<SAMapper*>(mapper);
 			mappingSuccess = sa_mapper->SAMap(tempCGRA, &tempDFG);
-		}else if(mapping_method  == 2){
-			LISAMapper * lisa_mapper = static_cast<LISAMapper*>(mapper);
-			mappingSuccess = lisa_mapper->LISAMap(  args, tdi, II);
-			if(args.lisa_arg.dfg_id != "none"){
-				// this is genreatring traning data. No need to dump results;
-				return 0;
-			}
-		}else{
-			assert(false && "did not set a valid mapping method");
 		}
 
 		mapper->congestionInfoFile.close();
@@ -202,9 +180,6 @@ int main(int argn, char *argc[])
 		else
 		{
 			std::cout << "Map Success with II = "<< II <<"!!!\n";
-			if(mapping_method  == 2){
-				break;
-			}
 			mapper->sanityCheck();
 			//mapper.assignLiveInOutAddr(&tempDFG);
 			if(PEType == "HyCUBE_4REG"){

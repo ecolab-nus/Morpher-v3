@@ -1,0 +1,6 @@
+ main_PartPredDFG.xml method:PathFinder 5 40
+ main_PartPredDFG.xml method:PathFinder 5 18
+ main_PartPredDFG.xml method:PathFinder 6 64
+ main_PartPredDFG.xml method:SA 4 6
+ main_PartPredDFG.xml method:SA 4 6
+ main_PartPredDFG.xml method:SA 4 6

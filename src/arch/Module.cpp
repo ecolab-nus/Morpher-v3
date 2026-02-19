@@ -10,6 +10,7 @@
 #include <morpher/arch/FU.h>
 #include <morpher/mapper/PathFinderMapper.h>
 #include <assert.h>
+#include <stdexcept>
 
 namespace CGRAXMLCompile
 {
@@ -66,7 +67,7 @@ FU *Module::getFU()
 	return NULL;
 }
 
-std::vector<LatPort> Module::getNextPorts(LatPort currPort, HeuristicMapper *hm)
+std::vector<LatPort> Module::getNextPorts(LatPort currPort, PathFinderMapper *hm)
 {
 	std::vector<LatPort> nextPorts;
 
@@ -255,7 +256,7 @@ std::set<Port *> Module::getConflictPorts(Port *currPort)
 	return vec;
 }
 
-std::vector<Port *> Module::getFromPorts(Port *currPort, HeuristicMapper *hm)
+std::vector<Port *> Module::getFromPorts(Port *currPort, PathFinderMapper *hm)
 {
 	std::vector<Port *> fromPorts;
 
@@ -353,7 +354,7 @@ std::pair<Port *, Port *> Module::getRegPort(std::string Pname)
 			return portpair;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("Module::getRegPort: register port '" + Pname + "' not found in module '" + getName() + "'");
 }
 
 Port* Module::getSingleRegPort2(std::string Pname)
@@ -378,7 +379,7 @@ Port* Module::getSingleRegPort2(std::string Pname)
 			return portpair.second;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("Module::getSingleRegPort2: register port '" + Pname + "' not found in module '" + getName() + "'");
 }
 
 Port* Module::getSingleRegPort(std::string Pname)
@@ -488,7 +489,7 @@ CGRAXMLCompile::Port *CGRAXMLCompile::Module::getInPort(std::string Pname)
 			return p;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("Module::getInPort: input port '" + Pname + "' not found in module '" + getName() + "'");
 }
 
 CGRAXMLCompile::Port *CGRAXMLCompile::Module::getOutPort(std::string Pname)
@@ -500,7 +501,7 @@ CGRAXMLCompile::Port *CGRAXMLCompile::Module::getOutPort(std::string Pname)
 			return p;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("Module::getOutPort: output port '" + Pname + "' not found in module '" + getName() + "'");
 }
 
 CGRAXMLCompile::Port *CGRAXMLCompile::Module::getInternalPort(std::string Pname)
@@ -512,7 +513,7 @@ CGRAXMLCompile::Port *CGRAXMLCompile::Module::getInternalPort(std::string Pname)
 			return p;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("Module::getInternalPort: internal port '" + Pname + "' not found in module '" + getName() + "'");
 }
 
 CGRAXMLCompile::Port *CGRAXMLCompile::Module::getSocketPort(std::string Pname)
@@ -524,7 +525,7 @@ CGRAXMLCompile::Port *CGRAXMLCompile::Module::getSocketPort(std::string Pname)
 			return p;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("Module::getSocketPort: socket port '" + Pname + "' not found in module '" + getName() + "'");
 }
 
 CGRAXMLCompile::Module *CGRAXMLCompile::Module::getSubMod(std::string Mname)
@@ -551,7 +552,7 @@ CGRAXMLCompile::CGRA *CGRAXMLCompile::Module::getCGRA()
 		mod = mod->getParent();
 		if (!mod)
 		{
-			assert(false);
+			throw std::runtime_error("Module::getCGRA: failed to find CGRA ancestor for module '" + getName() + "'");
 		}
 	}
 }

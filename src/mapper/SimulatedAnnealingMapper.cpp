@@ -13,6 +13,7 @@
 #include <set>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 #include <unordered_map>
 #include <memory>
@@ -93,9 +94,7 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	//initial mapping
 	if (!initMap())
 	{
-		assert(false && "how come?");
-		std::cout << "cannot find an initial mapping, exit....\n";
-		return false;
+		throw std::runtime_error("SAMap: failed to find an initial mapping");
 	}
 
 	//get mapping information
@@ -636,8 +635,8 @@ bool CGRAXMLCompile::SAMapper::SARoute(DFGNode *node, DataPath *candidateDP)
 				}else if (node->childNextIter[child] == 0){
 					alreadyMappedChildPorts[child]->setLat(child->rootDP->getLat() );
 				}else {
-					assert(false);
-				} 
+					throw std::runtime_error("SAMapper: unexpected childNextIter value " + std::to_string(node->childNextIter[child]) + " for child node " + std::to_string(child->idx));
+				}
 			}
 			else if (child->idx == node->idx)
 			{

@@ -9,6 +9,7 @@
 #include <morpher/arch/Port.h>
 #include <algorithm>
 #include <assert.h>
+#include <stdexcept>
 #include <iostream>
 #include <morpher/arch/DataPath.h>
 #include <morpher/arch/CGRA.h>
@@ -125,8 +126,7 @@ std::string CGRAXMLCompile::DFGNode::getBinaryString() {
                return "11111";
        }
        else{
-               std::cout << "Op not compatible : " << op << "\n";
-               assert(false);
+               throw std::runtime_error("DFGNode::getBinaryString: unsupported operation '" + op + "'");
        }
 
 }

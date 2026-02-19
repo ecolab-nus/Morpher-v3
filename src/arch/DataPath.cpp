@@ -11,6 +11,7 @@
 #include <morpher/arch/CGRA.h>
 #include <morpher/dfg/DFG.h>
 #include <assert.h>
+#include <stdexcept>
 #include <iostream>
 
 namespace CGRAXMLCompile
@@ -37,7 +38,7 @@ CGRAXMLCompile::PE *CGRAXMLCompile::DataPath::getPE()
 		mod = mod->getParent();
 		if (!mod)
 		{
-			assert(false);
+			throw std::runtime_error("DataPath::getPE: failed to find PE ancestor for datapath");
 		}
 	}
 }
@@ -54,7 +55,7 @@ CGRAXMLCompile::CGRA *CGRAXMLCompile::DataPath::getCGRA()
 		mod = mod->getParent();
 		if (!mod)
 		{
-			assert(false);
+			throw std::runtime_error("DataPath::getCGRA: failed to find CGRA ancestor for datapath");
 		}
 	}
 }

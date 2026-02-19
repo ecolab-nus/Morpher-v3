@@ -25,7 +25,7 @@ namespace CGRAXMLCompile
 
 class PE;
 class Module;
-class HeuristicMapper;
+class PathFinderMapper;
 
 enum PortType
 {
@@ -50,7 +50,7 @@ public:
 	Module *getMod() { return mod; }
 	PortType getType() { return pType; }
 
-	void setNode(DFGNode *node, int latency, int dest ,  HeuristicMapper *hm = NULL);
+	void setNode(DFGNode *node, int latency, int dest ,  PathFinderMapper *hm = NULL);
 
 	DFGNode *getNode() { 
 		if(mapped_nodes.size() == 0){
@@ -62,9 +62,9 @@ public:
 
 	int getCongCost();
 	void increastCongCost();
-	void increaseUse(HeuristicMapper *hm = NULL);
-	void decreaseUse(DFGNode *extnode, HeuristicMapper *hm = NULL);
-	void increaseConflictedUse(DFGNode *node, HeuristicMapper *hm = NULL);
+	void increaseUse(PathFinderMapper *hm = NULL);
+	void decreaseUse(DFGNode *extnode, PathFinderMapper *hm = NULL);
+	void increaseConflictedUse(DFGNode *node, PathFinderMapper *hm = NULL);
 	int getHistoryCost() { return history_cost; }
 	int getLat();
 	void setLat(int lat);

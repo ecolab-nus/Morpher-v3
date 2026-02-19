@@ -1,0 +1,9 @@
+var_name,base_addr
+row_init,2056
+_ol_14,12
+B_row,4
+C,2052
+A,2048
+_ol_3,2060
+loopend,2047
+loopstart,4094
