@@ -52,6 +52,9 @@ def main(csource, function, config="config/default_config.yaml", runmode='runall
   totalsize = numberofbanks*banksize
   max_test_samples = config_dict["max_test_samples"]
   mapping_method = config_dict["mapping_method"]
+  backtrack_limit = config_dict.get("backtrack_limit", 0)
+  max_mapper_iter = config_dict.get("max_mapper_iter", 30)
+  max_II = config_dict.get("max_II", 32)
   llvm_debug_type = config_dict["llvm_debug_type"] #'nothing' #'instrumentation'
   
   morpher_light = True if config_dict["morpher_light"].lower() == "yes" else False
@@ -135,23 +138,20 @@ def main(csource, function, config="config/default_config.yaml", runmode='runall
     print('\n-----Running Morpher_CGRA_Mapper-----\n')
     os.chdir(MAPPER_KERNEL)
     
-    light_mapper = ""
-    if morpher_light==True:
-       light_mapper = "--morpher_light"
     # os.system('rm *.bin')  
     if '_mem' in json_arch:
       print('\nUpdating memory allocation..\n')
       subprocess.run('python %s/update_mem_alloc.py %s/json_arch/%s %s_mem_alloc.txt %d %d %s' % (MAPPER_HOME,MAPPER_HOME, json_arch_before_memupdate,kernel,banksize,numberofbanks, json_arch), shell=True, check=True)
-      subprocess.run('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d %s' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, light_mapper), shell=True, check=True)
-      print('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d %s' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, light_mapper))
+      subprocess.run('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d -b %d -r %d --max_II %d' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, backtrack_limit, max_mapper_iter, max_II), shell=True, check=True)
+      print('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s -i %d -t HyCUBE_4REG -m %d -b %d -r %d --max_II %d' % (MAPPER_HOME, kernel,xdim,ydim,json_arch, init_II, mapping_method, backtrack_limit, max_mapper_iter, max_II))
       os.chdir(SIMULATOR_KERNEL)
       subprocess.run('rm *.bin', shell=True, check=False)
 
       os.chdir(MAPPER_KERNEL)
       subprocess.run('cp *.bin '+ SIMULATOR_KERNEL, shell=True, check=True)
     else:
-      subprocess.run('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d %s' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, light_mapper), shell=True, check=True)
-      print('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d %s' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, light_mapper))
+      subprocess.run('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d -b %d -r %d --max_II %d' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, backtrack_limit, max_mapper_iter, max_II), shell=True, check=True)
+      print('%s/build/src/cgra_xml_mapper -d %s_PartPredDFG.xml -x %d -y %d -j %s/json_arch/%s -i %d -m %d -b %d -r %d --max_II %d' % (MAPPER_HOME,kernel,xdim,ydim,MAPPER_HOME, json_arch, init_II, mapping_method, backtrack_limit, max_mapper_iter, max_II))
      
   
 
@@ -195,4 +195,3 @@ if __name__ == '__main__':
   config = sys.argv[3] if len(sys.argv) >= 4 else 'config/default_config.yaml'
   runmode = sys.argv[4] if len(sys.argv) >= 5 else 'runall'
   main(csource, function, config, runmode)
-

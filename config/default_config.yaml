@@ -10,5 +10,8 @@
  banksize: 2048
  max_test_samples: 5
  mapping_method: 0
+ backtrack_limit: 4
+ max_mapper_iter: 30
+ max_II: 32
  llvm_debug_type: 'no'
  morpher_light: 'no'
