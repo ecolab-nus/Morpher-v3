@@ -32,6 +32,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <chrono>
 #include <unordered_set>
 #include <unordered_map>
 #include <memory>
@@ -1359,6 +1360,13 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 	for (int i = 0; i < this->maxIter; ++i)
 	{
+		const size_t nodeCount = sortedNodeList.size();
+		const size_t progressPrintEvery = 2000;
+		const size_t maxNodeAttemptsInIter = std::max<size_t>(10000, nodeCount * 1000);
+		const int maxSecondsInIter = 120;
+		size_t nodeAttemptsInIter = 0;
+		int lastPrintedElapsedSec = -1;
+		auto iterStartTime = std::chrono::steady_clock::now();
 
 		std::string mappingLogFileName_withIter = mappingLogFileName + "_Iter=" + std::to_string(i) + ".mapping.csv";
 		std::string mappingLog2FileName_withIter = mappingLog2FileName + "_Iter=" + std::to_string(i) + ".routeInfo.log";
@@ -1393,6 +1401,44 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 		while (!unmappedNodes.empty())
 		{
+			nodeAttemptsInIter++;
+			int elapsedInIter = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+				std::chrono::steady_clock::now() - iterStartTime).count());
+			if (nodeAttemptsInIter % progressPrintEvery == 0)
+			{
+				std::cout << "Mapping progress: II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << ", attempts = " << nodeAttemptsInIter
+				          << ", mapped = " << mappedNodes.size()
+				          << ", unmapped = " << unmappedNodes.size()
+				          << ", btCredits = " << backTrackCredits
+				          << ", elapsed = " << elapsedInIter << " sec\n";
+			}
+			if (elapsedInIter >= 10 && elapsedInIter % 10 == 0 && elapsedInIter != lastPrintedElapsedSec)
+			{
+				lastPrintedElapsedSec = elapsedInIter;
+				std::cout << "Mapping still running: II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << ", mapped = " << mappedNodes.size()
+				          << ", unmapped = " << unmappedNodes.size()
+				          << ", btCredits = " << backTrackCredits
+				          << ", elapsed = " << elapsedInIter << " sec\n";
+			}
+			if (nodeAttemptsInIter > maxNodeAttemptsInIter || elapsedInIter > maxSecondsInIter)
+			{
+				std::cout << "Iteration guard hit at II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << " (attempts = " << nodeAttemptsInIter
+				          << ", elapsed = " << elapsedInIter
+				          << " sec). Failing this II.\n";
+				mappingLog << "Iteration guard hit; failing this II.\n";
+				mappingLog2 << "Iteration guard hit; failing this II.\n";
+				mappingLog4 << "Iteration guard hit; failing this II.\n";
+				mappingLog.close();
+				mappingLog2.close();
+				mappingLog4.close();
+				return false;
+			}
 
 			DFGNode *node = unmappedNodes.top();
 			unmappedNodes.pop();

@@ -189,10 +189,20 @@ int main(int argn, char *argc[])
 				} catch (const std::runtime_error &e) {
 					std::cerr << "Warning: binary generation failed at II=" << II
 					          << " (" << e.what() << "), retrying with higher II\n";
+					delete tempCGRA;
+					mappingSuccess = false;
 					II++;
+
+					if (II == max_II)
+					{
+						std::cout << "### cannot map:  II max has been reached and exiting...\n";
+						break;
+					}
+
 					continue;
 				}
 			}
+			delete tempCGRA;
 			break;
 			
 		}
@@ -204,9 +214,14 @@ int main(int argn, char *argc[])
 	result_file.open ("result.txt", std::ios_base::app); 
 	result_file<< arch_name <<" "<<inputDFG_filename
 		<<" method:"<<mapper->getMappingMethodName()<<" "<<II<<" "
+		<<" status:" << (mappingSuccess ? "success" : "failed") << " "
 		<<chrono::duration_cast<chrono::seconds>(end - start).count()<<"\n";
 	result_file.close();
 	 
-
+	if (!mappingSuccess)
+	{
+		std::cerr << "Mapping failed: no legal mapping and binary were produced.\n";
+		return 1;
+	}
 	return 0;
 }

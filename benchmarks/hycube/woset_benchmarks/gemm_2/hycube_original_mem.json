@@ -279,8 +279,8 @@
     "SPM" : [{"name" : "SPM0"}]
   },
   "DATA_LAYOUT" :{
-    "B":0,
-    "C":256,
+    "B":256,
+    "C":0,
     "loopend":2047
   },
   "INIT_FILE" : "../json/test_data.json",
@@ -298,10 +298,10 @@
     "SPM" : [{"name" : "SPM0"}]
   },
   "DATA_LAYOUT" :{
-    "arrayidx":2304,
-    "mul":2308,
+    "i.072":2304,
+    "arrayidx7":2308,
+    "j.071":2312,
     "A":2048,
-    "j.081":2312,
     "loopstart":4094
   },
   "INIT_FILE" : "../json/test_data.json",
