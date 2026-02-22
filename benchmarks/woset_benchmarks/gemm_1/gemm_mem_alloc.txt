@@ -1,0 +1,9 @@
+var_name,base_addr
+B,0
+arrayidx7,2308
+j.035,2312
+i.036,2304
+A,2048
+C,256
+loopend,2047
+loopstart,4094

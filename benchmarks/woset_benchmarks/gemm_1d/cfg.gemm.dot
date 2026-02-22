@@ -1,0 +1,20 @@
+digraph "CFG for 'gemm' function" {
+	label="CFG for 'gemm' function";
+
+	Node0x559005762650 [shape=record,label="{entry:\l  br label %for.cond1.preheader\l}"];
+	Node0x559005762650 -> Node0x5590057627b0;
+	Node0x5590057627b0 [shape=record,label="{for.cond1.preheader:                              \l  %i.040 = phi i32 [ 0, %entry ], [ %inc22, %for.inc21 ]\l  %mul = shl nsw i32 %i.040, 3\l  br label %for.cond4.preheader\l}"];
+	Node0x5590057627b0 -> Node0x5590057631b0;
+	Node0x5590057631b0 [shape=record,label="{for.cond4.preheader:                              \l  %j.039 = phi i32 [ 0, %for.cond1.preheader ], [ %inc19, %for.inc18 ]\l  %add = add nuw nsw i32 %j.039, %mul\l  %arrayidx = getelementptr inbounds [64 x i32], [64 x i32]* @A, i32 0, i32\l... %add\l  br label %for.body6\l}"];
+	Node0x5590057631b0 -> Node0x559005763610;
+	Node0x559005763610 [shape=record,label="{for.body6:                                        \l  %k.038 = phi i32 [ 0, %for.cond4.preheader ], [ %inc, %for.body6 ]\l  %call = tail call i32 bitcast (i32 (...)* @please_map_me to i32 ()*)() #5\l  %0 = load i32, i32* %arrayidx, align 4, !tbaa !3\l  %add8 = add nuw nsw i32 %k.038, %mul\l  %arrayidx9 = getelementptr inbounds [64 x i32], [64 x i32]* @B, i32 0, i32\l... %add8\l  %1 = load i32, i32* %arrayidx9, align 4, !tbaa !3\l  %mul10 = shl nuw nsw i32 %k.038, 3\l  %add11 = add nuw nsw i32 %mul10, %j.039\l  %arrayidx12 = getelementptr inbounds [64 x i32], [64 x i32]* @C, i32 0, i32\l... %add11\l  %2 = load i32, i32* %arrayidx12, align 4, !tbaa !3\l  %mul13 = mul nsw i32 %2, %1\l  %add14 = add nsw i32 %mul13, %0\l  store i32 %add14, i32* %arrayidx, align 4, !tbaa !3\l  %inc = add nuw nsw i32 %k.038, 1\l  %exitcond = icmp eq i32 %inc, 8\l  br i1 %exitcond, label %for.inc18, label %for.body6\l|{<s0>T|<s1>F}}"];
+	Node0x559005763610:s0 -> Node0x559005763340;
+	Node0x559005763610:s1 -> Node0x559005763610;
+	Node0x559005763340 [shape=record,label="{for.inc18:                                        \l  %inc19 = add nuw nsw i32 %j.039, 1\l  %exitcond41 = icmp eq i32 %inc19, 8\l  br i1 %exitcond41, label %for.inc21, label %for.cond4.preheader\l|{<s0>T|<s1>F}}"];
+	Node0x559005763340:s0 -> Node0x559005762f20;
+	Node0x559005763340:s1 -> Node0x5590057631b0;
+	Node0x559005762f20 [shape=record,label="{for.inc21:                                        \l  %inc22 = add nuw nsw i32 %i.040, 1\l  %exitcond42 = icmp eq i32 %inc22, 8\l  br i1 %exitcond42, label %for.end23, label %for.cond1.preheader\l|{<s0>T|<s1>F}}"];
+	Node0x559005762f20:s0 -> Node0x559005765f60;
+	Node0x559005762f20:s1 -> Node0x5590057627b0;
+	Node0x559005765f60 [shape=record,label="{for.end23:                                        \l  ret void\l}"];
+}

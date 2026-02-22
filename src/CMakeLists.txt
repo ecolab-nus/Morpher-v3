@@ -17,22 +17,8 @@ add_library(dfggenPass MODULE
     util/tinyxml2.cpp
     common/dfgmacro.cpp
     ../include/morpherdfggen/common/dfgmacro.h
-    ../include/morpherdfggen/dfg/DFGTrig.h
-    dfg/DFGTrig.cpp
     ../include/morpherdfggen/dfg/DFGPartPred.h
     dfg/DFGPartPred.cpp
-    ../include/morpherdfggen/dfg/DFGCgraMe.h
-    dfg/DFGCgraMe.cpp
-    ../include/morpherdfggen/dfg/DFGOpenCGRA.h
-    dfg/DFGOpenCGRA.cpp
-    ../include/morpherdfggen/dfg/DFGFullPred.h
-    dfg/DFGFullPred.cpp
-    ../include/morpherdfggen/dfg/DFGDISE.h
-    dfg/DFGDISE.cpp
-    ../include/morpherdfggen/dfg/DFGBrMap.h
-    dfg/DFGBrMap.cpp
-    ../include/morpherdfggen/dfg/DFGTrMap.h
-    dfg/DFGTrMap.cpp
 )
 
 

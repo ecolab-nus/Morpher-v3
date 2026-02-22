@@ -4,7 +4,7 @@
 
 #define SIZE  8
 int n = SIZE;
-int A[SIZE*SIZE], B[SIZE*SIZE], C[SIZE*SIZE];
+int A[SIZE][SIZE], B[SIZE][SIZE], C[SIZE][SIZE];
 int i,j;
 
 __attribute__((noinline))
@@ -20,30 +20,29 @@ void gemm(){
           #ifdef CGRA_COMPILER
            please_map_me();
            #endif
-		       A[i*SIZE+j] = A[i*SIZE+j] + B[i*SIZE+k]* C[k*SIZE+j] + B[i*SIZE+k+1]* C[(k+1)*SIZE+j]
-			       + B[i*SIZE+k+2]* C[(k+2)*SIZE+j] + B[i*SIZE+k+3]* C[(k+3)*SIZE+j];
+		       A[i][j] = A[i][j] + B[i][k]* C[k][j] + B[i][k+1]* C[k+1][j]
+			       + B[i][k+2]* C[k+2][j] + B[i][k+3]* C[k+3][j];
             }
 
 
 }
 
-void main(){
+int main(){
 
 int i,j;
 for (i=0;i<n; i++)
    for (j=0; j<n; j++) {
-      A[i*SIZE+j]=0;
-      B[i*SIZE+j] = j+i;
-      C[i*SIZE+j] = j*i;
+      A[i][j]=0;
+      B[i][j] = j+i;
+      C[i][j] = j*i;
     }
-    
+
 gemm();
 
 for (i=0;i<n; i++)
    for (j=0; j<n; j++) {
-      printf("%d\n", A[i*SIZE+j]);
+      printf("%d\n", A[i][j]);
     }
 
+return 0;
 }
-
-

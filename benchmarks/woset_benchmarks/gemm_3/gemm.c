@@ -33,7 +33,7 @@
 
 	}
 
-	void main(){
+	int main(){
 
 	int i,j;
 	for (i=0;i<n; i++)
@@ -42,7 +42,7 @@
 	      B[i*SIZE+j] = j+i;
 	      C[i*SIZE+j] = j*i;
 	    }
-	    
+
 	gemm();
 
 	for (i=0;i<n; i++)
@@ -50,6 +50,5 @@
 	      printf("%d\n", A[i*SIZE+j]);
 	    }
 
+	return 0;
 	}
-
-

@@ -859,7 +859,7 @@ i=0;j=0;k=0;
 
 
 
-void main() {
+int main() {
 
  int correct = 0;
  int incorrect = 0;
@@ -873,7 +873,7 @@ void main() {
   
   if (dir == NULL) {
     printf("Failed to open directory.\n");
-    return;
+    return 1;
   }
   int c = 0;
   while ((entry = readdir(dir)) != NULL) {
@@ -946,5 +946,5 @@ void main() {
   printf("Correct: %d , Incorrect: %d\n", correct,incorrect);
 
   closedir(dir);
+  return 0;
 }
-

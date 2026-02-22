@@ -948,11 +948,40 @@ int DFGCgraMe::classifyParents() {
 			}
 			else{
 				//Only ins!=NULL and non-PHI and non-BR will reach here
-				node->parentClassification[findOperandNumber(node, ins,parentIns)]=parent;
+				// DMD: findOperandNumber can return 3 when the parent corresponds to
+				// operand-index 2 of a 3-operand GEP instruction. Slot 3 is reserved
+				// in the mapper to mean type_i1i2 (single-source, e.g. x*x), so
+				// assigning a real register source to slot 3 causes the mapper to
+				// discard the other input and produce wrong addresses. If the result is
+				// slot 3 AND the node has an OutLoopLOAD ancestor (meaning there is a
+				// second distinct register input), remap slot 3 to slot 1 so both
+				// sources are encoded correctly.
+				int _slot = findOperandNumber(node, ins, parentIns);
+				if (_slot == 3) {
+					bool _hasOLOADAnc = false;
+					for (dfgNode* _anc : node->getAncestors())
+						if (_anc->getNode() == nullptr &&
+							_anc->getNameType().compare("OutLoopLOAD") == 0)
+							{ _hasOLOADAnc = true; break; }
+					if (_hasOLOADAnc)
+						_slot = 1;
+				}
+				node->parentClassification[_slot]=parent;
 			}
 
-			//DMD: Set type I3 to handle single source nodes in mapper
-			if(parent_count < 2 && node->hasConstantVal()==false && (HyCUBEInsStrings[node->getFinalIns()].compare("MUL")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("ADD")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("SUB")==0)){
+			// DMD: Set type I3 to handle single source nodes in mapper (e.g. x*x squaring).
+			// This must only fire when the node genuinely has a single register input.
+			// GEP ADD/SUB/MUL nodes with an OutLoopLOAD (OLOAD) ancestor have two distinct
+			// register inputs: the OLOAD value (loop-invariant outer dimension) and an
+			// LS-shifted inner-loop value. Triggering type_i1i2 in that case routes the same
+			// LS result to both ALU I1 and I2, silently discarding the OLOAD input and
+			// producing a wrong address (e.g. 2*(k<<5) instead of (k<<5)+j for a C[k][j] GEP).
+			// insertshiftGEPsCorrect() populates OLOAD ancestors so parent_count >= 2 normally
+			// guards this; the explicit hasOLOADAnc check below is a belt-and-suspenders guard.
+			bool hasOLOADAnc = false;
+			for (dfgNode* anc : node->getAncestors())
+				if (anc->getNode() == nullptr) { hasOLOADAnc = true; break; }
+			if(parent_count < 2 && !hasOLOADAnc && node->hasConstantVal()==false && (HyCUBEInsStrings[node->getFinalIns()].compare("MUL")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("ADD")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("SUB")==0)){
 				node->parentClassification.erase(1);node->parentClassification.erase(2);
 				node->parentClassification[3]=parent;
 				LLVM_DEBUG(dbgs() <<"Has Const:" <<node->hasConstantVal()<<", Single source dest node:" << node->getIdx() << ", source node:" << parent->getIdx() << "\n");

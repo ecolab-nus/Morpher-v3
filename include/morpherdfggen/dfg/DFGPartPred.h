@@ -6,12 +6,6 @@
 #include <morpherdfggen/common/dfg.h>
 
 
-//comment this in normal compilation
-//#define REMOVE_AGI
-//Uncomment this if compiling fo the pace0.5 architecture
-//#define ARCHI_16BIT
-
-
 
 class DFGPartPred : public DFG{
 public :
@@ -73,13 +67,6 @@ public :
 		printNewDFGXML();
 		//std::cout << "DFG generated ("<< this->kernelname <<"_PartPredDFG.dot/xml) \n";
 	}
-#ifdef REMOVE_AGI
-    void removeAGI();
-	void addParentsToRemovalNodes(dfgNode* node, std::set<dfgNode*> &removalNodes, std::set<dfgNode*> &non_agi_NodesSet);
-	void addChildsToNonAGINodes(dfgNode* node, std::set<dfgNode*> &non_agi_NodesSet, std::set<dfgNode*> &tempNodesSet);
-	void addParentsToNonAGINodes(dfgNode* node, std::set<dfgNode*> &non_agi_NodesSet, std::set<dfgNode*> &tempNodesSet);
-#endif
-
 
 protected :
 	dfgNode* getStartNode(BasicBlock* BB, dfgNode* PHINode);

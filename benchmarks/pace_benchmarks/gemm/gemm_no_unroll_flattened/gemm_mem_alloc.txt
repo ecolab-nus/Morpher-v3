@@ -1,0 +1,6 @@
+var_name,base_addr
+WEIGHT_MATRIX,0
+OUTPUT_MATRIX,2048
+INPUT_MATRIX,160
+loopend,2047
+loopstart,4094

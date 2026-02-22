@@ -49,7 +49,7 @@ void microspeech_conv_layer(){
 
 }
 
-void main(){
+int main(){
 
 	int i,j;
 	for (i=0;i<R1; i++)
@@ -78,6 +78,7 @@ gemm();
 			}
 		}
 
+	return 0;
 }
 
 

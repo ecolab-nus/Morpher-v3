@@ -1,0 +1,6 @@
+/home/pranav/claude_repo/Morpher/Morpher_DFG_Generator/build/CMakeFiles/intrinsics_gen.dir
+/home/pranav/claude_repo/Morpher/Morpher_DFG_Generator/build/CMakeFiles/edit_cache.dir
+/home/pranav/claude_repo/Morpher/Morpher_DFG_Generator/build/CMakeFiles/rebuild_cache.dir
+/home/pranav/claude_repo/Morpher/Morpher_DFG_Generator/build/src/CMakeFiles/dfggenPass.dir
+/home/pranav/claude_repo/Morpher/Morpher_DFG_Generator/build/src/CMakeFiles/edit_cache.dir
+/home/pranav/claude_repo/Morpher/Morpher_DFG_Generator/build/src/CMakeFiles/rebuild_cache.dir

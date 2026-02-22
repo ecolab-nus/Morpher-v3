@@ -20,8 +20,6 @@
 
 
 #define REGS_PER_NODE 4
-//Uncomment this if compiling for PACE0.5
-//#define ARCHI_16BIT
 extern int MEM_SIZE;
 
 class AStar;
@@ -63,23 +61,6 @@ struct ScheduleOrder{
 		else{
 			return false;
 		}
-
-//		if(node1.getALAPnumber() < node2.getALAPnumber()){
-//			return true;
-//		}
-//		else if(node1.getALAPnumber() > node2.getALAPnumber()){
-//			return false;
-//		}
-//		else if(slack1 == slack2){ //node1.getALAPnumber() == node2.getALAPnumber()
-//			return(node1.getASAPnumber() < node2.getASAPnumber());
-//		}
-//		else if(slack1 < slack2){
-//			return true;
-//		}
-//		else{ // slack1 > slack2
-//			return false;
-//		}
-
 	}
 };
 
@@ -420,7 +401,6 @@ class DFG{
 			int getOutLoopMEMOps();
 
 			int nameNodes();
-			int nameNodesCGRAME();
 			std::map<HyCUBEIns,std::string> HyCUBEInsStrings;
 			std::map<HyCUBEIns,uint64_t> HyCUBEInsBinary;
 
@@ -485,6 +465,7 @@ class DFG{
 			// add shift operations before the GEPs of STOREH and STORE.
 			int insertshiftGEPs();
 			int insertshiftGEPsCorrect();
+			void clearGEPbaseAddrForOLOADnodes();
 
 
 			//add load stores which does not use GEPs with constants.
@@ -523,7 +504,6 @@ class DFG{
 
 			void insertMOVC();
 			virtual void generateTrigDFGDOT(Function &F){assert(false);}
-			virtual void generateCGRAMEDFGDOT(Function &F){assert(false);}
 			virtual void PrintOuts(){assert(false);}
 
 			void removeDisconnectedNodes();

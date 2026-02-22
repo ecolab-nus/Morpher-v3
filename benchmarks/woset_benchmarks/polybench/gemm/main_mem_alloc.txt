@@ -1,0 +1,11 @@
+var_name,base_addr
+B,0
+hoist_elem_addr,8
+_ol_15,4
+hoist_row,8204
+elem_init_ptr,8200
+C,8192
+A,8204
+_ol_3,12
+loopend,8191
+loopstart,16382
