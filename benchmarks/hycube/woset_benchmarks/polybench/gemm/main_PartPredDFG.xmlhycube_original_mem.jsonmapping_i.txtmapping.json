@@ -3,24 +3,64 @@
         "SUBMODS": {
             "PE_MEM_X0_Y0": {
                 "CONNECTIONS": {
-                    "2": {
+                    "1": {
+                        "DP0_T": [
+                            "EAST_O"
+                        ]
+                    },
+                    "5": {
                         "EAST_I": [
                             "EAST_XBARI"
                         ],
                         "EAST_XBARI": [
-                            "SOUTH_O"
+                            "DP0_I2"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
-                    "2": {
-                        "EAST_I": 20036,
-                        "EAST_XBARI": 20036,
-                        "SOUTH_O": 20036
+                    "1": {
+                        "DP0_T": 12,
+                        "EAST_O": 12
+                    },
+                    "5": {
+                        "DP0_I2": 11,
+                        "EAST_I": 11,
+                        "EAST_XBARI": 11
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
+                        "CONNECTIONS": {
+                            "1": {
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "5": {
+                                "DP0_I2": [
+                                    "I2"
+                                ]
+                            }
+                        },
+                        "MAPPED_NODES": {
+                            "1": {
+                                "DP0_T": 12,
+                                "T": 12
+                            },
+                            "5": {
+                                "DP0_I2": 11,
+                                "I2": 11
+                            }
+                        },
+                        "OPS": {
+                            "5": "LOAD"
+                        },
+                        "OP_INFO": {
+                            "5": {
+                                "NPB": false,
+                                "id": 12
+                            }
+                        },
                         "SUBMODS": {
                             "DP0": {
                                 "TYPE": "DP"
@@ -34,25 +74,19 @@
             "PE_MEM_X0_Y1": {
                 "CONNECTIONS": {
                     "0": {
-                        "EAST_I": [
-                            "EAST_XBARI"
-                        ],
-                        "EAST_XBARI": [
-                            "SOUTH_O"
-                        ]
-                    },
-                    "1": {
-                        "DP0_T": [
-                            "EAST_O"
-                        ],
-                        "EAST_I": [
-                            "EAST_XBARI"
-                        ],
-                        "EAST_XBARI": [
-                            "SOUTH_O"
+                        "SOUTH_I": [
+                            "SR_RO"
                         ]
                     },
                     "2": {
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "EAST_O"
+                        ]
+                    },
+                    "5": {
                         "DP0_T": [
                             "EAST_O"
                         ],
@@ -62,63 +96,42 @@
                         "EAST_XBARI": [
                             "DP0_P"
                         ],
-                        "NORTH_I": [
-                            "NORTH_XBARI"
-                        ],
-                        "NORTH_XBARI": [
+                        "SOUTH_XBARI": [
                             "DP0_I1"
-                        ]
-                    },
-                    "5": {
-                        "EAST_I": [
-                            "EAST_XBARI"
                         ],
-                        "EAST_XBARI": [
-                            "SOUTH_O"
+                        "SR_RI": [
+                            "SOUTH_XBARI"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "EAST_I": 4,
-                        "EAST_XBARI": 4,
-                        "SOUTH_O": 4
-                    },
-                    "1": {
-                        "DP0_T": 2,
-                        "EAST_I": 21,
-                        "EAST_O": 2,
-                        "EAST_XBARI": 21,
-                        "SOUTH_O": 21
+                        "SOUTH_I": 20038,
+                        "SR_RO": 20038
                     },
                     "2": {
-                        "DP0_I1": 20036,
-                        "DP0_P": 11,
-                        "DP0_T": 12,
-                        "EAST_I": 11,
-                        "EAST_O": 12,
-                        "EAST_XBARI": 11,
-                        "NORTH_I": 20036,
-                        "NORTH_XBARI": 20036
+                        "EAST_O": 26,
+                        "SOUTH_I": 26,
+                        "SOUTH_XBARI": 26
                     },
                     "5": {
-                        "EAST_I": 23,
-                        "EAST_XBARI": 23,
-                        "SOUTH_O": 23
+                        "DP0_I1": 20038,
+                        "DP0_P": 2,
+                        "DP0_T": 14,
+                        "EAST_I": 2,
+                        "EAST_O": 14,
+                        "EAST_XBARI": 2,
+                        "SOUTH_XBARI": 20038,
+                        "SR_RI": 20038
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
-                            "0": {
-                                "CONST.8": "DP0.I2"
+                            "3": {
+                                "CONST.12": "DP0.I2"
                             },
-                            "1": {
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            },
-                            "2": {
+                            "5": {
                                 "CONST.2047": "DP0.I2",
                                 "DP0_I1": [
                                     "I1"
@@ -129,42 +142,30 @@
                                 "T": [
                                     "DP0_T"
                                 ]
-                            },
-                            "5": {
-                                "CONST.12": "DP0.I2"
                             }
                         },
                         "MAPPED_NODES": {
-                            "1": {
-                                "DP0_T": 2,
-                                "T": 2
-                            },
-                            "2": {
-                                "DP0_I1": 20036,
-                                "DP0_P": 11,
-                                "DP0_T": 12,
-                                "I1": 20036,
-                                "P": 11,
-                                "T": 12
+                            "5": {
+                                "DP0_I1": 20038,
+                                "DP0_P": 2,
+                                "DP0_T": 14,
+                                "I1": 20038,
+                                "P": 2,
+                                "T": 14
                             }
                         },
                         "OPS": {
-                            "0": "OLOAD",
-                            "2": "STOREB",
-                            "5": "OLOAD"
+                            "3": "OLOAD",
+                            "5": "STOREB"
                         },
                         "OP_INFO": {
-                            "0": {
+                            "3": {
                                 "NPB": false,
-                                "id": 12
-                            },
-                            "2": {
-                                "NPB": false,
-                                "id": 20035
+                                "id": 14
                             },
                             "5": {
                                 "NPB": false,
-                                "id": 2
+                                "id": 20037
                             }
                         },
                         "SUBMODS": {
@@ -180,38 +181,35 @@
             "PE_MEM_X0_Y2": {
                 "CONNECTIONS": {
                     "0": {
-                        "NORTH_I": [
-                            "NORTH_XBARI"
+                        "EAST_I": [
+                            "EAST_XBARI"
                         ],
-                        "NORTH_XBARI": [
-                            "SOUTH_O"
+                        "EAST_XBARI": [
+                            "NORTH_O"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "EAST_O"
                         ]
                     },
                     "1": {
                         "DP0_T": [
                             "EAST_O"
-                        ],
+                        ]
+                    },
+                    "2": {
+                        "DP0_T": [
+                            "NORTH_O"
+                        ]
+                    },
+                    "3": {
                         "EAST_I": [
                             "EAST_XBARI"
                         ],
                         "EAST_XBARI": [
                             "SOUTH_O"
-                        ],
-                        "NORTH_I": [
-                            "NORTH_XBARI"
-                        ],
-                        "NORTH_XBARI": [
-                            "DP0_I2"
-                        ]
-                    },
-                    "2": {
-                        "DP0_T": [
-                            "EAST_O"
-                        ]
-                    },
-                    "3": {
-                        "DP0_T": [
-                            "EAST_O"
                         ]
                     },
                     "4": {
@@ -229,63 +227,58 @@
                         "DP0_T": [
                             "EAST_O"
                         ],
-                        "NORTH_I": [
-                            "NORTH_XBARI"
+                        "EAST_I": [
+                            "EAST_XBARI"
                         ],
-                        "NORTH_XBARI": [
+                        "EAST_XBARI": [
                             "SOUTH_O"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "NORTH_I": 4,
-                        "NORTH_XBARI": 4,
-                        "SOUTH_O": 4
+                        "EAST_I": 20038,
+                        "EAST_O": 22,
+                        "EAST_XBARI": 20038,
+                        "NORTH_O": 20038,
+                        "SOUTH_I": 22,
+                        "SOUTH_XBARI": 22
                     },
                     "1": {
-                        "DP0_I2": 21,
-                        "DP0_T": 17,
-                        "EAST_I": 23,
-                        "EAST_O": 17,
-                        "EAST_XBARI": 23,
-                        "NORTH_I": 21,
-                        "NORTH_XBARI": 21,
-                        "SOUTH_O": 23
+                        "DP0_T": 15,
+                        "EAST_O": 15
                     },
                     "2": {
-                        "DP0_T": 5,
-                        "EAST_O": 5
+                        "DP0_T": 26,
+                        "NORTH_O": 26
                     },
                     "3": {
-                        "DP0_T": 22,
-                        "EAST_O": 22
+                        "EAST_I": 16,
+                        "EAST_XBARI": 16,
+                        "SOUTH_O": 16
                     },
                     "4": {
-                        "DP0_I1": 38,
-                        "DP0_T": 26,
-                        "EAST_I": 38,
-                        "EAST_O": 26,
-                        "EAST_XBARI": 38
+                        "DP0_I1": 40,
+                        "DP0_T": 24,
+                        "EAST_I": 40,
+                        "EAST_O": 24,
+                        "EAST_XBARI": 40
                     },
                     "5": {
-                        "DP0_T": 20,
-                        "EAST_O": 20,
-                        "NORTH_I": 23,
-                        "NORTH_XBARI": 23,
-                        "SOUTH_O": 23
+                        "DP0_T": 3,
+                        "EAST_I": 8,
+                        "EAST_O": 3,
+                        "EAST_XBARI": 8,
+                        "SOUTH_O": 8
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
                             "0": {
-                                "CONST.2060": "DP0.I2"
+                                "CONST.2056": "DP0.I2"
                             },
                             "1": {
-                                "DP0_I2": [
-                                    "I2"
-                                ],
                                 "T": [
                                     "DP0_T"
                                 ]
@@ -297,9 +290,7 @@
                                 ]
                             },
                             "3": {
-                                "T": [
-                                    "DP0_T"
-                                ]
+                                "CONST.2060": "DP0.I2"
                             },
                             "4": {
                                 "CONST.4094": "DP0.I2",
@@ -318,62 +309,51 @@
                         },
                         "MAPPED_NODES": {
                             "1": {
-                                "DP0_I2": 21,
-                                "DP0_T": 17,
-                                "I2": 21,
-                                "T": 17
+                                "DP0_T": 15,
+                                "T": 15
                             },
                             "2": {
-                                "DP0_T": 5,
-                                "T": 5
-                            },
-                            "3": {
-                                "DP0_T": 22,
-                                "T": 22
-                            },
-                            "4": {
-                                "DP0_I1": 38,
                                 "DP0_T": 26,
-                                "I1": 38,
                                 "T": 26
                             },
+                            "4": {
+                                "DP0_I1": 40,
+                                "DP0_T": 24,
+                                "I1": 40,
+                                "T": 24
+                            },
                             "5": {
-                                "DP0_T": 20,
-                                "T": 20
+                                "DP0_T": 3,
+                                "T": 3
                             }
                         },
                         "OPS": {
                             "0": "OLOAD",
-                            "1": "LOAD",
                             "2": "LOADB",
-                            "3": "LOAD",
+                            "3": "OLOAD",
                             "4": "STOREB",
                             "5": "LOAD"
                         },
                         "OP_INFO": {
                             "0": {
                                 "NPB": false,
-                                "id": 5
-                            },
-                            "1": {
-                                "NPB": false,
-                                "id": 22
+                                "id": 26
                             },
                             "2": {
                                 "NPB": false,
-                                "id": 26
+                                "id": 24
                             },
                             "3": {
                                 "NPB": false,
-                                "id": 20
+                                "id": 3
                             },
                             "4": {
                                 "NPB": false,
-                                "id": 37
+                                "id": 39
                             },
                             "5": {
                                 "NPB": false,
-                                "id": 17
+                                "id": 15
                             }
                         },
                         "SUBMODS": {
@@ -387,8 +367,8 @@
                                 },
                                 "MAPPED_NODES": {
                                     "4": {
-                                        "P": 26,
-                                        "T": 26
+                                        "P": 24,
+                                        "T": 24
                                     }
                                 },
                                 "TYPE": "DP"
@@ -403,40 +383,36 @@
                 "CONNECTIONS": {
                     "0": {
                         "DP0_T": [
-                            "EAST_O"
-                        ],
-                        "NORTH_I": [
-                            "NORTH_XBARI"
-                        ],
-                        "NORTH_XBARI": [
-                            "DP0_I2"
-                        ]
-                    },
-                    "1": {
-                        "DP0_T": [
-                            "EAST_O"
+                            "NORTH_O"
                         ],
                         "EAST_I": [
                             "EAST_XBARI"
                         ],
                         "EAST_XBARI": [
-                            "DP0_I1"
+                            "DP0_I2"
+                        ]
+                    },
+                    "1": {
+                        "EAST_I": [
+                            "EAST_XBARI"
                         ],
-                        "NORTH_I": [
-                            "NORTH_XBARI"
-                        ],
-                        "NORTH_XBARI": [
+                        "EAST_XBARI": [
                             "DP0_I2"
                         ]
                     },
                     "2": {
                         "DP0_T": [
                             "EAST_O"
+                        ]
+                    },
+                    "3": {
+                        "DP0_T": [
+                            "EAST_O"
                         ],
-                        "EAST_I": [
-                            "EAST_XBARI"
+                        "NORTH_I": [
+                            "NORTH_XBARI"
                         ],
-                        "EAST_XBARI": [
+                        "NORTH_XBARI": [
                             "DP0_I2"
                         ]
                     },
@@ -452,50 +428,63 @@
                         ]
                     },
                     "5": {
+                        "DP0_T": [
+                            "EAST_O"
+                        ],
+                        "EAST_I": [
+                            "EAST_XBARI"
+                        ],
+                        "EAST_XBARI": [
+                            "DP0_I2"
+                        ],
                         "NORTH_I": [
                             "NORTH_XBARI"
                         ],
                         "NORTH_XBARI": [
-                            "DP0_I2"
+                            "DP0_I1"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "DP0_I2": 4,
-                        "DP0_T": 19,
-                        "EAST_O": 19,
-                        "NORTH_I": 4,
-                        "NORTH_XBARI": 4
+                        "DP0_I2": 19,
+                        "DP0_T": 22,
+                        "EAST_I": 19,
+                        "EAST_XBARI": 19,
+                        "NORTH_O": 22
                     },
                     "1": {
-                        "DP0_I1": 8,
-                        "DP0_I2": 23,
-                        "DP0_T": 24,
-                        "EAST_I": 8,
-                        "EAST_O": 24,
-                        "EAST_XBARI": 8,
-                        "NORTH_I": 23,
-                        "NORTH_XBARI": 23
+                        "DP0_I2": 5,
+                        "EAST_I": 5,
+                        "EAST_XBARI": 5
                     },
                     "2": {
-                        "DP0_I2": 14,
+                        "DP0_T": 20,
+                        "EAST_O": 20
+                    },
+                    "3": {
+                        "DP0_I2": 16,
                         "DP0_T": 6,
-                        "EAST_I": 14,
                         "EAST_O": 6,
-                        "EAST_XBARI": 14
+                        "NORTH_I": 16,
+                        "NORTH_XBARI": 16
                     },
                     "4": {
-                        "DP0_I2": 18,
-                        "DP0_T": 15,
-                        "EAST_I": 18,
-                        "EAST_O": 15,
-                        "EAST_XBARI": 18
+                        "DP0_I2": 21,
+                        "DP0_T": 18,
+                        "EAST_I": 21,
+                        "EAST_O": 18,
+                        "EAST_XBARI": 21
                     },
                     "5": {
-                        "DP0_I2": 23,
-                        "NORTH_I": 23,
-                        "NORTH_XBARI": 23
+                        "DP0_I1": 8,
+                        "DP0_I2": 21,
+                        "DP0_T": 17,
+                        "EAST_I": 21,
+                        "EAST_O": 17,
+                        "EAST_XBARI": 21,
+                        "NORTH_I": 8,
+                        "NORTH_XBARI": 8
                     }
                 },
                 "SUBMODS": {
@@ -510,6 +499,32 @@
                                 ]
                             },
                             "1": {
+                                "DP0_I2": [
+                                    "I2"
+                                ]
+                            },
+                            "2": {
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "3": {
+                                "DP0_I2": [
+                                    "I2"
+                                ],
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "4": {
+                                "DP0_I2": [
+                                    "I2"
+                                ],
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "5": {
                                 "DP0_I1": [
                                     "I1"
                                 ],
@@ -519,88 +534,76 @@
                                 "T": [
                                     "DP0_T"
                                 ]
-                            },
-                            "2": {
-                                "DP0_I2": [
-                                    "I2"
-                                ],
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            },
-                            "4": {
-                                "DP0_I2": [
-                                    "I2"
-                                ],
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            },
-                            "5": {
-                                "DP0_I2": [
-                                    "I2"
-                                ]
                             }
                         },
                         "MAPPED_NODES": {
                             "0": {
-                                "DP0_I2": 4,
-                                "DP0_T": 19,
-                                "I2": 4,
-                                "T": 19
+                                "DP0_I2": 19,
+                                "DP0_T": 22,
+                                "I2": 19,
+                                "T": 22
                             },
                             "1": {
-                                "DP0_I1": 8,
-                                "DP0_I2": 23,
-                                "DP0_T": 24,
-                                "I1": 8,
-                                "I2": 23,
-                                "T": 24
+                                "DP0_I2": 5,
+                                "I2": 5
                             },
                             "2": {
-                                "DP0_I2": 14,
+                                "DP0_T": 20,
+                                "T": 20
+                            },
+                            "3": {
+                                "DP0_I2": 16,
                                 "DP0_T": 6,
-                                "I2": 14,
+                                "I2": 16,
                                 "T": 6
                             },
                             "4": {
-                                "DP0_I2": 18,
-                                "DP0_T": 15,
-                                "I2": 18,
-                                "T": 15
+                                "DP0_I2": 21,
+                                "DP0_T": 18,
+                                "I2": 21,
+                                "T": 18
                             },
                             "5": {
-                                "DP0_I2": 23,
-                                "I2": 23
+                                "DP0_I1": 8,
+                                "DP0_I2": 21,
+                                "DP0_T": 17,
+                                "I1": 8,
+                                "I2": 21,
+                                "T": 17
                             }
                         },
                         "OPS": {
                             "0": "LOAD",
-                            "1": "STORE",
+                            "1": "LOAD",
                             "2": "LOAD",
+                            "3": "LOAD",
                             "4": "LOAD",
-                            "5": "LOAD"
+                            "5": "STORE"
                         },
                         "OP_INFO": {
                             "0": {
                                 "NPB": false,
-                                "id": 6
+                                "id": 20
                             },
                             "1": {
                                 "NPB": false,
-                                "id": 9
+                                "id": 6
                             },
                             "2": {
                                 "NPB": false,
-                                "id": 15
+                                "id": 18
+                            },
+                            "3": {
+                                "NPB": false,
+                                "id": 17
                             },
                             "4": {
                                 "NPB": false,
-                                "id": 19
+                                "id": 22
                             },
                             "5": {
                                 "NPB": false,
-                                "id": 24
+                                "id": 9
                             }
                         },
                         "SUBMODS": {
@@ -615,33 +618,139 @@
             },
             "PE_X1|_Y0|": {
                 "CONNECTIONS": {
-                    "0": {
-                        "SOUTH_I": [
-                            "SR_RO"
+                    "1": {
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "EAST_O"
                         ]
                     },
-                    "2": {
-                        "SOUTH_XBARI": [
-                            "WEST_O"
-                        ],
-                        "SR_RI": [
+                    "3": {
+                        "SOUTH_I": [
                             "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "DP0_I1"
+                        ]
+                    },
+                    "4": {
+                        "DP0_T": [
+                            "EAST_O"
+                        ],
+                        "EAST_I": [
+                            "EAST_XBARI"
+                        ],
+                        "EAST_XBARI": [
+                            "DP0_I2"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "DP0_I1"
+                        ]
+                    },
+                    "5": {
+                        "DP0_T": [
+                            "SOUTH_O"
+                        ],
+                        "EAST_I": [
+                            "EAST_XBARI"
+                        ],
+                        "EAST_XBARI": [
+                            "WEST_O"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
-                    "0": {
-                        "SOUTH_I": 20036,
-                        "SR_RO": 20036
+                    "1": {
+                        "EAST_O": 12,
+                        "WEST_I": 12,
+                        "WEST_XBARI": 12
                     },
-                    "2": {
-                        "SOUTH_XBARI": 20036,
-                        "SR_RI": 20036,
-                        "WEST_O": 20036
+                    "3": {
+                        "DP0_I1": 10,
+                        "SOUTH_I": 10,
+                        "SOUTH_XBARI": 10
+                    },
+                    "4": {
+                        "DP0_I1": 33,
+                        "DP0_I2": 32,
+                        "DP0_T": 31,
+                        "EAST_I": 32,
+                        "EAST_O": 31,
+                        "EAST_XBARI": 32,
+                        "SOUTH_I": 33,
+                        "SOUTH_XBARI": 33
+                    },
+                    "5": {
+                        "DP0_T": 13,
+                        "EAST_I": 11,
+                        "EAST_XBARI": 11,
+                        "SOUTH_O": 13,
+                        "WEST_O": 11
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
+                        "CONNECTIONS": {
+                            "3": {
+                                "CONST.2": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ]
+                            },
+                            "4": {
+                                "CONST.4": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ],
+                                "DP0_I2": [
+                                    "I2"
+                                ],
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "5": {
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            }
+                        },
+                        "MAPPED_NODES": {
+                            "3": {
+                                "DP0_I1": 10,
+                                "I1": 10
+                            },
+                            "4": {
+                                "DP0_I1": 33,
+                                "DP0_I2": 32,
+                                "DP0_T": 31,
+                                "I1": 33,
+                                "I2": 32,
+                                "T": 31
+                            },
+                            "5": {
+                                "DP0_T": 13,
+                                "T": 13
+                            }
+                        },
+                        "OPS": {
+                            "3": "LS",
+                            "4": "ADD"
+                        },
+                        "OP_INFO": {
+                            "3": {
+                                "NPB": false,
+                                "id": 31
+                            },
+                            "4": {
+                                "NPB": false,
+                                "id": 13
+                            }
+                        },
                         "SUBMODS": {
                             "DP0": {
                                 "TYPE": "DP"
@@ -655,125 +764,152 @@
             "PE_X1|_Y1|": {
                 "CONNECTIONS": {
                     "0": {
+                        "DP0_T": [
+                            "EAST_O"
+                        ]
+                    },
+                    "2": {
+                        "EAST_I": [
+                            "EAST_XBARI"
+                        ],
+                        "EAST_XBARI": [
+                            "DP0_I2"
+                        ],
+                        "TREG_RI": [
+                            "DP0_I1"
+                        ],
+                        "WEST_I": [
+                            "WR_RO"
+                        ]
+                    },
+                    "3": {
+                        "DP0_T": [
+                            "NORTH_O"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "EAST_O"
+                        ]
+                    },
+                    "4": {
+                        "DP0_T": [
+                            "NORTH_O"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "DP0_P"
+                        ],
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ],
+                        "WR_RI": [
+                            "WEST_XBARI"
+                        ]
+                    },
+                    "5": {
+                        "DP0_T": [
+                            "TREG_RO"
+                        ],
                         "EAST_I": [
                             "EAST_XBARI"
                         ],
                         "EAST_XBARI": [
                             "WEST_O"
                         ],
-                        "TREG_RI": [
-                            "NORTH_O"
-                        ]
-                    },
-                    "1": {
-                        "DP0_T": [
-                            "WEST_O"
+                        "NORTH_I": [
+                            "NORTH_XBARI"
                         ],
-                        "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
+                        "NORTH_XBARI": [
                             "EAST_O"
-                        ]
-                    },
-                    "2": {
-                        "DP0_T": [
-                            "TREG_RO"
-                        ],
-                        "SOUTH_I": [
-                            "SOUTH_XBARI"
-                        ],
-                        "SOUTH_XBARI": [
-                            "WEST_O"
                         ],
                         "WEST_I": [
                             "WEST_XBARI"
                         ],
                         "WEST_XBARI": [
-                            "SOUTH_O"
-                        ]
-                    },
-                    "4": {
-                        "SOUTH_I": [
-                            "SOUTH_XBARI"
-                        ],
-                        "SOUTH_XBARI": [
-                            "DP0_I1"
-                        ]
-                    },
-                    "5": {
-                        "DP0_T": [
-                            "EAST_O",
-                            "WEST_O"
-                        ],
-                        "SOUTH_I": [
-                            "SOUTH_XBARI"
-                        ],
-                        "SOUTH_XBARI": [
                             "DP0_I1"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "EAST_I": 4,
-                        "EAST_XBARI": 4,
-                        "NORTH_O": 20036,
-                        "TREG_RI": 20036,
-                        "WEST_O": 4
-                    },
-                    "1": {
-                        "DP0_T": 21,
-                        "EAST_O": 2,
-                        "WEST_I": 2,
-                        "WEST_O": 21,
-                        "WEST_XBARI": 2
+                        "DP0_T": 32,
+                        "EAST_O": 32
                     },
                     "2": {
-                        "DP0_T": 20036,
-                        "SOUTH_I": 11,
-                        "SOUTH_O": 12,
-                        "SOUTH_XBARI": 11,
-                        "TREG_RO": 20036,
-                        "WEST_I": 12,
-                        "WEST_O": 11,
-                        "WEST_XBARI": 12
+                        "DP0_I1": 27,
+                        "DP0_I2": 28,
+                        "EAST_I": 28,
+                        "EAST_XBARI": 28,
+                        "TREG_RI": 27,
+                        "WEST_I": 26,
+                        "WR_RO": 26
+                    },
+                    "3": {
+                        "DP0_T": 10,
+                        "EAST_O": 3,
+                        "NORTH_O": 10,
+                        "SOUTH_I": 3,
+                        "SOUTH_XBARI": 3
                     },
                     "4": {
-                        "DP0_I1": 34,
-                        "SOUTH_I": 34,
-                        "SOUTH_XBARI": 34
+                        "DP0_I1": 26,
+                        "DP0_P": 24,
+                        "DP0_T": 33,
+                        "NORTH_O": 33,
+                        "SOUTH_I": 24,
+                        "SOUTH_XBARI": 24,
+                        "WEST_XBARI": 26,
+                        "WR_RI": 26
                     },
                     "5": {
-                        "DP0_I1": 20,
-                        "DP0_T": 23,
-                        "EAST_O": 23,
-                        "SOUTH_I": 20,
-                        "SOUTH_XBARI": 20,
-                        "WEST_O": 23
+                        "DP0_I1": 14,
+                        "DP0_T": 27,
+                        "EAST_I": 2,
+                        "EAST_O": 13,
+                        "EAST_XBARI": 2,
+                        "NORTH_I": 13,
+                        "NORTH_XBARI": 13,
+                        "TREG_RO": 27,
+                        "WEST_I": 14,
+                        "WEST_O": 2,
+                        "WEST_XBARI": 14
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
                             "0": {
-                                "CONST.2052": "DP0.I2"
-                            },
-                            "1": {
-                                "CONST.1": "DP0.I2",
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
                             "2": {
+                                "DP0_I1": [
+                                    "I1"
+                                ],
+                                "DP0_I2": [
+                                    "I2"
+                                ]
+                            },
+                            "3": {
+                                "CONST.2": "DP0.I2",
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
                             "4": {
-                                "CONST.2052": "DP0.I2",
                                 "DP0_I1": [
                                     "I1"
+                                ],
+                                "DP0_P": [
+                                    "P"
+                                ],
+                                "T": [
+                                    "DP0_T"
                                 ]
                             },
                             "5": {
@@ -787,62 +923,72 @@
                             }
                         },
                         "MAPPED_NODES": {
-                            "1": {
-                                "DP0_T": 21,
-                                "T": 21
+                            "0": {
+                                "DP0_T": 32,
+                                "T": 32
                             },
                             "2": {
-                                "DP0_T": 20036,
-                                "T": 20036
+                                "DP0_I1": 27,
+                                "DP0_I2": 28,
+                                "I1": 27,
+                                "I2": 28
+                            },
+                            "3": {
+                                "DP0_T": 10,
+                                "T": 10
                             },
                             "4": {
-                                "DP0_I1": 34,
-                                "I1": 34
+                                "DP0_I1": 26,
+                                "DP0_P": 24,
+                                "DP0_T": 33,
+                                "I1": 26,
+                                "P": 24,
+                                "T": 33
                             },
                             "5": {
-                                "DP0_I1": 20,
-                                "DP0_T": 23,
-                                "I1": 20,
-                                "T": 23
+                                "DP0_I1": 14,
+                                "DP0_T": 27,
+                                "I1": 14,
+                                "T": 27
                             }
                         },
                         "OPS": {
-                            "0": "ADD",
-                            "1": "MOVC",
-                            "4": "ADD",
+                            "2": "SELECT",
+                            "3": "LS",
+                            "4": "CMERGE",
                             "5": "LS"
                         },
                         "OP_INFO": {
-                            "0": {
+                            "2": {
                                 "NPB": false,
-                                "id": 21
+                                "id": 10
                             },
-                            "1": {
+                            "3": {
                                 "NPB": false,
-                                "id": 20036
+                                "id": 33
                             },
                             "4": {
                                 "NPB": false,
-                                "id": 23
+                                "id": 27
                             },
                             "5": {
                                 "NPB": false,
-                                "id": 33
+                                "id": 32
                             }
                         },
                         "SUBMODS": {
                             "DP0": {
                                 "CONNECTIONS": {
-                                    "0": {
+                                    "3": {
                                         "T": [
                                             "I1"
                                         ]
                                     }
                                 },
                                 "MAPPED_NODES": {
-                                    "0": {
-                                        "I1": 33,
-                                        "T": 33
+                                    "3": {
+                                        "I1": 10,
+                                        "T": 10
                                     }
                                 },
                                 "TYPE": "DP"
@@ -857,66 +1003,69 @@
                 "CONNECTIONS": {
                     "0": {
                         "DP0_T": [
+                            "WEST_O"
+                        ],
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
                             "EAST_O"
                         ]
                     },
                     "1": {
-                        "DP0_T": [
-                            "TREG_RO"
-                        ],
-                        "EAST_I": [
-                            "EAST_XBARI"
-                        ],
-                        "EAST_XBARI": [
-                            "WEST_O"
-                        ],
-                        "NORTH_XBARI": [
-                            "DP0_I2"
-                        ],
-                        "NR_RI": [
-                            "NORTH_XBARI"
-                        ],
                         "WEST_I": [
                             "WEST_XBARI"
                         ],
                         "WEST_XBARI": [
-                            "EAST_O"
+                            "DP0_I1"
                         ]
                     },
                     "2": {
                         "DP0_T": [
-                            "NORTH_O"
+                            "EAST_O"
                         ],
                         "EAST_I": [
-                            "ER_RO"
+                            "EAST_XBARI"
                         ],
-                        "NORTH_I": [
-                            "NR_RO"
-                        ],
-                        "TREG_RI": [
+                        "EAST_XBARI": [
                             "DP0_I1"
                         ],
-                        "WEST_I": [
-                            "WEST_XBARI"
+                        "SOUTH_XBARI": [
+                            "SOUTH_O"
                         ],
-                        "WEST_XBARI": [
-                            "EAST_O"
+                        "SR_RI": [
+                            "SOUTH_XBARI"
+                        ],
+                        "TREG_RI": [
+                            "DP0_I2"
                         ]
                     },
                     "3": {
                         "DP0_T": [
-                            "TREG_RO"
+                            "SOUTH_O"
                         ],
-                        "WEST_I": [
-                            "WEST_XBARI"
+                        "EAST_I": [
+                            "EAST_XBARI"
+                        ],
+                        "EAST_XBARI": [
+                            "WEST_O"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "EAST_O"
                         ],
                         "WEST_XBARI": [
-                            "DP0_I1"
+                            "NORTH_O"
+                        ],
+                        "WR_RI": [
+                            "WEST_XBARI"
                         ]
                     },
                     "4": {
                         "DP0_T": [
-                            "NORTH_O"
+                            "EAST_O"
                         ],
                         "EAST_I": [
                             "EAST_XBARI"
@@ -928,96 +1077,107 @@
                             "WEST_XBARI"
                         ],
                         "WEST_XBARI": [
-                            "DP0_P"
+                            "DP0_P",
+                            "NORTH_O"
                         ]
                     },
                     "5": {
-                        "EAST_XBARI": [
-                            "SOUTH_O"
+                        "DP0_T": [
+                            "TREG_RO"
                         ],
-                        "ER_RI": [
+                        "EAST_I": [
                             "EAST_XBARI"
                         ],
-                        "TREG_RI": [
-                            "DP0_I1"
+                        "EAST_XBARI": [
+                            "WEST_O"
+                        ],
+                        "SOUTH_I": [
+                            "SR_RO"
                         ],
                         "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "NORTH_O"
+                            "WR_RO"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "DP0_T": 0,
-                        "EAST_O": 0
-                    },
-                    "1": {
-                        "DP0_I2": 12,
-                        "DP0_T": 10,
-                        "EAST_I": 23,
-                        "EAST_O": 17,
-                        "EAST_XBARI": 23,
-                        "NORTH_XBARI": 12,
-                        "NR_RI": 12,
-                        "TREG_RO": 10,
-                        "WEST_I": 17,
-                        "WEST_O": 23,
-                        "WEST_XBARI": 17
-                    },
-                    "2": {
-                        "DP0_I1": 10,
-                        "DP0_T": 11,
-                        "EAST_I": 30,
-                        "EAST_O": 5,
-                        "ER_RO": 30,
-                        "NORTH_I": 12,
-                        "NORTH_O": 11,
-                        "NR_RO": 12,
-                        "TREG_RI": 10,
-                        "WEST_I": 5,
-                        "WEST_XBARI": 5
-                    },
-                    "3": {
-                        "DP0_I1": 22,
-                        "DP0_T": 25,
-                        "TREG_RO": 25,
+                        "DP0_T": 20038,
+                        "EAST_O": 22,
                         "WEST_I": 22,
+                        "WEST_O": 20038,
                         "WEST_XBARI": 22
                     },
-                    "4": {
-                        "DP0_P": 26,
+                    "1": {
+                        "DP0_I1": 15,
+                        "WEST_I": 15,
+                        "WEST_XBARI": 15
+                    },
+                    "2": {
+                        "DP0_I1": 23,
+                        "DP0_I2": 25,
                         "DP0_T": 34,
-                        "EAST_I": 38,
-                        "EAST_XBARI": 38,
-                        "NORTH_O": 34,
-                        "WEST_I": 26,
-                        "WEST_O": 38,
-                        "WEST_XBARI": 26
+                        "EAST_I": 23,
+                        "EAST_O": 34,
+                        "EAST_XBARI": 23,
+                        "SOUTH_O": 21,
+                        "SOUTH_XBARI": 21,
+                        "SR_RI": 21,
+                        "TREG_RI": 25
+                    },
+                    "3": {
+                        "DP0_T": 0,
+                        "EAST_I": 16,
+                        "EAST_O": 6,
+                        "EAST_XBARI": 16,
+                        "NORTH_O": 3,
+                        "SOUTH_I": 6,
+                        "SOUTH_O": 0,
+                        "SOUTH_XBARI": 6,
+                        "WEST_O": 16,
+                        "WEST_XBARI": 3,
+                        "WR_RI": 3
+                    },
+                    "4": {
+                        "DP0_P": 24,
+                        "DP0_T": 1,
+                        "EAST_I": 40,
+                        "EAST_O": 1,
+                        "EAST_XBARI": 40,
+                        "NORTH_O": 24,
+                        "WEST_I": 24,
+                        "WEST_O": 40,
+                        "WEST_XBARI": 24
                     },
                     "5": {
-                        "DP0_I1": 25,
-                        "EAST_XBARI": 30,
-                        "ER_RI": 30,
-                        "NORTH_O": 20,
-                        "SOUTH_O": 30,
-                        "TREG_RI": 25,
-                        "WEST_I": 20,
-                        "WEST_XBARI": 20
+                        "DP0_T": 25,
+                        "EAST_I": 8,
+                        "EAST_XBARI": 8,
+                        "SOUTH_I": 21,
+                        "SR_RO": 21,
+                        "TREG_RO": 25,
+                        "WEST_I": 3,
+                        "WEST_O": 8,
+                        "WR_RO": 3
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
                             "0": {
-                                "CONST.1": "DP0.I2",
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
                             "1": {
+                                "CONST.2": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ]
+                            },
+                            "2": {
+                                "DP0_I1": [
+                                    "I1"
+                                ],
                                 "DP0_I2": [
                                     "I2"
                                 ],
@@ -1025,19 +1185,8 @@
                                     "DP0_T"
                                 ]
                             },
-                            "2": {
-                                "DP0_I1": [
-                                    "I1"
-                                ],
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            },
                             "3": {
-                                "CONST.2": "DP0.I2",
-                                "DP0_I1": [
-                                    "I1"
-                                ],
+                                "CONST.1": "DP0.I2",
                                 "T": [
                                     "DP0_T"
                                 ]
@@ -1052,119 +1201,86 @@
                                 ]
                             },
                             "5": {
-                                "DP0_I1": [
-                                    "I1"
+                                "CONST.1": "DP0.I2",
+                                "T": [
+                                    "DP0_T"
                                 ]
                             }
                         },
                         "MAPPED_NODES": {
                             "0": {
+                                "DP0_T": 20038,
+                                "T": 20038
+                            },
+                            "1": {
+                                "DP0_I1": 15,
+                                "I1": 15
+                            },
+                            "2": {
+                                "DP0_I1": 23,
+                                "DP0_I2": 25,
+                                "DP0_T": 34,
+                                "I1": 23,
+                                "I2": 25,
+                                "T": 34
+                            },
+                            "3": {
                                 "DP0_T": 0,
                                 "T": 0
                             },
-                            "1": {
-                                "DP0_I2": 12,
-                                "DP0_T": 10,
-                                "I2": 12,
-                                "T": 10
-                            },
-                            "2": {
-                                "DP0_I1": 10,
-                                "DP0_T": 11,
-                                "I1": 10,
-                                "T": 11
-                            },
-                            "3": {
-                                "DP0_I1": 22,
-                                "DP0_T": 25,
-                                "I1": 22,
-                                "T": 25
-                            },
                             "4": {
-                                "DP0_P": 26,
-                                "DP0_T": 34,
-                                "P": 26,
-                                "T": 34
+                                "DP0_P": 24,
+                                "DP0_T": 1,
+                                "P": 24,
+                                "T": 1
                             },
                             "5": {
-                                "DP0_I1": 25,
-                                "I1": 25
+                                "DP0_T": 25,
+                                "T": 25
                             }
                         },
                         "OPS": {
-                            "0": "ADD",
-                            "1": "CMP",
-                            "2": "CMERGE",
-                            "3": "LS",
+                            "1": "LS",
+                            "2": "SELECT",
+                            "3": "ADD",
                             "4": "CMERGE",
-                            "5": "SELECT"
+                            "5": "MOVC"
                         },
                         "OP_INFO": {
-                            "0": {
-                                "NPB": false,
-                                "id": 10
-                            },
                             "1": {
-                                "NPB": false,
-                                "id": 11
-                            },
-                            "2": {
-                                "NPB": true,
-                                "id": 25
-                            },
-                            "3": {
                                 "NPB": false,
                                 "id": 34
                             },
+                            "2": {
+                                "NPB": false,
+                                "id": 0
+                            },
+                            "3": {
+                                "NPB": false,
+                                "id": 1
+                            },
                             "4": {
                                 "NPB": false,
-                                "id": 27
+                                "id": 25
                             },
                             "5": {
                                 "NPB": false,
-                                "id": 0
+                                "id": 20038
                             }
                         },
                         "SUBMODS": {
                             "DP0": {
                                 "CONNECTIONS": {
-                                    "0": {
+                                    "3": {
                                         "T": [
                                             "I1"
-                                        ]
-                                    },
-                                    "1": {
-                                        "T": [
-                                            "I1"
-                                        ]
-                                    },
-                                    "2": {
-                                        "T": [
-                                            "P"
-                                        ]
-                                    },
-                                    "5": {
-                                        "T": [
-                                            "I2"
                                         ]
                                     }
                                 },
                                 "MAPPED_NODES": {
-                                    "0": {
+                                    "3": {
                                         "I1": 0,
                                         "T": 0
-                                    },
-                                    "1": {
-                                        "I1": 10,
-                                        "T": 10
-                                    },
-                                    "2": {
-                                        "P": 11,
-                                        "T": 11
-                                    },
-                                    "5": {
-                                        "I2": 27,
-                                        "T": 27
                                     }
                                 },
                                 "TYPE": "DP"
@@ -1179,13 +1295,7 @@
                 "CONNECTIONS": {
                     "0": {
                         "DP0_T": [
-                            "EAST_O"
-                        ],
-                        "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I1"
+                            "WEST_O"
                         ]
                     },
                     "1": {
@@ -1194,9 +1304,63 @@
                         ],
                         "EAST_XBARI": [
                             "WEST_O"
+                        ]
+                    },
+                    "2": {
+                        "NORTH_I": [
+                            "NR_RO"
+                        ],
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ]
+                    },
+                    "3": {
+                        "DP0_T": [
+                            "EAST_O"
+                        ],
+                        "NORTH_I": [
+                            "NORTH_XBARI"
                         ],
                         "NORTH_XBARI": [
-                            "DP0_I2"
+                            "DP0_I1"
+                        ],
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "NORTH_O"
+                        ]
+                    },
+                    "4": {
+                        "DP0_T": [
+                            "EAST_O"
+                        ],
+                        "EAST_I": [
+                            "ER_RO",
+                            "EAST_XBARI"
+                        ],
+                        "EAST_XBARI": [
+                            "WEST_O"
+                        ],
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ]
+                    },
+                    "5": {
+                        "EAST_XBARI": [
+                            "NORTH_O"
+                        ],
+                        "ER_RI": [
+                            "EAST_XBARI"
+                        ],
+                        "NORTH_XBARI": [
+                            "WEST_O"
                         ],
                         "NR_RI": [
                             "NORTH_XBARI"
@@ -1207,86 +1371,73 @@
                         "WEST_XBARI": [
                             "EAST_O"
                         ]
-                    },
-                    "2": {
-                        "DP0_T": [
-                            "WEST_O"
-                        ],
-                        "WEST_I": [
-                            "WR_RO"
-                        ]
-                    },
-                    "4": {
-                        "EAST_I": [
-                            "EAST_XBARI"
-                        ],
-                        "EAST_XBARI": [
-                            "WEST_O"
-                        ],
-                        "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I1"
-                        ]
-                    },
-                    "5": {
-                        "NORTH_I": [
-                            "NR_RO"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I2"
-                        ],
-                        "WR_RI": [
-                            "WEST_XBARI"
-                        ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "DP0_I1": 19,
-                        "DP0_T": 7,
-                        "EAST_O": 7,
-                        "WEST_I": 19,
-                        "WEST_XBARI": 19
+                        "DP0_T": 19,
+                        "WEST_O": 19
                     },
                     "1": {
-                        "DP0_I2": 30,
-                        "EAST_I": 8,
-                        "EAST_O": 24,
-                        "EAST_XBARI": 8,
-                        "NORTH_XBARI": 30,
-                        "NR_RI": 30,
-                        "WEST_I": 24,
-                        "WEST_O": 8,
-                        "WEST_XBARI": 24
+                        "EAST_I": 5,
+                        "EAST_XBARI": 5,
+                        "WEST_O": 5
                     },
                     "2": {
-                        "DP0_T": 14,
+                        "DP0_I1": 20,
+                        "NORTH_I": 21,
+                        "NR_RO": 21,
+                        "WEST_I": 20,
+                        "WEST_XBARI": 20
+                    },
+                    "3": {
+                        "DP0_I1": 0,
+                        "DP0_T": 36,
+                        "EAST_O": 36,
+                        "NORTH_I": 0,
+                        "NORTH_O": 6,
+                        "NORTH_XBARI": 0,
                         "WEST_I": 6,
-                        "WEST_O": 14,
-                        "WR_RO": 6
+                        "WEST_XBARI": 6
                     },
                     "4": {
-                        "DP0_I1": 15,
-                        "EAST_I": 18,
-                        "EAST_XBARI": 18,
-                        "WEST_I": 15,
-                        "WEST_O": 18,
-                        "WEST_XBARI": 15
+                        "DP0_I1": 18,
+                        "DP0_T": 29,
+                        "EAST_I": 21,
+                        "EAST_O": 29,
+                        "EAST_XBARI": 21,
+                        "ER_RO": 21,
+                        "WEST_I": 18,
+                        "WEST_O": 21,
+                        "WEST_XBARI": 18
                     },
                     "5": {
-                        "DP0_I2": 6,
-                        "NORTH_I": 30,
-                        "NR_RO": 30,
-                        "WEST_XBARI": 6,
-                        "WR_RI": 6
+                        "EAST_O": 17,
+                        "EAST_XBARI": 21,
+                        "ER_RI": 21,
+                        "NORTH_O": 21,
+                        "NORTH_XBARI": 21,
+                        "NR_RI": 21,
+                        "WEST_I": 17,
+                        "WEST_O": 21,
+                        "WEST_XBARI": 17
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
                             "0": {
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "2": {
+                                "CONST.2": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ]
+                            },
+                            "3": {
                                 "CONST.2": "DP0.I2",
                                 "DP0_I1": [
                                     "I1"
@@ -1295,85 +1446,68 @@
                                     "DP0_T"
                                 ]
                             },
-                            "1": {
-                                "CONST.2048": "DP0.I2",
-                                "DP0_I2": [
-                                    "I2"
-                                ]
-                            },
-                            "2": {
+                            "4": {
+                                "CONST.2": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ],
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
-                            "4": {
-                                "CONST.20": "DP0.I2",
-                                "DP0_I1": [
-                                    "I1"
-                                ]
-                            },
                             "5": {
-                                "DP0_I2": [
-                                    "I2"
-                                ]
+                                "CONST.2052": "DP0.I2"
                             }
                         },
                         "MAPPED_NODES": {
                             "0": {
-                                "DP0_I1": 19,
-                                "DP0_T": 7,
-                                "I1": 19,
-                                "T": 7
-                            },
-                            "1": {
-                                "DP0_I2": 30,
-                                "I2": 30
+                                "DP0_T": 19,
+                                "T": 19
                             },
                             "2": {
-                                "DP0_T": 14,
-                                "T": 14
+                                "DP0_I1": 20,
+                                "I1": 20
+                            },
+                            "3": {
+                                "DP0_I1": 0,
+                                "DP0_T": 36,
+                                "I1": 0,
+                                "T": 36
                             },
                             "4": {
-                                "DP0_I1": 15,
-                                "I1": 15
-                            },
-                            "5": {
-                                "DP0_I2": 6,
-                                "I2": 6
+                                "DP0_I1": 18,
+                                "DP0_T": 29,
+                                "I1": 18,
+                                "T": 29
                             }
                         },
                         "OPS": {
-                            "0": "LS",
-                            "1": "ADD",
-                            "4": "MUL",
-                            "5": "MUL"
+                            "2": "LS",
+                            "3": "LS",
+                            "4": "LS",
+                            "5": "ADD"
                         },
                         "OP_INFO": {
-                            "0": {
+                            "2": {
                                 "NPB": false,
-                                "id": 31
+                                "id": 36
                             },
-                            "1": {
+                            "3": {
                                 "NPB": false,
-                                "id": 14
+                                "id": 29
                             },
                             "4": {
                                 "NPB": false,
-                                "id": 16
+                                "id": 35
                             },
                             "5": {
                                 "NPB": false,
-                                "id": 7
+                                "id": 19
                             }
                         },
                         "SUBMODS": {
                             "DP0": {
                                 "CONNECTIONS": {
-                                    "1": {
-                                        "T": [
-                                            "I1"
-                                        ]
-                                    },
                                     "5": {
                                         "T": [
                                             "I1"
@@ -1381,13 +1515,9 @@
                                     }
                                 },
                                 "MAPPED_NODES": {
-                                    "1": {
-                                        "I1": 31,
-                                        "T": 31
-                                    },
                                     "5": {
-                                        "I1": 16,
-                                        "T": 16
+                                        "I1": 35,
+                                        "T": 35
                                     }
                                 },
                                 "TYPE": "DP"
@@ -1399,8 +1529,97 @@
                 "TYPE": "PE"
             },
             "PE_X2|_Y0|": {
+                "CONNECTIONS": {
+                    "1": {
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "SOUTH_O"
+                        ]
+                    },
+                    "3": {
+                        "SOUTH_I": [
+                            "SR_RO"
+                        ]
+                    },
+                    "4": {
+                        "SOUTH_XBARI": [
+                            "WEST_O"
+                        ],
+                        "SR_RI": [
+                            "SOUTH_XBARI"
+                        ],
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ]
+                    },
+                    "5": {
+                        "DP0_T": [
+                            "WEST_O"
+                        ]
+                    }
+                },
+                "MAPPED_NODES": {
+                    "1": {
+                        "SOUTH_O": 12,
+                        "WEST_I": 12,
+                        "WEST_XBARI": 12
+                    },
+                    "3": {
+                        "SOUTH_I": 32,
+                        "SR_RO": 32
+                    },
+                    "4": {
+                        "DP0_I1": 31,
+                        "SOUTH_XBARI": 32,
+                        "SR_RI": 32,
+                        "WEST_I": 31,
+                        "WEST_O": 32,
+                        "WEST_XBARI": 31
+                    },
+                    "5": {
+                        "DP0_T": 11,
+                        "WEST_O": 11
+                    }
+                },
                 "SUBMODS": {
                     "FU0": {
+                        "CONNECTIONS": {
+                            "4": {
+                                "CONST.4": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ]
+                            },
+                            "5": {
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            }
+                        },
+                        "MAPPED_NODES": {
+                            "4": {
+                                "DP0_I1": 31,
+                                "I1": 31
+                            },
+                            "5": {
+                                "DP0_T": 11,
+                                "T": 11
+                            }
+                        },
+                        "OPS": {
+                            "4": "ADD"
+                        },
+                        "OP_INFO": {
+                            "4": {
+                                "NPB": false,
+                                "id": 11
+                            }
+                        },
                         "SUBMODS": {
                             "DP0": {
                                 "TYPE": "DP"
@@ -1414,60 +1633,55 @@
             "PE_X2|_Y1|": {
                 "CONNECTIONS": {
                     "0": {
-                        "SOUTH_I": [
-                            "SR_RO"
-                        ],
-                        "TREG_RI": [
-                            "WEST_O"
-                        ]
-                    },
-                    "1": {
-                        "SOUTH_I": [
-                            "SR_RO"
-                        ],
-                        "SOUTH_XBARI": [
-                            "DP0_I1"
-                        ],
-                        "SR_RI": [
-                            "SOUTH_XBARI"
-                        ],
-                        "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I2"
-                        ]
-                    },
-                    "2": {
-                        "DP0_T": [
-                            "EAST_O"
-                        ]
-                    },
-                    "3": {
-                        "DP0_T": [
-                            "SOUTH_O"
-                        ]
-                    },
-                    "4": {
-                        "EAST_I": [
-                            "EAST_XBARI"
-                        ],
-                        "EAST_XBARI": [
-                            "DP0_I2"
-                        ],
-                        "SOUTH_XBARI": [
-                            "DP0_I1"
-                        ],
-                        "SR_RI": [
-                            "SOUTH_XBARI"
-                        ]
-                    },
-                    "5": {
                         "DP0_T": [
                             "TREG_RO"
                         ],
                         "WEST_I": [
                             "WR_RO"
+                        ]
+                    },
+                    "1": {
+                        "NORTH_I": [
+                            "NR_RO"
+                        ],
+                        "SOUTH_I": [
+                            "SR_RO"
+                        ]
+                    },
+                    "2": {
+                        "TREG_RI": [
+                            "WEST_O"
+                        ]
+                    },
+                    "3": {
+                        "NORTH_XBARI": [
+                            "DP0_I1"
+                        ],
+                        "NR_RI": [
+                            "NORTH_XBARI"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "DP0_I2"
+                        ],
+                        "WEST_I": [
+                            "WR_RO"
+                        ],
+                        "WEST_XBARI": [
+                            "NORTH_O"
+                        ],
+                        "WR_RI": [
+                            "WEST_XBARI"
+                        ]
+                    },
+                    "4": {
+                        "SOUTH_XBARI": [
+                            "DP0_I1"
+                        ],
+                        "SR_RI": [
+                            "SOUTH_XBARI"
                         ],
                         "WEST_XBARI": [
                             "SOUTH_O"
@@ -1475,75 +1689,85 @@
                         "WR_RI": [
                             "WEST_XBARI"
                         ]
+                    },
+                    "5": {
+                        "DP0_T": [
+                            "SOUTH_O"
+                        ],
+                        "SOUTH_I": [
+                            "SOUTH_XBARI"
+                        ],
+                        "SOUTH_XBARI": [
+                            "DP0_P",
+                            "WEST_O"
+                        ],
+                        "WEST_I": [
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "SOUTH_I": 0,
-                        "SR_RO": 0,
-                        "TREG_RI": 4,
-                        "WEST_O": 4
+                        "DP0_T": 28,
+                        "TREG_RO": 28,
+                        "WEST_I": 32,
+                        "WR_RO": 32
                     },
                     "1": {
-                        "DP0_I1": 0,
-                        "DP0_I2": 2,
-                        "SOUTH_I": 28,
-                        "SOUTH_XBARI": 0,
-                        "SR_RI": 0,
-                        "SR_RO": 28,
-                        "WEST_I": 2,
-                        "WEST_XBARI": 2
+                        "NORTH_I": 12,
+                        "NR_RO": 12,
+                        "SOUTH_I": 22,
+                        "SR_RO": 22
                     },
                     "2": {
-                        "DP0_T": 1,
-                        "EAST_O": 1
+                        "TREG_RI": 28,
+                        "WEST_O": 28
                     },
                     "3": {
-                        "DP0_T": 38,
-                        "SOUTH_O": 38
+                        "DP0_I1": 12,
+                        "DP0_I2": 6,
+                        "NORTH_O": 32,
+                        "NORTH_XBARI": 12,
+                        "NR_RI": 12,
+                        "SOUTH_I": 6,
+                        "SOUTH_XBARI": 6,
+                        "WEST_I": 3,
+                        "WEST_XBARI": 32,
+                        "WR_RI": 32,
+                        "WR_RO": 3
                     },
                     "4": {
-                        "DP0_I1": 28,
-                        "DP0_I2": 29,
-                        "EAST_I": 29,
-                        "EAST_XBARI": 29,
-                        "SOUTH_XBARI": 28,
-                        "SR_RI": 28
+                        "DP0_I1": 22,
+                        "SOUTH_O": 3,
+                        "SOUTH_XBARI": 22,
+                        "SR_RI": 22,
+                        "WEST_XBARI": 3,
+                        "WR_RI": 3
                     },
                     "5": {
-                        "DP0_T": 4,
-                        "SOUTH_O": 23,
-                        "TREG_RO": 4,
-                        "WEST_I": 23,
-                        "WEST_XBARI": 23,
-                        "WR_RI": 23,
-                        "WR_RO": 23
+                        "DP0_I1": 13,
+                        "DP0_P": 2,
+                        "DP0_T": 8,
+                        "SOUTH_I": 2,
+                        "SOUTH_O": 8,
+                        "SOUTH_XBARI": 2,
+                        "WEST_I": 13,
+                        "WEST_O": 2,
+                        "WEST_XBARI": 13
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
-                            "1": {
-                                "DP0_I1": [
-                                    "I1"
-                                ],
-                                "DP0_I2": [
-                                    "I2"
-                                ]
-                            },
-                            "2": {
-                                "CONST.0": "DP0.I2",
+                            "0": {
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
                             "3": {
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            },
-                            "4": {
-                                "CONST.2060": "DP0.I2",
                                 "DP0_I1": [
                                     "I1"
                                 ],
@@ -1551,59 +1775,81 @@
                                     "I2"
                                 ]
                             },
+                            "4": {
+                                "DP0_I1": [
+                                    "I1"
+                                ]
+                            },
                             "5": {
+                                "DP0_I1": [
+                                    "I1"
+                                ],
+                                "DP0_P": [
+                                    "P"
+                                ],
                                 "T": [
                                     "DP0_T"
                                 ]
                             }
                         },
                         "MAPPED_NODES": {
-                            "1": {
-                                "DP0_I1": 0,
-                                "DP0_I2": 2,
-                                "I1": 0,
-                                "I2": 2
-                            },
-                            "2": {
-                                "DP0_T": 1,
-                                "T": 1
+                            "0": {
+                                "DP0_T": 28,
+                                "T": 28
                             },
                             "3": {
-                                "DP0_T": 38,
-                                "T": 38
+                                "DP0_I1": 12,
+                                "DP0_I2": 6,
+                                "I1": 12,
+                                "I2": 6
                             },
                             "4": {
-                                "DP0_I1": 28,
-                                "DP0_I2": 29,
-                                "I1": 28,
-                                "I2": 29
+                                "DP0_I1": 22,
+                                "I1": 22
                             },
                             "5": {
-                                "DP0_T": 4,
-                                "T": 4
+                                "DP0_I1": 13,
+                                "DP0_P": 2,
+                                "DP0_T": 8,
+                                "I1": 13,
+                                "P": 2,
+                                "T": 8
                             }
                         },
                         "OPS": {
-                            "1": "MUL",
-                            "2": "MOVC",
-                            "4": "ADD"
+                            "3": "MUL",
+                            "4": "ADD",
+                            "5": "CMERGE"
                         },
                         "OP_INFO": {
-                            "1": {
+                            "3": {
                                 "NPB": false,
-                                "id": 1
-                            },
-                            "2": {
-                                "NPB": false,
-                                "id": 38
+                                "id": 7
                             },
                             "4": {
                                 "NPB": false,
-                                "id": 4
+                                "id": 8
+                            },
+                            "5": {
+                                "NPB": true,
+                                "id": 28
                             }
                         },
                         "SUBMODS": {
                             "DP0": {
+                                "CONNECTIONS": {
+                                    "4": {
+                                        "T": [
+                                            "I2"
+                                        ]
+                                    }
+                                },
+                                "MAPPED_NODES": {
+                                    "4": {
+                                        "I2": 7,
+                                        "T": 7
+                                    }
+                                },
                                 "TYPE": "DP"
                             }
                         },
@@ -1615,47 +1861,22 @@
             "PE_X2|_Y2|": {
                 "CONNECTIONS": {
                     "0": {
-                        "SOUTH_XBARI": [
-                            "SOUTH_O"
-                        ],
-                        "SR_RI": [
-                            "SOUTH_XBARI"
+                        "DP0_T": [
+                            "TREG_RO"
                         ],
                         "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I1",
-                            "NORTH_O"
+                            "WR_RO"
                         ]
                     },
                     "1": {
-                        "DP0_T": [
-                            "TREG_RO"
-                        ],
-                        "NORTH_XBARI": [
-                            "WEST_O"
-                        ],
-                        "NR_RI": [
-                            "NORTH_XBARI"
-                        ],
-                        "TREG_RI": [
+                        "WEST_XBARI": [
                             "NORTH_O"
                         ],
-                        "WEST_I": [
+                        "WR_RI": [
                             "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I1"
                         ]
                     },
                     "2": {
-                        "DP0_T": [
-                            "TREG_RO"
-                        ],
-                        "SOUTH_I": [
-                            "SR_RO"
-                        ],
                         "TREG_RI": [
                             "WEST_O"
                         ],
@@ -1668,122 +1889,134 @@
                     },
                     "3": {
                         "DP0_T": [
-                            "TREG_RO"
+                            "WEST_O"
                         ],
-                        "NORTH_I": [
-                            "NR_RO"
+                        "WEST_I": [
+                            "WEST_XBARI"
                         ],
-                        "TREG_RI": [
-                            "DP0_I1"
+                        "WEST_XBARI": [
+                            "NORTH_O"
                         ]
                     },
                     "4": {
                         "DP0_T": [
-                            "SOUTH_O"
+                            "WEST_O"
+                        ],
+                        "NORTH_I": [
+                            "NORTH_XBARI"
+                        ],
+                        "NORTH_XBARI": [
+                            "DP0_I2"
+                        ],
+                        "WEST_I": [
+                            "WR_RO",
+                            "WEST_XBARI"
+                        ],
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ]
+                    },
+                    "5": {
+                        "DP0_T": [
+                            "NORTH_O"
+                        ],
+                        "NORTH_I": [
+                            "NORTH_XBARI"
                         ],
                         "NORTH_XBARI": [
                             "WEST_O"
                         ],
-                        "NR_RI": [
-                            "NORTH_XBARI"
-                        ]
-                    },
-                    "5": {
-                        "NORTH_I": [
-                            "NR_RO"
+                        "WEST_XBARI": [
+                            "DP0_I1"
+                        ],
+                        "WR_RI": [
+                            "WEST_XBARI"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "DP0_I1": 0,
-                        "NORTH_O": 0,
-                        "SOUTH_O": 24,
-                        "SOUTH_XBARI": 24,
-                        "SR_RI": 24,
-                        "WEST_I": 0,
-                        "WEST_XBARI": 0
+                        "DP0_T": 23,
+                        "TREG_RO": 23,
+                        "WEST_I": 22,
+                        "WR_RO": 22
                     },
                     "1": {
-                        "DP0_I1": 17,
-                        "DP0_T": 30,
-                        "NORTH_O": 28,
-                        "NORTH_XBARI": 23,
-                        "NR_RI": 23,
-                        "TREG_RI": 28,
-                        "TREG_RO": 30,
-                        "WEST_I": 17,
-                        "WEST_O": 23,
-                        "WEST_XBARI": 17
+                        "NORTH_O": 22,
+                        "WEST_XBARI": 22,
+                        "WR_RI": 22
                     },
                     "2": {
-                        "DP0_I1": 5,
-                        "DP0_T": 32,
-                        "SOUTH_I": 24,
-                        "SR_RO": 24,
-                        "TREG_RI": 30,
-                        "TREG_RO": 32,
-                        "WEST_I": 5,
-                        "WEST_O": 30,
-                        "WEST_XBARI": 5
+                        "DP0_I1": 34,
+                        "TREG_RI": 23,
+                        "WEST_I": 34,
+                        "WEST_O": 23,
+                        "WEST_XBARI": 34
                     },
                     "3": {
-                        "DP0_I1": 32,
-                        "DP0_T": 28,
-                        "NORTH_I": 38,
-                        "NR_RO": 38,
-                        "TREG_RI": 32,
-                        "TREG_RO": 28
+                        "DP0_T": 16,
+                        "NORTH_O": 6,
+                        "WEST_I": 6,
+                        "WEST_O": 16,
+                        "WEST_XBARI": 6
                     },
                     "4": {
-                        "DP0_T": 18,
-                        "NORTH_XBARI": 38,
-                        "NR_RI": 38,
-                        "SOUTH_O": 18,
-                        "WEST_O": 38
+                        "DP0_I1": 1,
+                        "DP0_I2": 3,
+                        "DP0_T": 40,
+                        "NORTH_I": 3,
+                        "NORTH_XBARI": 3,
+                        "WEST_I": 1,
+                        "WEST_O": 40,
+                        "WEST_XBARI": 1,
+                        "WR_RO": 1
                     },
                     "5": {
-                        "NORTH_I": 23,
-                        "NR_RO": 23
+                        "DP0_I1": 1,
+                        "DP0_T": 2,
+                        "NORTH_I": 8,
+                        "NORTH_O": 2,
+                        "NORTH_XBARI": 8,
+                        "WEST_O": 8,
+                        "WEST_XBARI": 1,
+                        "WR_RI": 1
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
                             "0": {
-                                "CONST.2": "DP0.I2",
-                                "DP0_I1": [
-                                    "I1"
-                                ]
-                            },
-                            "1": {
-                                "CONST.2": "DP0.I2",
-                                "DP0_I1": [
-                                    "I1"
-                                ],
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
                             "2": {
-                                "CONST.2": "DP0.I2",
-                                "DP0_I1": [
-                                    "I1"
-                                ],
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            },
-                            "3": {
                                 "CONST.2048": "DP0.I2",
                                 "DP0_I1": [
                                     "I1"
-                                ],
+                                ]
+                            },
+                            "3": {
+                                "CONST.0": "DP0.I2",
                                 "T": [
                                     "DP0_T"
                                 ]
                             },
                             "4": {
+                                "DP0_I1": [
+                                    "I1"
+                                ],
+                                "DP0_I2": [
+                                    "I2"
+                                ],
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "5": {
+                                "DP0_I1": [
+                                    "I1"
+                                ],
                                 "T": [
                                     "DP0_T"
                                 ]
@@ -1791,58 +2024,71 @@
                         },
                         "MAPPED_NODES": {
                             "0": {
-                                "DP0_I1": 0,
-                                "I1": 0
-                            },
-                            "1": {
-                                "DP0_I1": 17,
-                                "DP0_T": 30,
-                                "I1": 17,
-                                "T": 30
+                                "DP0_T": 23,
+                                "T": 23
                             },
                             "2": {
-                                "DP0_I1": 5,
-                                "DP0_T": 32,
-                                "I1": 5,
-                                "T": 32
+                                "DP0_I1": 34,
+                                "I1": 34
                             },
                             "3": {
-                                "DP0_I1": 32,
-                                "DP0_T": 28,
-                                "I1": 32,
-                                "T": 28
+                                "DP0_T": 16,
+                                "T": 16
                             },
                             "4": {
-                                "DP0_T": 18,
-                                "T": 18
+                                "DP0_I1": 1,
+                                "DP0_I2": 3,
+                                "DP0_T": 40,
+                                "I1": 1,
+                                "I2": 3,
+                                "T": 40
+                            },
+                            "5": {
+                                "DP0_I1": 1,
+                                "DP0_T": 2,
+                                "I1": 1,
+                                "T": 2
                             }
                         },
                         "OPS": {
-                            "0": "LS",
-                            "1": "LS",
-                            "2": "LS",
-                            "3": "ADD"
+                            "2": "ADD",
+                            "3": "MOVC",
+                            "4": "CMP",
+                            "5": "CMERGE"
                         },
                         "OP_INFO": {
-                            "0": {
-                                "NPB": false,
-                                "id": 30
-                            },
-                            "1": {
-                                "NPB": false,
-                                "id": 32
-                            },
                             "2": {
                                 "NPB": false,
-                                "id": 28
+                                "id": 16
                             },
                             "3": {
                                 "NPB": false,
-                                "id": 18
+                                "id": 40
+                            },
+                            "4": {
+                                "NPB": false,
+                                "id": 2
+                            },
+                            "5": {
+                                "NPB": true,
+                                "id": 23
                             }
                         },
                         "SUBMODS": {
                             "DP0": {
+                                "CONNECTIONS": {
+                                    "5": {
+                                        "T": [
+                                            "P"
+                                        ]
+                                    }
+                                },
+                                "MAPPED_NODES": {
+                                    "5": {
+                                        "P": 2,
+                                        "T": 2
+                                    }
+                                },
                                 "TYPE": "DP"
                             }
                         },
@@ -1854,20 +2100,27 @@
             "PE_X2|_Y3|": {
                 "CONNECTIONS": {
                     "0": {
-                        "NORTH_I": [
-                            "NORTH_XBARI"
+                        "WEST_XBARI": [
+                            "DP0_I2"
                         ],
-                        "NORTH_XBARI": [
-                            "DP0_I1"
-                        ],
+                        "WR_RI": [
+                            "WEST_XBARI"
+                        ]
+                    },
+                    "1": {
+                        "DP0_T": [
+                            "WEST_O"
+                        ]
+                    },
+                    "3": {
                         "WEST_I": [
                             "WEST_XBARI"
                         ],
                         "WEST_XBARI": [
-                            "DP0_I2"
+                            "DP0_I1"
                         ]
                     },
-                    "1": {
+                    "4": {
                         "DP0_T": [
                             "WEST_O"
                         ],
@@ -1875,56 +2128,47 @@
                             "WR_RO"
                         ]
                     },
-                    "2": {
-                        "WEST_XBARI": [
-                            "NORTH_O"
-                        ],
-                        "WR_RI": [
+                    "5": {
+                        "WEST_I": [
                             "WEST_XBARI"
-                        ]
-                    },
-                    "4": {
-                        "NORTH_I": [
-                            "NORTH_XBARI"
                         ],
-                        "NORTH_XBARI": [
-                            "WEST_O"
+                        "WEST_XBARI": [
+                            "DP0_I1"
                         ]
                     }
                 },
                 "MAPPED_NODES": {
                     "0": {
-                        "DP0_I1": 24,
-                        "DP0_I2": 7,
-                        "NORTH_I": 24,
-                        "NORTH_XBARI": 24,
-                        "WEST_I": 7,
-                        "WEST_XBARI": 7
+                        "DP0_I2": 29,
+                        "WEST_XBARI": 29,
+                        "WR_RI": 29
                     },
                     "1": {
-                        "DP0_T": 8,
-                        "WEST_I": 24,
-                        "WEST_O": 8,
-                        "WR_RO": 24
+                        "DP0_T": 5,
+                        "WEST_O": 5
                     },
-                    "2": {
-                        "NORTH_O": 24,
-                        "WEST_XBARI": 24,
-                        "WR_RI": 24
+                    "3": {
+                        "DP0_I1": 36,
+                        "WEST_I": 36,
+                        "WEST_XBARI": 36
                     },
                     "4": {
-                        "NORTH_I": 18,
-                        "NORTH_XBARI": 18,
-                        "WEST_O": 18
+                        "DP0_T": 21,
+                        "WEST_I": 29,
+                        "WEST_O": 21,
+                        "WR_RO": 29
+                    },
+                    "5": {
+                        "DP0_I1": 17,
+                        "WEST_I": 17,
+                        "WEST_XBARI": 17
                     }
                 },
                 "SUBMODS": {
                     "FU0": {
                         "CONNECTIONS": {
                             "0": {
-                                "DP0_I1": [
-                                    "I1"
-                                ],
+                                "CONST.2048": "DP0.I2",
                                 "DP0_I2": [
                                     "I2"
                                 ]
@@ -1933,31 +2177,81 @@
                                 "T": [
                                     "DP0_T"
                                 ]
+                            },
+                            "3": {
+                                "CONST.2052": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ]
+                            },
+                            "4": {
+                                "T": [
+                                    "DP0_T"
+                                ]
+                            },
+                            "5": {
+                                "CONST.2": "DP0.I2",
+                                "DP0_I1": [
+                                    "I1"
+                                ]
                             }
                         },
                         "MAPPED_NODES": {
                             "0": {
-                                "DP0_I1": 24,
-                                "DP0_I2": 7,
-                                "I1": 24,
-                                "I2": 7
+                                "DP0_I2": 29,
+                                "I2": 29
                             },
                             "1": {
-                                "DP0_T": 8,
-                                "T": 8
+                                "DP0_T": 5,
+                                "T": 5
+                            },
+                            "3": {
+                                "DP0_I1": 36,
+                                "I1": 36
+                            },
+                            "4": {
+                                "DP0_T": 21,
+                                "T": 21
+                            },
+                            "5": {
+                                "DP0_I1": 17,
+                                "I1": 17
                             }
                         },
                         "OPS": {
-                            "0": "ADD"
+                            "0": "ADD",
+                            "3": "ADD",
+                            "5": "LS"
                         },
                         "OP_INFO": {
                             "0": {
                                 "NPB": false,
-                                "id": 8
+                                "id": 5
+                            },
+                            "3": {
+                                "NPB": false,
+                                "id": 21
+                            },
+                            "5": {
+                                "NPB": false,
+                                "id": 30
                             }
                         },
                         "SUBMODS": {
                             "DP0": {
+                                "CONNECTIONS": {
+                                    "0": {
+                                        "T": [
+                                            "I1"
+                                        ]
+                                    }
+                                },
+                                "MAPPED_NODES": {
+                                    "0": {
+                                        "I1": 30,
+                                        "T": 30
+                                    }
+                                },
                                 "TYPE": "DP"
                             }
                         },
@@ -1980,88 +2274,10 @@
                 "TYPE": "PE"
             },
             "PE_X3|_Y1|": {
-                "CONNECTIONS": {
-                    "2": {
-                        "WEST_I": [
-                            "WEST_XBARI"
-                        ],
-                        "WEST_XBARI": [
-                            "DP0_I1"
-                        ]
-                    },
-                    "4": {
-                        "DP0_T": [
-                            "WEST_O"
-                        ]
-                    }
-                },
-                "MAPPED_NODES": {
-                    "2": {
-                        "DP0_I1": 1,
-                        "WEST_I": 1,
-                        "WEST_XBARI": 1
-                    },
-                    "4": {
-                        "DP0_T": 29,
-                        "WEST_O": 29
-                    }
-                },
                 "SUBMODS": {
                     "FU0": {
-                        "CONNECTIONS": {
-                            "2": {
-                                "DP0_I1": [
-                                    "I1"
-                                ]
-                            },
-                            "3": {
-                                "CONST.2": "DP0.I2"
-                            },
-                            "4": {
-                                "T": [
-                                    "DP0_T"
-                                ]
-                            }
-                        },
-                        "MAPPED_NODES": {
-                            "2": {
-                                "DP0_I1": 1,
-                                "I1": 1
-                            },
-                            "4": {
-                                "DP0_T": 29,
-                                "T": 29
-                            }
-                        },
-                        "OPS": {
-                            "2": "ADD",
-                            "3": "LS"
-                        },
-                        "OP_INFO": {
-                            "2": {
-                                "NPB": false,
-                                "id": 3
-                            },
-                            "3": {
-                                "NPB": false,
-                                "id": 29
-                            }
-                        },
                         "SUBMODS": {
                             "DP0": {
-                                "CONNECTIONS": {
-                                    "3": {
-                                        "T": [
-                                            "I1"
-                                        ]
-                                    }
-                                },
-                                "MAPPED_NODES": {
-                                    "3": {
-                                        "I1": 3,
-                                        "T": 3
-                                    }
-                                },
                                 "TYPE": "DP"
                             }
                         },
@@ -2104,23 +2320,19 @@
             "addr": 2048,
             "spm": "CGRA_Ins.SPM_B1_WRAPPER_INS-T5.SPM0.SPM0"
         },
-        "B": {
-            "addr": 2060,
-            "spm": "CGRA_Ins.SPM_B1_WRAPPER_INS-T5.SPM0.SPM0"
+        "B_row": {
+            "addr": 4,
+            "spm": "CGRA_Ins.SPM_B0_WRAPPER_INS-T5.SPM0.SPM0"
         },
         "C": {
             "addr": 2052,
             "spm": "CGRA_Ins.SPM_B1_WRAPPER_INS-T5.SPM0.SPM0"
         },
-        "_ol_12": {
-            "addr": 8,
-            "spm": "CGRA_Ins.SPM_B0_WRAPPER_INS-T5.SPM0.SPM0"
-        },
-        "_ol_2": {
+        "_ol_14": {
             "addr": 12,
             "spm": "CGRA_Ins.SPM_B0_WRAPPER_INS-T5.SPM0.SPM0"
         },
-        "flat_row0": {
+        "_ol_3": {
             "addr": 2060,
             "spm": "CGRA_Ins.SPM_B1_WRAPPER_INS-T5.SPM0.SPM0"
         },
@@ -2130,6 +2342,10 @@
         },
         "loopstart": {
             "addr": 4094,
+            "spm": "CGRA_Ins.SPM_B1_WRAPPER_INS-T5.SPM0.SPM0"
+        },
+        "row_init": {
+            "addr": 2056,
             "spm": "CGRA_Ins.SPM_B1_WRAPPER_INS-T5.SPM0.SPM0"
         }
     },

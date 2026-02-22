@@ -279,8 +279,11 @@
     "SPM" : [{"name" : "SPM0"}]
   },
   "DATA_LAYOUT" :{
-    "_ol_15":12,
-    "C":4,
+    "B":0,
+    "_ol_15":8,
+    "hoist_row":12,
+    "A":12,
+    "_ol_3":16,
     "loopend":2047
   },
   "INIT_FILE" : "../json/test_data.json",
@@ -298,10 +301,9 @@
     "SPM" : [{"name" : "SPM0"}]
   },
   "DATA_LAYOUT" :{
-    "row_init":2056,
-    "B_row":2052,
-    "A":2048,
-    "_ol_3":2060,
+    "hoist_elem_addr":2052,
+    "elem_init_ptr":2056,
+    "C":2048,
     "loopstart":4094
   },
   "INIT_FILE" : "../json/test_data.json",

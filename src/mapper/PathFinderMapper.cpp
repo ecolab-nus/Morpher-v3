@@ -3735,9 +3735,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(northi_node &&
 							northi_node == pe->getInternalPort("NORTH_XBARI")->getNode() && northi->getLat() == pe->getInternalPort("NORTH_XBARI")->getLat()){
-						if(pe->getSingleRegPort("NR_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("NR_RI")->getNode()->idx << ",portnode=" << northi_node->idx << "\n";
-							assert(pe->getSingleRegPort("NR_RI")->getNode() != pe->getInternalPort("NORTH_XBARI")->getNode());
+						if(pe->getSingleRegPort("NR_RI")->getNode() &&
+								pe->getSingleRegPort("NR_RI")->getNode() == pe->getInternalPort("NORTH_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on NORTH at PE " + pe->getName() + " for node " + std::to_string(northi_node->idx));
 						}
 						insF.north_reg_bypass = "0";
 					}
@@ -3747,9 +3747,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(easti_node &&
 							easti_node == pe->getInternalPort("EAST_XBARI")->getNode() && easti->getLat() == pe->getInternalPort("EAST_XBARI")->getLat()){
-						if(pe->getSingleRegPort("ER_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("ER_RI")->getNode()->idx << ",portnode=" << easti_node->idx << "\n";
-							assert(pe->getSingleRegPort("ER_RI")->getNode() != pe->getInternalPort("EAST_XBARI")->getNode());
+						if(pe->getSingleRegPort("ER_RI")->getNode() &&
+								pe->getSingleRegPort("ER_RI")->getNode() == pe->getInternalPort("EAST_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on EAST at PE " + pe->getName() + " for node " + std::to_string(easti_node->idx));
 						}
 						insF.east_reg_bypass = "0";
 					}
@@ -3759,9 +3759,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(westi_node &&
 							westi_node == pe->getInternalPort("WEST_XBARI")->getNode() && westi->getLat() == pe->getInternalPort("WEST_XBARI")->getLat()){
-						if(pe->getSingleRegPort("WR_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("WR_RI")->getNode()->idx << ",portnode=" << westi_node->idx << "\n";
-							assert(pe->getSingleRegPort("WR_RI")->getNode() != pe->getInternalPort("WEST_XBARI")->getNode());
+						if(pe->getSingleRegPort("WR_RI")->getNode() &&
+								pe->getSingleRegPort("WR_RI")->getNode() == pe->getInternalPort("WEST_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on WEST at PE " + pe->getName() + " for node " + std::to_string(westi_node->idx));
 						}
 						insF.west_reg_bypass = "0";
 					}
@@ -3771,9 +3771,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(southi_node &&
 							southi_node == pe->getInternalPort("SOUTH_XBARI")->getNode() && southi->getLat() == pe->getInternalPort("SOUTH_XBARI")->getLat()){
-						if(pe->getSingleRegPort("SR_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("SR_RI")->getNode()->idx << ",portnode=" << southi_node->idx << "\n";
-							assert(pe->getSingleRegPort("SR_RI")->getNode() != pe->getInternalPort("SOUTH_XBARI")->getNode());
+						if(pe->getSingleRegPort("SR_RI")->getNode() &&
+								pe->getSingleRegPort("SR_RI")->getNode() == pe->getInternalPort("SOUTH_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on SOUTH at PE " + pe->getName() + " for node " + std::to_string(southi_node->idx));
 						}
 						insF.south_reg_bypass = "0";
 					}

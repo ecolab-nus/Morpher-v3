@@ -4,3 +4,6 @@
  main_PartPredDFG.xml method:SA 4 6
  main_PartPredDFG.xml method:SA 4 6
  main_PartPredDFG.xml method:SA 4 6
+ main_PartPredDFG.xml method:PathFinder 6 51
+ gemm_PartPredDFG.xml method:PathFinder 8 32
+ gemm_PartPredDFG.xml method:PathFinder 8 31

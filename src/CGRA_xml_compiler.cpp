@@ -184,7 +184,14 @@ int main(int argn, char *argc[])
 			//mapper.assignLiveInOutAddr(&tempDFG);
 			if(PEType == "HyCUBE_4REG"){
 				std::cout << "\nPrinting HyCUBE Binary...\n";
-				mapper->printHyCUBEBinary(tempCGRA);
+				try {
+					mapper->printHyCUBEBinary(tempCGRA);
+				} catch (const std::runtime_error &e) {
+					std::cerr << "Warning: binary generation failed at II=" << II
+					          << " (" << e.what() << "), retrying with higher II\n";
+					II++;
+					continue;
+				}
 			}
 			break;
 			
