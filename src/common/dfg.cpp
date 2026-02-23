@@ -11209,12 +11209,15 @@ int DFG::insertshiftGEPsCorrect(){
 					// ignore predicates
 					if(anc->childConditionalMap[node] != UNCOND) continue;
 
-					/* OLOAD ancestors (getNode()==NULL) represent outer-loop
-					 * values. Their trace entry is precomputed by the
-					 * instrumentation as  spm_base + idx * outer_stride, so
+					/* OLOAD ancestors (getNode()==NULL, nameType=="OutLoopLOAD")
+					 * represent outer-loop values. Their trace entry is precomputed
+					 * by the instrumentation as  spm_base + idx * outer_stride, so
 					 * they already carry the correct byte contribution.
-					 * Adding a GEPLEFTSHIFT on top would over-scale them. */
-					if (anc->getNode() == nullptr) {
+					 * Adding a GEPLEFTSHIFT on top would over-scale them.
+					 * Note: GEPLEFTSHIFT nodes also have getNode()==NULL, so we
+					 * must check nameType to distinguish them from real OLOADs. */
+					if (anc->getNode() == nullptr &&
+					    anc->getNameType() == "OutLoopLOAD") {
 						hasOLOADancestor = true;
 						LLVM_DEBUG(dbgs() << "Skipping LS for OLOAD ancestor of GEP\n");
 						continue;
@@ -11281,8 +11284,11 @@ void DFG::clearGEPbaseAddrForOLOADnodes() {
 		if (!node->hasConstantVal()) continue;
 		for (dfgNode *anc : node->getAncestors()) {
 			if (anc->childConditionalMap[node] != UNCOND) continue;
-			if (anc->getNode() == nullptr) {
-				/* OLOAD ancestor found -- clear constVal so constValid=false */
+			if (anc->getNode() == nullptr &&
+			    anc->getNameType() == "OutLoopLOAD") {
+				/* OLOAD ancestor found -- clear constVal so constValid=false.
+				 * Note: GEPLEFTSHIFT nodes also have getNode()==NULL; they must
+				 * NOT trigger removal here or 1-D GEP base addresses would be lost. */
 				LLVM_DEBUG(dbgs() << "clearGEPbaseAddrForOLOADnodes: removing constVal from GEP node\n");
 				node->removeConstantVal();
 				break;
