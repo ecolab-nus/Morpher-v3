@@ -1878,10 +1878,11 @@ int DFGPartPred::classifyParents() {
 					node->parentClassification[1]=parent;
 					continue;
 				}
-				if(node->getNameType().compare("GEPLEFTSHIFT")==0){
-					if(parent->getNode()!=NULL){
-						parentIns = parent->getNode();
-						if(BranchInst* BRI = dyn_cast<BranchInst>(parentIns)){
+					if(node->getNameType().compare("GEPLEFTSHIFT")==0 ||
+					   node->getNameType().compare("GEPSCALE")==0){
+						if(parent->getNode()!=NULL){
+							parentIns = parent->getNode();
+							if(BranchInst* BRI = dyn_cast<BranchInst>(parentIns)){
 							node->parentClassification[0]=parent;
 							continue;
 						}
@@ -2120,10 +2121,11 @@ int DFGPartPred::classifyParents() {
 				//						node->parentClassification[1]=parent;
 				//						continue;
 				//					}
-				if(parent->getNameType().compare("GEPLEFTSHIFT")==0){
-					assert(parent->getAncestors().size() == 1);
-					dfgNode* parpar = parent->getAncestors()[0];
-					if(OutLoopNodeMapReverse.find(parpar) != OutLoopNodeMapReverse.end()
+				if(parent->getNameType().compare("GEPLEFTSHIFT")==0 ||
+				   parent->getNameType().compare("GEPSCALE")==0){
+						assert(parent->getAncestors().size() == 1);
+						dfgNode* parpar = parent->getAncestors()[0];
+						if(OutLoopNodeMapReverse.find(parpar) != OutLoopNodeMapReverse.end()
 							&& OutLoopNodeMapReverse[parpar]){
 						parentIns = OutLoopNodeMapReverse[parpar];
 					}
@@ -2212,7 +2214,11 @@ int DFGPartPred::classifyParents() {
 			// guards this; the explicit hasOLOADAnc check below is a belt-and-suspenders guard.
 			bool hasOLOADAnc = false;
 			for (dfgNode* anc : node->getAncestors())
-				if (anc->getNode() == nullptr) { hasOLOADAnc = true; break; }
+				if (anc->getNode() == nullptr &&
+					anc->getNameType().compare("OutLoopLOAD") == 0) {
+					hasOLOADAnc = true;
+					break;
+				}
 			if(parent_count < 2 && !hasOLOADAnc && node->hasConstantVal()==false && (HyCUBEInsStrings[node->getFinalIns()].compare("MUL")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("ADD")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("SUB")==0)){
 				node->parentClassification.erase(1);node->parentClassification.erase(2);
 				node->parentClassification[3]=parent;
