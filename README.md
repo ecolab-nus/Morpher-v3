@@ -20,70 +20,105 @@ More information:
 ![ezgif com-gif-maker(2)](https://user-images.githubusercontent.com/12274945/198826823-5230947d-86eb-4493-a6fc-5f43d61ab2b4.gif)
 
 
-## Getting Started:
-You can build morpher on your Linux machine, or user docker on MAC/Linux.
+## Getting Started
 
-Note: Morpher requires LLVM 10.0.0 and g++ version cannot be higher than g++-v7. 
+Morpher is supported on Linux.
 
-### build with docker
- > ***for tutorial***
-* Download the [docker file](https://raw.githubusercontent.com/ecolab-nus/morpher/main/Dockerfile) into an empty folder.
-* Go to the folder and Build ``morpher`` image: ``$ docker build ./ -t morpher``. This takes around 15 minutes.
-* Initalize: ``$ docker run --name morpher_tutorial -it morpher``
-* Run ``cd /home/user/morpher`` and build all the submodules ``bash build_all.sh``. This takes a few minutes.
-* You should be able to run this command ``python -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add`` and see "Simulation test passed!!!". This takes a few minutes.
+### Requirements
 
-To start the container again
-* Start the container: ``$ docker start morpher_tutorial``
-* Get into the container: ``docker exec -it morpher_tutorial /bin/bash``
-<br/><br/>
-<br/><br/>
+- LLVM/Clang 10.0.0 (`clang`, `opt`, `llvm-link`, `llc`)
+- CMake and Make
+- Python 3
+- `gcc-multilib` and `g++-multilib` (for 32-bit build/link in instrumentation flow)
+- Graphviz (`dot`) for DFG PDF generation
 
-### build on your machine
-* Pull the code
-clone first:  `git clone --recurse-submodules  https://github.com/ecolab-nus/Morpher.git` \
-pull the latest changes of submodules.:  `git submodule update --init --remote`
+Example Ubuntu package install:
 
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential cmake git python3 python3-pip \
+  clang-10 llvm-10 llvm-10-dev llvm-10-tools \
+  gcc-multilib g++-multilib graphviz
+```
 
-* Install LLVM, clang, polly (for DFG Generator):
+If your system installs versioned LLVM binaries (for example `clang-10`), make sure
+the unversioned names used by Morpher (`clang`, `opt`, `llvm-link`, `llc`) are on `PATH`.
 
-Read https://llvm.org/docs/GettingStarted.html
-follow https://github.com/llvm/llvm-project
+### Clone
 
-    git clone https://github.com/llvm/llvm-project.git
-    cd llvm-project
-    git checkout llvmorg-10.0.0
-    mkdir build
-    cd build
-    cmake -DLLVM_ENABLE_PROJECTS='polly;clang' -G "Unix Makefiles" ../llvm
-    make -j4
-    sudo make install
+```bash
+git clone --recurse-submodules https://github.com/ecolab-nus/Morpher.git
+cd Morpher
+git submodule update --init --remote
+```
 
-* Build all the submodules:
-    `bash build_all.sh`
-* Test Environment Dependencies:\
-    Activate python3 virtual environment\
-    `pip install -r python_requirements.txt`\
-    `sudo apt-get install gcc-multilib g++-multilib`
+### Build
 
-## Compiling kernels:
+Install Python dependencies:
 
-1) Specify the target arch, dfg_type, mapping method, memory bank sizes,.. in config/<>.yaml file. (default_config file targets hycube 4x4 architecture)
-2) Run the script:  ``$python run_morpher.py <path to c source code in benchmark folder>  <target function> <configurations(default: config/default_config.yaml)>``. 
+```bash
+pip3 install -r python_requirements.txt
+```
 
-Examples: 
+Build all components:
 
-1. Compile and verify simple kernels on hycube 4x4:
+```bash
+bash build_all.sh
+```
 
-``$python -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add``
+### Run a single benchmark
 
-Please refer the following workflow for more examples.
+`run_morpher.py` usage:
 
-[![Actions Status](https://github.com/ecolab-nus/morpher/workflows/Run%20Examples/badge.svg)](https://github.com/ecolab-nus/morpher/actions)
+```bash
+python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runmode]
+```
 
-2. Compile and verify kernels from Microspeech Application:
+- `config_path` default: `config/default_config.yaml`
+- `runmode` choices: `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`
 
-[![Actions Status](https://github.com/ecolab-nus/morpher/workflows/Run%20Microspeech/badge.svg)](https://github.com/ecolab-nus/morpher/actions)
+Example:
+
+```bash
+python3 -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add
+```
+
+### Run all benchmarks
+
+Use the maintained all-benchmarks runner:
+
+```bash
+python3 scripts/run_all_benchmarks.py --jobs 8
+```
+
+Useful options:
+
+```bash
+# Show discovered benchmark list without running
+python3 scripts/run_all_benchmarks.py --dry-run
+
+# Run a subset
+python3 scripts/run_all_benchmarks.py --filter '^polybench/' --jobs 8
+python3 scripts/run_all_benchmarks.py --max-benches 10
+```
+
+`scripts/run_all_benchmarks.py` discovers benchmarks from:
+
+```text
+Morpher_DFG_Generator/benchmarks/<suite>/<kernel>/<kernel>.c
+```
+
+### Adding new benchmark suites
+
+To add new benchmarks that are automatically included in the all-benchmarks run:
+
+1. Create a new suite directory under `Morpher_DFG_Generator/benchmarks/`.
+2. Add kernels in the normalized layout:
+   `Morpher_DFG_Generator/benchmarks/<suite>/<kernel>/<kernel>.c`
+3. Use function names that match valid C identifiers.
+
+No runner script changes are required.
 
 
 
