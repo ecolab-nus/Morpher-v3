@@ -1,6 +1,7 @@
 /Debug/
 /Release/
 build/
+build/src/
 src/build/
 
 *.log
