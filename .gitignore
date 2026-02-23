@@ -1,0 +1,5 @@
+bench_compare_artifacts/
+scripts/__pycache__/compare_v2_v3_benchmarks.cpython-38.pyc
+scripts/__pycache__/run_v3_benchmarks.cpython-38.pyc
+scripts/compare_v2_v3_benchmarks.py
+scripts/run_v3_benchmarks.py
