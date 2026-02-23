@@ -24,5 +24,6 @@ int trmm() {
 }
 
 int main() {
-    return trmm();
+    trmm();
+    return 0;
 }

@@ -24,5 +24,6 @@ please_map_me();
 }
 
 int main() {
-    return mac();
+    mac();
+    return 0;
 }

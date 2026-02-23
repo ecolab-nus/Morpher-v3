@@ -47,5 +47,6 @@ int cholesky_unroll()
 }
 
 int main() {
-    return cholesky_unroll();
+    cholesky_unroll();
+    return 0;
 }

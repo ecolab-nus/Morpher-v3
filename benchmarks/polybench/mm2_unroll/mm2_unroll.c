@@ -39,5 +39,6 @@ int mm2_unroll() {
 }
 
 int main() {
-    return mm2_unroll();
+    mm2_unroll();
+    return 0;
 }

@@ -28,5 +28,6 @@ int gemver() {
 }
 
 int main() {
-    return gemver();
+    gemver();
+    return 0;
 }

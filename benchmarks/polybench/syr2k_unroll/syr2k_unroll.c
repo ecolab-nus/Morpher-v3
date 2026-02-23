@@ -27,5 +27,6 @@ int syr2k_unroll() {
 }
 
 int main() {
-    return syr2k_unroll();
+    syr2k_unroll();
+    return 0;
 }

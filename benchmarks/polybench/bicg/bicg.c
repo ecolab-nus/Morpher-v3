@@ -13,15 +13,24 @@ int *c;
 int bicg() {
     int i;
     int j;
+    int m = *N;
     int n = *N;
 
     int sum = 0;
-    for (j = 1; j < n-1; j++) {
-               #ifdef CGRA_COMPILER
-           please_map_me();
-           #endif
-        s[j] = s[j] + r[i] * A[i][j];
-	  q[i] = q[i] + A[i][j] * p[j];
+    for (i = 0; i < m; i++) {
+        s[i] = 0;
+    }
+
+    for (i = 0; i < n; i++) {
+        int qi = 0;
+        for (j = 0; j < m; j++) {
+                   #ifdef CGRA_COMPILER
+               please_map_me();
+               #endif
+            s[j] = s[j] + r[i] * A[i][j];
+	      qi = qi + A[i][j] * p[j];
+        }
+        q[i] = qi;
     }
 
 

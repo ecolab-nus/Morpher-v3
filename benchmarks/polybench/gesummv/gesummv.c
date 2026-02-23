@@ -26,5 +26,6 @@ int gesummv() {
 }
 
 int main() {
-    return gesummv();
+    gesummv();
+    return 0;
 }

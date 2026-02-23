@@ -46,5 +46,6 @@ int cholesky()
 }
 
 int main() {
-    return cholesky();
+    cholesky();
+    return 0;
 }

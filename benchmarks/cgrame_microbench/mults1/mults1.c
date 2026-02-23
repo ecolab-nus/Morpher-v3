@@ -12,7 +12,7 @@ int mults1() {
 
     int sum = 0;
 
-    for (i = 1; i < n-1; i++) {
+    for (i = 0; i < n-3; i++) {
         //DFGLoop: loop
 #ifdef CGRA_COMPILER
 please_map_me();
@@ -24,5 +24,6 @@ please_map_me();
 }
 
 int main() {
-    return mults1();
+    mults1();
+    return 0;
 }

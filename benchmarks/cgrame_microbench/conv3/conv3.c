@@ -30,5 +30,6 @@ please_map_me();
 }
 
 int main() {
-    return conv3();
+    conv3();
+    return 0;
 }

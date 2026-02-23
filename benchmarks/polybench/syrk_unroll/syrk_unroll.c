@@ -24,5 +24,6 @@ int syrk_unroll() {
 }
 
 int main() {
-    return syrk_unroll();
+    syrk_unroll();
+    return 0;
 }

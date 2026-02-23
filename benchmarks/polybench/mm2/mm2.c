@@ -38,5 +38,6 @@ int mm2() {
 }
 
 int main() {
-    return mm2();
+    mm2();
+    return 0;
 }

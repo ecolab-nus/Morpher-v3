@@ -41,5 +41,6 @@ int gemm_unroll() {
 }
 
 int main() {
-    return gemm_unroll();
+    gemm_unroll();
+    return 0;
 }

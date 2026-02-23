@@ -37,5 +37,6 @@ int atax_unroll() {
 }
 
 int main() {
-    return atax_unroll();
+    atax_unroll();
+    return 0;
 }

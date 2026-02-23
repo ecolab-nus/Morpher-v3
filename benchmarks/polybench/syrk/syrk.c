@@ -22,5 +22,6 @@ int syrk() {
 }
 
 int main() {
-    return syrk();
+    syrk();
+    return 0;
 }

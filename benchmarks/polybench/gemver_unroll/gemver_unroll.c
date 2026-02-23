@@ -30,5 +30,6 @@ int gemver_unroll() {
 }
 
 int main() {
-    return gemver_unroll();
+    gemver_unroll();
+    return 0;
 }

@@ -43,5 +43,6 @@ int doitgen_unroll() {
 }
 
 int main() {
-    return doitgen_unroll();
+    doitgen_unroll();
+    return 0;
 }

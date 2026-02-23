@@ -27,5 +27,6 @@ int gemm_flat() {
 }
 
 int main() {
-    return gemm_flat();
+    gemm_flat();
+    return 0;
 }

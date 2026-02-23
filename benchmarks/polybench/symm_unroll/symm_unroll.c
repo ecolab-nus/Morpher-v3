@@ -27,5 +27,6 @@ int symm_unroll() {
 }
 
 int main() {
-    return symm_unroll();
+    symm_unroll();
+    return 0;
 }

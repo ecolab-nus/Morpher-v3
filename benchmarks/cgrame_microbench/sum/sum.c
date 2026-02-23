@@ -21,5 +21,6 @@ please_map_me();
 }
 
 int main() {
-    return sum();
+    sum();
+    return 0;
 }

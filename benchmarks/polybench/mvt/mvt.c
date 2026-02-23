@@ -24,5 +24,6 @@ int mvt() {
 }
 
 int main() {
-    return mvt();
+    mvt();
+    return 0;
 }

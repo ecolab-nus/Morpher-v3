@@ -24,5 +24,6 @@ int symm() {
 }
 
 int main() {
-    return symm();
+    symm();
+    return 0;
 }

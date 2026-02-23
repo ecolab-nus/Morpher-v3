@@ -36,5 +36,6 @@ int atax() {
 }
 
 int main() {
-    return atax();
+    atax();
+    return 0;
 }

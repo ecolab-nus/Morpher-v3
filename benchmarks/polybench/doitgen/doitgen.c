@@ -41,5 +41,6 @@ int doitgen() {
 }
 
 int main() {
-    return doitgen();
+    doitgen();
+    return 0;
 }

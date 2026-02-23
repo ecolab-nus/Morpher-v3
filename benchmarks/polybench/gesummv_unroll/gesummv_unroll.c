@@ -10,11 +10,11 @@ int *x;
 int *y;
 int **B;
 int gesummv_unroll() {
-    int i,j;
+    int i = 1, j;
     int n = *N;
 
     int sum = 0;
-    for (j = 1; j < n-1; j++) {
+    for (j = 1; j + 1 < n-1; j += 2) {
                #ifdef CGRA_COMPILER
            please_map_me();
            #endif
@@ -23,6 +23,11 @@ int gesummv_unroll() {
 
        tmp[i] = A[i][j+1] * x[j+1] + tmp[i];
 	  y[i] = B[i][j+1] * x[j+1] + y[i];
+    }
+
+    for (; j < n - 1; j++) {
+        tmp[i] = A[i][j] * x[j] + tmp[i];
+	  y[i] = B[i][j] * x[j] + y[i];
     }
 
     return sum;

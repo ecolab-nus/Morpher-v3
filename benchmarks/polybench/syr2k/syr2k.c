@@ -8,7 +8,7 @@ int **A;
 int **B;
 int **C;
 int syr2k() {
-    int i, j, k, alpha = 2;
+    int i = 1, j = 1, k, alpha = 2;
     int n = *N;
 
     int sum = 0;

@@ -26,5 +26,6 @@ please_map_me();
 }
 
 int main() {
-    return mults2();
+    mults2();
+    return 0;
 }
