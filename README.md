@@ -92,6 +92,70 @@ Please refer the following workflow for more examples.
 
 ## Miscellaneous
 
+### Repository Hygiene
+
+Use the cleanup script to remove generated benchmark artifacts while preserving tracked inputs/policies:
+
+```
+bash scripts/clean_generated.sh
+```
+
+Preview mode:
+
+```
+bash scripts/clean_generated.sh --dry-run
+```
+
+Run the tracking guard locally (same check used in CI):
+
+```
+bash scripts/check_no_generated_tracked.sh
+```
+
+Current policy:
+- `Morpher_DFG_Generator/benchmarks`: keep only `*.c` tracked.
+- `Morpher_CGRA_Mapper/benchmarks`: generated-only, keep only `benchmarks/.gitkeep` tracked.
+- `hycube_simulator/benchmarks`: generated-only, keep only `benchmarks/.gitkeep` tracked.
+- Build outputs under `build/` and `src/build/` are ignored for mapper/simulator.
+
+### Submodule Commit Flow
+
+When changes touch submodules, commit in this order:
+
+1. Commit inside each changed submodule:
+
+```
+git -C Morpher_DFG_Generator status
+git -C Morpher_DFG_Generator add -A
+git -C Morpher_DFG_Generator commit -m "..."
+```
+
+```
+git -C Morpher_CGRA_Mapper status
+git -C Morpher_CGRA_Mapper add -A
+git -C Morpher_CGRA_Mapper commit -m "..."
+```
+
+```
+git -C hycube_simulator status
+git -C hycube_simulator add -A
+git -C hycube_simulator commit -m "..."
+```
+
+2. Commit top-level submodule pointer updates:
+
+```
+git status
+git add Morpher_DFG_Generator Morpher_CGRA_Mapper hycube_simulator
+git commit -m "Update submodule pointers"
+```
+
+3. Verify pointers before push:
+
+```
+git submodule status
+```
+
 ### Using the light version of Morpher
 
 To use the light version of morpher,  make sure `dfg_type: 'PartPredLight'` and `morpher_light: 'yes'` are set in the `config/<>.yaml` file. The following shows the template settings of the config file:

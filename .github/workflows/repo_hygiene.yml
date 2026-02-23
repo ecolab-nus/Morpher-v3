@@ -1,0 +1,17 @@
+name: Repo Hygiene
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  generated-artifact-guard:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Enforce generated-artifact tracking policy
+        run: bash scripts/check_no_generated_tracked.sh
