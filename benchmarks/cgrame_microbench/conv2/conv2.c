@@ -1,13 +1,11 @@
 #include <stdio.h>
 
 volatile int * N;
-//int *a;
 int a[20] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 int b[20];// = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
-//int *b;
 int *m;
 
-int main() {
+int conv2() {
     int i, j;
     int n = 10;//*N;
 
@@ -21,5 +19,10 @@ please_map_me();
         b[i] = a[i] * 10 + a[i + 1] * 20; //+ a[i+ 2] * 3;
     }
 
+    return 0;
+}
+
+int main() {
+    conv2();
     return 0;
 }

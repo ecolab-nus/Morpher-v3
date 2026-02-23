@@ -1,5 +1,5 @@
 /**
- * trmm.c: This file is part of the PolyBench 3.0 test suite.
+ * kernel.c: This file is part of the PolyBench 3.0 test suite.
  *
  *
  * Contact: Louis-Noel Pouchet <pouchet@cse.ohio-state.edu>

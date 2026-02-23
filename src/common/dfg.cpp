@@ -7,9 +7,11 @@
 #include <functional>
 #include <bitset>
 #include <set>
+#include <unordered_set>
 #include <morpherdfggen/common/astar.h>
 #include <morpherdfggen/arch/CGRA.h>
 #include <morpherdfggen/util/tinyxml2.h>
+#include <morpherdfggen/common/DFGError.h>
 
 #define LV_NAME "dfg_gen" //"sfp"
 #define DEBUG_TYPE LV_NAME
@@ -10284,30 +10286,77 @@ void DFG::GEPBaseAddrCheck(Function &F)
 // Trace through GEPs and pointer loads to find the root GlobalVariable name.
 // Handles patterns like volatile int **A where intermediate pointer loads
 // produce unnamed temporaries that break simple getName() lookups.
-static std::string traceBaseArrayName(Value *V) {
-	if (!V) return "";
-	if (isa<GlobalVariable>(V)) return V->getName().str();
-	if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V))
-		return traceBaseArrayName(GEP->getPointerOperand());
-	if (LoadInst *LI = dyn_cast<LoadInst>(V))
-		return traceBaseArrayName(LI->getPointerOperand());
+static std::string traceBaseArrayNameImpl(Value *V, std::unordered_set<const Value *> &visited, unsigned depth) {
+	if (!V)
+		return "";
+	if (depth > 64)
+		return "";
+	if (!visited.insert(V).second)
+		return "";
+
+	std::string result;
+	if (isa<GlobalVariable>(V))
+	{
+		result = V->getName().str();
+	}
+	else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V))
+	{
+		result = traceBaseArrayNameImpl(GEP->getPointerOperand(), visited, depth + 1);
+	}
+	else if (LoadInst *LI = dyn_cast<LoadInst>(V))
+	{
+		result = traceBaseArrayNameImpl(LI->getPointerOperand(), visited, depth + 1);
+	}
 	// For loop-carried pointer PHIs (e.g. B_elem created by FlattenDoublePointers),
 	// follow the first incoming value (from outside the loop / preheader) to find
 	// the original global array name (e.g. B_elem -> B_elem_init -> B).
-	if (PHINode *PHI = dyn_cast<PHINode>(V))
-		return traceBaseArrayName(PHI->getIncomingValue(0));
-	return V->getName().str();
+	else if (PHINode *PHI = dyn_cast<PHINode>(V))
+	{
+		if (PHI->getNumIncomingValues() > 0)
+			result = traceBaseArrayNameImpl(PHI->getIncomingValue(0), visited, depth + 1);
+	}
+	else
+	{
+		result = V->getName().str();
+	}
+
+	visited.erase(V);
+	return result;
+}
+
+static std::string traceBaseArrayName(Value *V) {
+	std::unordered_set<const Value *> visited;
+	return traceBaseArrayNameImpl(V, visited, 0);
 }
 
 // Traverse a GEP chain to find the root GlobalVariable (e.g. @A from
 // %arrayidx7 = gep [8 x i32]* %arrayidx4, 0, %j
 //   where %arrayidx4 = gep @A, 0, %i).
-static Value* getGlobalBase(Value *V) {
-	if (!V) return nullptr;
-	if (isa<GlobalVariable>(V)) return V;
+static Value* getGlobalBaseImpl(Value *V, std::unordered_set<const Value *> &visited, unsigned depth) {
+	if (!V)
+		return nullptr;
+	if (depth > 64)
+		return nullptr;
+	if (!visited.insert(V).second)
+		return nullptr;
+	if (isa<GlobalVariable>(V))
+	{
+		visited.erase(V);
+		return V;
+	}
 	if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V))
-		return getGlobalBase(GEP->getPointerOperand());
+	{
+		Value *base = getGlobalBaseImpl(GEP->getPointerOperand(), visited, depth + 1);
+		visited.erase(V);
+		return base;
+	}
+	visited.erase(V);
 	return V;
+}
+
+static Value* getGlobalBase(Value *V) {
+	std::unordered_set<const Value *> visited;
+	return getGlobalBaseImpl(V, visited, 0);
 }
 
 void checkGEPDerivatives(Instruction *root, GetElementPtrInst *GEP, std::unordered_map<Value *, GetElementPtrInst *> &deriv)
@@ -10528,6 +10577,19 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 	LLVM_DEBUG(dbgs() << "OutLoopNodeMapReverse size = " << OutLoopNodeMapReverse.size() << "\n");
 	LLVM_DEBUG(dbgs() << "OutLoopNodeMap size = " << OutLoopNodeMap.size() << "\n");
 
+	auto ensureResolvedBasePtr = [&](const std::string &basePtrName, Value *ptr) {
+		if (!basePtrName.empty())
+			return;
+		std::string ptrName = "<unnamed>";
+		if (ptr && !ptr->getName().empty())
+			ptrName = ptr->getName().str();
+		throw DFGGenerationError(
+			"UnsupportedArrayDimensions",
+			"could not resolve base pointer for '" + ptrName + "' in function '" +
+			F.getName().str() +
+			"'; this pointer/array pattern is not supported (Morpher currently supports only up to 2D arrays)");
+	};
+
 	for (dfgNode *node : NodeList)
 	{
 
@@ -10590,15 +10652,16 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 				}
 				else{
 					std::string base_ptr_name;
-					if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
-						// Use traceBaseArrayName so pointer-chain patterns (e.g., volatile int **A)
-						// correctly resolve to the global variable name instead of an unnamed temp.
-						base_ptr_name = traceBaseArrayName(mem_ptrs[pointer]->getPointerOperand());
-					} else {
-						// Pointer load from global (e.g., load i32** from @A in volatile int **A).
-						base_ptr_name = traceBaseArrayName(pointer);
-					}
-					node->setArrBasePtr(base_ptr_name);
+						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+							// Use traceBaseArrayName so pointer-chain patterns (e.g., volatile int **A)
+							// correctly resolve to the global variable name instead of an unnamed temp.
+							base_ptr_name = traceBaseArrayName(mem_ptrs[pointer]->getPointerOperand());
+						} else {
+							// Pointer load from global (e.g., load i32** from @A in volatile int **A).
+							base_ptr_name = traceBaseArrayName(pointer);
+						}
+						ensureResolvedBasePtr(base_ptr_name, pointer);
+						node->setArrBasePtr(base_ptr_name);
 
 					if (sizeArrMap.find(base_ptr_name) != sizeArrMap.end())
 					{
@@ -10626,12 +10689,13 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 				}
 				else{
 					std::string base_ptr_name;
-					if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
-						base_ptr_name = traceBaseArrayName(mem_ptrs[pointer]->getPointerOperand());
-					} else {
-						base_ptr_name = traceBaseArrayName(pointer);
-					}
-					node->setArrBasePtr(base_ptr_name);
+						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+							base_ptr_name = traceBaseArrayName(mem_ptrs[pointer]->getPointerOperand());
+						} else {
+							base_ptr_name = traceBaseArrayName(pointer);
+						}
+						ensureResolvedBasePtr(base_ptr_name, pointer);
+						node->setArrBasePtr(base_ptr_name);
 
 					if (sizeArrMap.find(base_ptr_name) != sizeArrMap.end())
 					{
@@ -10661,10 +10725,11 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 		else if (node->getNode() && isa<GetElementPtrInst>(node->getNode()))
 		{
 			GetElementPtrInst *GEP = cast<GetElementPtrInst>(node->getNode());
-			// Use traceBaseArrayName so pointer chains (e.g., volatile int **A) resolve
-			// to the global name rather than an unnamed intermediate temporary.
-			std::string base_ptr_name = traceBaseArrayName(GEP->getPointerOperand());
-			node->setArrBasePtr(base_ptr_name);
+				// Use traceBaseArrayName so pointer chains (e.g., volatile int **A) resolve
+				// to the global name rather than an unnamed intermediate temporary.
+				std::string base_ptr_name = traceBaseArrayName(GEP->getPointerOperand());
+				ensureResolvedBasePtr(base_ptr_name, GEP->getPointerOperand());
+				node->setArrBasePtr(base_ptr_name);
 
 			if (sizeArrMap.find(base_ptr_name) != sizeArrMap.end())
 			{

@@ -5,7 +5,7 @@ int a[20] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 int b[20];
 int *m;
 
-int main() {
+int conv3() {
     int i, j;
     int n = 10;//*N;
 
@@ -27,4 +27,8 @@ please_map_me();
     }
 
     return 0;
+}
+
+int main() {
+    return conv3();
 }

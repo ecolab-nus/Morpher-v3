@@ -112,6 +112,67 @@ static std::set<BasicBlock *> LoopBB;
 static std::map<const BasicBlock *, std::vector<const BasicBlock *>> BBSuccBasicBlocks;
 static std::map<Loop *, std::vector<BasicBlock *>> loopsExclusieBasicBlockMap;
 
+// Estimate user-visible array dimensions from a GEP's indices.
+// For globals/allocas LLVM commonly emits a leading zero index, which is
+// an address computation artifact (not a logical array dimension).
+static unsigned getEffectiveArrayDims(const GetElementPtrInst *GEP)
+{
+	unsigned dims = GEP->getNumIndices();
+	if (dims == 0)
+	{
+		return 0;
+	}
+	if (const ConstantInt *CI = dyn_cast<ConstantInt>(GEP->idx_begin()->get()))
+	{
+		if (CI->isZero())
+		{
+			dims--;
+		}
+	}
+	return dims;
+}
+
+static unsigned getPointerDepth(Type *T)
+{
+	unsigned depth = 0;
+	while (PointerType *PT = dyn_cast<PointerType>(T))
+	{
+		depth++;
+		T = PT->getElementType();
+	}
+	return depth;
+}
+
+static void ValidateSupportedArrayDimensions(Function &F)
+{
+	for (BasicBlock &BB : F)
+	{
+		for (Instruction &I : BB)
+		{
+			GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I);
+			if (!GEP)
+				continue;
+
+			unsigned effectiveArrayDims = getEffectiveArrayDims(GEP);
+			unsigned pointerDepth = getPointerDepth(GEP->getPointerOperandType());
+			if (effectiveArrayDims <= 2 && pointerDepth <= 2)
+				continue;
+
+			std::string displayName = GEP->getPointerOperand()->getName().str();
+			if (displayName.empty())
+				displayName = GEP->getName().str();
+			if (displayName.empty())
+				displayName = "<unnamed>";
+
+			std::string details = "pointer '" + displayName + "' in function '" + F.getName().str() +
+				"' is not supported (effective_dims=" + std::to_string(effectiveArrayDims) +
+				", pointer_depth=" + std::to_string(pointerDepth) +
+				"); Morpher currently supports only up to 2D arrays";
+			DFG_CHECK(false, "UnsupportedArrayDimensions", details);
+		}
+	}
+}
+
 typedef struct
 {
 	bool isInnerLoop = false;
@@ -1056,10 +1117,10 @@ void printFileOutMappingUnitVars(Function &F,
 						LLVM_DEBUG(dbgs() << "NewPtrName = " << ptrName << "\n");
 					}
 				}
-				while (ptrName.empty())
-				{
-					pointerOp = cast<Instruction>(pointerOp->getOperand(0));
-					LLVM_DEBUG(pointerOp->dump());
+					while (ptrName.empty())
+					{
+						pointerOp = cast<Instruction>(pointerOp->getOperand(0));
+						LLVM_DEBUG(pointerOp->dump());
 					if (GetElementPtrInst *OrignalGEP = dyn_cast<GetElementPtrInst>(pointerOp))
 					{
 						ptrName = OrignalGEP->getPointerOperand()->getName().str();
@@ -1069,11 +1130,30 @@ void printFileOutMappingUnitVars(Function &F,
 					{ //2019 work
 						ptrName = CLI->getName().str();
 						LLVM_DEBUG(dbgs() << "NewPtrName = " << ptrName << "\n");
+						}
 					}
-				}
 
-				GEPTypeMap[ptrName] = GEP->getSourceElementType();
-				GEPstoreMUMap[ptrName].insert(BB2MUnitMap[startBB]);
+					unsigned effectiveArrayDims = getEffectiveArrayDims(GEP);
+					if (effectiveArrayDims > 2)
+					{
+						std::string displayName = ptrName.empty() ? std::string("<unnamed>") : ptrName;
+						DFG_CHECK(false, "UnsupportedArrayDimensions",
+							"pointer '" + displayName + "' uses " + std::to_string(effectiveArrayDims) +
+							"D indexing in function '" + F.getName().str() +
+							"'; Morpher currently supports only up to 2D arrays");
+					}
+					unsigned pointerDepth = getPointerDepth(GEP->getPointerOperandType());
+					if (pointerDepth > 2)
+					{
+						std::string displayName = ptrName.empty() ? std::string("<unnamed>") : ptrName;
+						DFG_CHECK(false, "UnsupportedArrayDimensions",
+							"pointer '" + displayName + "' has pointer depth " + std::to_string(pointerDepth) +
+							" in function '" + F.getName().str() +
+							"'; Morpher currently supports only up to 2D arrays");
+					}
+
+					GEPTypeMap[ptrName] = GEP->getSourceElementType();
+					GEPstoreMUMap[ptrName].insert(BB2MUnitMap[startBB]);
 				for (User *U : GEP->users())
 				{
 					if (StoreInst *STI = dyn_cast<StoreInst>(U))
@@ -2562,12 +2642,13 @@ struct dfggenPass : public FunctionPass
 		}
 
 
-		ReplaceCMPs(F);
-		RemoveSelectLeafs(F);
-		InsertORtoSingularConditionalBB(F);
-		ParseSizeAttr(F, &sizeArrMap);
+			ReplaceCMPs(F);
+			RemoveSelectLeafs(F);
+			InsertORtoSingularConditionalBB(F);
+			ParseSizeAttr(F, &sizeArrMap);
+			ValidateSupportedArrayDimensions(F);
 
-		std::string Filename = ("cfg." + F.getName() + ".dot").str();
+			std::string Filename = ("cfg." + F.getName() + ".dot").str();
 		//errs() << "Writing '" << Filename << "'...";
 
 		raw_fd_ostream File(Filename, EC, sys::fs::F_Text);

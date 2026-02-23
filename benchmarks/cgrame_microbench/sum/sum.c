@@ -4,7 +4,7 @@ volatile int a[20] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 
 volatile int * n;
 // Simple accumulation
-int main() {
+int sum() {
 
     int N = 20;//*n;
     int sum = 0;
@@ -18,4 +18,8 @@ please_map_me();
     printf("sum = %d\n", sum);
 
     return sum;
+}
+
+int main() {
+    return sum();
 }
