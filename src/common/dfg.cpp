@@ -14,6 +14,9 @@
 #define LV_NAME "dfg_gen" //"sfp"
 #define DEBUG_TYPE LV_NAME
 
+static bool isPositivePowerOfTwo(int value);
+static void configureGEPScaleNode(dfgNode *node, int stride);
+
 dfgNode *DFG::getEntryNode()
 {
 	if (NodeList.size() > 0)
@@ -6556,14 +6559,18 @@ int DFG::nameNodes()
 				node->setFinalIns(OR);
 				node->setConstantVal(0);
 			}
-			else if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
-			{
-				node->setFinalIns(LS);
-			}
-			else if (node->getNameType().compare("GEPADD") == 0)
-			{
-				node->setFinalIns(ADD);
-			}
+				else if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
+				{
+					node->setFinalIns(LS);
+				}
+				else if (node->getNameType().compare("GEPSCALE") == 0)
+				{
+					node->setFinalIns(MUL);
+				}
+				else if (node->getNameType().compare("GEPADD") == 0)
+				{
+					node->setFinalIns(ADD);
+				}
 			else if (node->getNameType().compare("MASKAND") == 0)
 			{
 				node->setFinalIns(AND);
@@ -8196,11 +8203,12 @@ int DFG::classifyParents()
 					node->parentClassification[1] = parent;
 					continue;
 				}
-				if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
-				{
-					if (parent->getNode() != NULL)
+					if (node->getNameType().compare("GEPLEFTSHIFT") == 0
+						|| node->getNameType().compare("GEPSCALE") == 0)
 					{
-						parentIns = parent->getNode();
+						if (parent->getNode() != NULL)
+						{
+							parentIns = parent->getNode();
 						if (BranchInst *BRI = dyn_cast<BranchInst>(parentIns))
 						{
 							node->parentClassification[0] = parent;
@@ -8505,11 +8513,12 @@ int DFG::classifyParents()
 				//						node->parentClassification[1]=parent;
 				//						continue;
 				//					}
-				if (parent->getNameType().compare("GEPLEFTSHIFT") == 0)
-				{
-					assert(parent->getAncestors().size() < 3);
-					node->parentClassification[1] = parent;
-					continue;
+					if (parent->getNameType().compare("GEPLEFTSHIFT") == 0
+						|| parent->getNameType().compare("GEPSCALE") == 0)
+					{
+						assert(parent->getAncestors().size() < 3);
+						node->parentClassification[1] = parent;
+						continue;
 				}
 				if (parent->getNameType().compare("MASKAND") == 0)
 				{
@@ -8804,14 +8813,13 @@ int DFG::insertshiftGEPs()
 						tempADD->addAncestorNode(parent);
 					}
 
-					if (elementSize > 1)
-					{
-						dfgNode *temp = new dfgNode(this);
-						temp->setNameType("GEPLEFTSHIFT");
-						temp->setIdx(NodeList.size());
-						NodeList.push_back(temp);
-						temp->setConstantVal(Log2_32(elementSize));
-						temp->BB = node->BB;
+						if (elementSize > 1)
+						{
+							dfgNode *temp = new dfgNode(this);
+							temp->setIdx(NodeList.size());
+							NodeList.push_back(temp);
+							configureGEPScaleNode(temp, elementSize);
+							temp->BB = node->BB;
 
 						tempADD->addChildNode(temp);
 						temp->addAncestorNode(tempADD);
@@ -8823,14 +8831,13 @@ int DFG::insertshiftGEPs()
 				else
 				{
 					assert(non_control_parents.size() == 1);
-					if (elementSize > 1)
-					{
-						dfgNode *temp = new dfgNode(this);
-						temp->setNameType("GEPLEFTSHIFT");
-						temp->setIdx(NodeList.size());
-						NodeList.push_back(temp);
-						temp->setConstantVal(Log2_32(elementSize));
-						temp->BB = node->BB;
+						if (elementSize > 1)
+						{
+							dfgNode *temp = new dfgNode(this);
+							temp->setIdx(NodeList.size());
+							NodeList.push_back(temp);
+							configureGEPScaleNode(temp, elementSize);
+							temp->BB = node->BB;
 
 						for (dfgNode *parent : node->getAncestors())
 						{
@@ -10160,75 +10167,93 @@ void populateStructOffset(StructType *ST, std::unordered_map<int, int> &structOf
 	}
 }
 
-int DFG::CalculateGEPBaseAddr(GetElementPtrInst *GEP)
+static bool isPositivePowerOfTwo(int value)
 {
-	// dfgNode* gep_node = findNode(GEP); assert(gep_node);
-	int base_addr = 0;
-	const DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
+	return value > 0 && ((value & (value - 1)) == 0);
+}
 
-	int total_size = -1;
-
-	PointerType *PT = cast<PointerType>(GEP->getPointerOperand()->getType());
-	if (StructType *ST = dyn_cast<StructType>(PT->getElementType()))
+static void configureGEPScaleNode(dfgNode *node, int stride)
+{
+	assert(node);
+	assert(stride > 0);
+	if (isPositivePowerOfTwo(stride))
 	{
-		LLVM_DEBUG(dbgs() << "\t");
-		LLVM_DEBUG(ST->dump());
-		total_size = DL.getTypeAllocSize(ST);
-		// LLVM_DEBUG(dbgs() << "\t\t sample element 2 = " ; ST->getElementType(2)->dump();
-	}
-	else if (ArrayType *AT = dyn_cast<ArrayType>(PT->getElementType()))
-	{
-		LLVM_DEBUG(dbgs() << "\t");
-		LLVM_DEBUG(AT->dump());
-		total_size = DL.getTypeAllocSize(AT);
+		node->setNameType("GEPLEFTSHIFT");
+		node->setConstantVal(Log2_32(stride));
 	}
 	else
 	{
-		//no further offset calculation is required.
-		return base_addr;
+		node->setNameType("GEPSCALE");
+		node->setConstantVal(stride);
 	}
+}
 
+int DFG::CalculateGEPBaseAddr(GetElementPtrInst *GEP)
+{
+	// dfgNode* gep_node = findNode(GEP); assert(gep_node);
+	const DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
 	int offset = 0;
-
-	if (ConstantInt *cv_main_offset = dyn_cast<ConstantInt>(GEP->getOperand(1)))
+	Type *currType = GEP->getSourceElementType();
+	for (unsigned i = 1; i < GEP->getNumOperands(); i++)
 	{
-		int cv_main_offest_int = cv_main_offset->getSExtValue();
-		offset = cv_main_offest_int * total_size;
-		Type *currType = GEP->getSourceElementType();
+		LLVM_DEBUG(dbgs() << "currType = ");
+		LLVM_DEBUG(currType->dump());
+		Value *idxVal = GEP->getOperand(i);
+		ConstantInt *CV = dyn_cast<ConstantInt>(idxVal);
 
-		if (GEP->getNumOperands() > 1)
+		// Operand[1] indexes the source element type directly.
+		if (i == 1)
 		{
-			for (int i = 2; i < GEP->getNumOperands(); i++)
+			int stride = (int)DL.getTypeAllocSize(currType);
+			if (CV)
 			{
-				LLVM_DEBUG(dbgs() << "currType = ");
-				LLVM_DEBUG(currType->dump());
-				if (ConstantInt *CV = dyn_cast<ConstantInt>(GEP->getOperand(i)))
-				{
-					int cv_int = CV->getSExtValue();
-					LLVM_DEBUG(dbgs() << "\t offset_idx" << i << "=" << cv_int << "\n");
-
-					if (StructType *ST = dyn_cast<StructType>(currType))
-					{
-						LLVM_DEBUG(dbgs() << "ST Type!.\n");
-						std::unordered_map<int, int> structOffset;
-						populateStructOffset(ST, structOffset, DL);
-						offset += structOffset[cv_int];
-						currType = ST->getElementType(cv_int);
-					}
-					else if (ArrayType *AT = dyn_cast<ArrayType>(currType))
-					{
-						LLVM_DEBUG(dbgs() << "AT Type!.\n");
-						int element_size = DL.getTypeAllocSize(AT->getElementType());
-						offset += cv_int * element_size;
-						currType = AT->getElementType();
-					}
-					else
-					{
-						LLVM_DEBUG(dbgs() << "scalar Type.\n");
-						assert(i == GEP->getNumOperands() - 1);
-					}
-				}
+				int cv_int = CV->getSExtValue();
+				offset += cv_int * stride;
+				LLVM_DEBUG(dbgs() << "\t offset_idx" << i << "=" << cv_int
+								  << " stride=" << stride << "\n");
 			}
+			continue;
+		}
+
+		if (StructType *ST = dyn_cast<StructType>(currType))
+		{
+			// LLVM requires struct indices to be constants. If not, skip safely.
+			if (!CV)
+			{
+				LLVM_DEBUG(dbgs() << "Non-constant struct index; skipping constant offset contribution\n");
+				continue;
+			}
+
+			int cv_int = CV->getSExtValue();
+			LLVM_DEBUG(dbgs() << "\t struct offset_idx" << i << "=" << cv_int << "\n");
+			std::unordered_map<int, int> structOffset;
+			populateStructOffset(ST, structOffset, DL);
+			auto offIt = structOffset.find(cv_int);
+			if (offIt != structOffset.end())
+			{
+				offset += offIt->second;
+				currType = ST->getElementType(cv_int);
+			}
+			continue;
+		}
+
+		int stride = 0;
+		if (ArrayType *AT = dyn_cast<ArrayType>(currType))
+		{
+			stride = (int)DL.getTypeAllocSize(AT->getElementType());
+			currType = AT->getElementType();
+		}
+		else
+		{
+			stride = (int)DL.getTypeAllocSize(currType);
+		}
+
+		if (CV)
+		{
+			int cv_int = CV->getSExtValue();
+			offset += cv_int * stride;
+			LLVM_DEBUG(dbgs() << "\t offset_idx" << i << "=" << cv_int
+							  << " stride=" << stride << "\n");
 		}
 	}
 
@@ -11213,8 +11238,8 @@ int DFG::insertshiftGEPsCorrect(){
 					 * represent outer-loop values. Their trace entry is precomputed
 					 * by the instrumentation as  spm_base + idx * outer_stride, so
 					 * they already carry the correct byte contribution.
-					 * Adding a GEPLEFTSHIFT on top would over-scale them.
-					 * Note: GEPLEFTSHIFT nodes also have getNode()==NULL, so we
+					 * Adding a scale node on top would over-scale them.
+					 * Note: GEPLEFTSHIFT/GEPSCALE nodes also have getNode()==NULL, so we
 					 * must check nameType to distinguish them from real OLOADs. */
 					if (anc->getNode() == nullptr &&
 					    anc->getNameType() == "OutLoopLOAD") {
@@ -11234,12 +11259,14 @@ int DFG::insertshiftGEPsCorrect(){
 
 					if (stride > 1) {
 						dfgNode *temp = new dfgNode(this);
-						temp->setNameType("GEPLEFTSHIFT");
 						temp->setIdx(NodeList.size() + newNodes.size());
 						newNodes.insert(temp);
-						temp->setConstantVal(Log2_32(stride));
+						configureGEPScaleNode(temp, stride);
 						temp->BB = node->BB;
-						LLVM_DEBUG(dbgs() << "adding LS node (shift=" << Log2_32(stride) << ")...\n");
+						if (isPositivePowerOfTwo(stride))
+							LLVM_DEBUG(dbgs() << "adding LS node (shift=" << Log2_32(stride) << ")...\n");
+						else
+							LLVM_DEBUG(dbgs() << "adding MUL scale node (const=" << stride << ")...\n");
 
 						anc->addChildNode(temp);
 						temp->addAncestorNode(anc);
@@ -11287,7 +11314,7 @@ void DFG::clearGEPbaseAddrForOLOADnodes() {
 			if (anc->getNode() == nullptr &&
 			    anc->getNameType() == "OutLoopLOAD") {
 				/* OLOAD ancestor found -- clear constVal so constValid=false.
-				 * Note: GEPLEFTSHIFT nodes also have getNode()==NULL; they must
+				 * Note: GEPLEFTSHIFT/GEPSCALE nodes also have getNode()==NULL; they must
 				 * NOT trigger removal here or 1-D GEP base addresses would be lost. */
 				LLVM_DEBUG(dbgs() << "clearGEPbaseAddrForOLOADnodes: removing constVal from GEP node\n");
 				node->removeConstantVal();
@@ -11296,4 +11323,3 @@ void DFG::clearGEPbaseAddrForOLOADnodes() {
 		}
 	}
 }
-
