@@ -1,9 +1,0 @@
-var_name,base_addr
-i.072,2304
-B,256
-arrayidx7,2308
-j.071,2312
-A,2048
-C,0
-loopend,2047
-loopstart,4094
