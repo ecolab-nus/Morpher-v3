@@ -1568,25 +1568,58 @@ void FlattenDoublePointers(Function &F, LoopInfo &LI) {
 						IV_start = phi->getIncomingValue(i);
 				break;
 			}
-		}
-		if (!IV || !IV_start) continue;
+			}
+			if (!IV || !IV_start) continue;
 
-		// ------------------------------------------------------------------
-		// 2. Find N_val: the row stride (number of i32 elements per row).
-		//    For polybench: the loop runs k in [k_start, n-1), so n equals
+			// Require a canonical +1 induction update inside the loop. If not,
+			// skip flattening to avoid deriving an incorrect row stride advance.
+			Value *IV_next = nullptr;
+			for (unsigned i = 0; i < IV->getNumIncomingValues(); i++)
+				if (L->contains(IV->getIncomingBlock(i)))
+					IV_next = IV->getIncomingValue(i);
+			if (!IV_next) continue;
+			auto *stepI = dyn_cast<BinaryOperator>(IV_next);
+			if (!stepI || stepI->getOpcode() != Instruction::Add) continue;
+			ConstantInt *stepC = nullptr;
+			if (stepI->getOperand(0) == IV)
+				stepC = dyn_cast<ConstantInt>(stepI->getOperand(1));
+			else if (stepI->getOperand(1) == IV)
+				stepC = dyn_cast<ConstantInt>(stepI->getOperand(0));
+			if (!stepC || stepC->getSExtValue() != 1) continue;
+
+			// ------------------------------------------------------------------
+			// 2. Find N_val: the row stride (number of i32 elements per row).
+			//    For polybench: the loop runs k in [k_start, n-1), so n equals
 		//    the loop upper bound.  If bound = add(n, -1) then N_val = n.
 		// ------------------------------------------------------------------
-		Value *N_val = nullptr;
-		{
-			auto *br = dyn_cast<BranchInst>(latch->getTerminator());
-			if (!br || !br->isConditional()) continue;
-			auto *cmp = dyn_cast<ICmpInst>(br->getCondition());
-			if (!cmp) continue;
-			for (unsigned i = 0; i < cmp->getNumOperands() && !N_val; i++) {
-				Value *op = cmp->getOperand(i);
-				if (!L->isLoopInvariant(op)) continue;
-				// Check if op = add(n, -1) → N_val = n
-				if (auto *addI = dyn_cast<BinaryOperator>(op)) {
+			Value *N_val = nullptr;
+			{
+				auto *br = dyn_cast<BranchInst>(latch->getTerminator());
+				if (!br || !br->isConditional()) continue;
+				auto *cmp = dyn_cast<ICmpInst>(br->getCondition());
+				if (!cmp) continue;
+				ICmpInst::Predicate pred = cmp->getPredicate();
+				bool predOK = pred == ICmpInst::ICMP_SLT || pred == ICmpInst::ICMP_SLE ||
+						pred == ICmpInst::ICMP_ULT || pred == ICmpInst::ICMP_ULE ||
+						pred == ICmpInst::ICMP_NE;
+				if (!predOK) continue;
+
+				auto isIVLike = [&](Value *V) {
+					return V == IV || V == IV_next;
+				};
+
+				Value *lhs = cmp->getOperand(0);
+				Value *rhs = cmp->getOperand(1);
+				Value *boundOp = nullptr;
+				if (isIVLike(lhs) && L->isLoopInvariant(rhs))
+					boundOp = rhs;
+				else if (isIVLike(rhs) && L->isLoopInvariant(lhs))
+					boundOp = lhs;
+				else
+					continue;
+
+				// Check if bound = add(n, -1) -> N_val = n
+				if (auto *addI = dyn_cast<BinaryOperator>(boundOp)) {
 					if (addI->getOpcode() == Instruction::Add) {
 						for (unsigned j = 0; j < 2; j++) {
 							auto *C = dyn_cast<ConstantInt>(addI->getOperand(j));
@@ -1597,10 +1630,9 @@ void FlattenDoublePointers(Function &F, LoopInfo &LI) {
 						}
 					}
 				}
-				if (!N_val) N_val = op; // fallback: use bound directly
+				if (!N_val) N_val = boundOp;
 			}
-		}
-		if (!N_val) continue;
+			if (!N_val) continue;
 
 		// ------------------------------------------------------------------
 		// 3. Scan loop blocks for the row-pointer load pattern:
@@ -2761,27 +2793,17 @@ struct dfggenPass : public FunctionPass
 	  }
 	} //END OF runOnFunction
 
-	void getAnalysisUsage(AnalysisUsage &AU) const override
-	{
-		//			AU.setPreservesAll();
-		//			AU.addRequired<LoopInfoWrapperPass>();
-		//			AU.addRequired<MemoryDependenceAnalysis>();
-		AU.addRequired<DependenceAnalysisWrapperPass>();
-
-		AU.setPreservesAll();
-		AU.addRequired<LoopInfoWrapperPass>();
-		//			AU.addRequired<MemoryDependenceAnalysis>();
-		AU.addRequired<ScalarEvolutionWrapperPass>();
-		AU.addRequired<AAResultsWrapperPass>();
-		AU.addRequired<DominatorTreeWrapperPass>();
-		//		    AU.addRequired<DependenceAnalysis>();
-		AU.addRequiredID(LoopSimplifyID);
-		AU.addRequiredID(LCSSAID);
-
-		AU.addRequired<DominatorTreeWrapperPass>();
-		AU.addPreserved<DominatorTreeWrapperPass>();
-	}
-};
+		void getAnalysisUsage(AnalysisUsage &AU) const override
+		{
+			AU.addRequired<DependenceAnalysisWrapperPass>();
+			AU.addRequired<LoopInfoWrapperPass>();
+			AU.addRequired<ScalarEvolutionWrapperPass>();
+			AU.addRequired<AAResultsWrapperPass>();
+			AU.addRequired<DominatorTreeWrapperPass>();
+			AU.addRequiredID(LoopSimplifyID);
+			AU.addRequiredID(LCSSAID);
+		}
+	};
 
 } // namespace
 
