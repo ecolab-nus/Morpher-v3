@@ -14,4 +14,3 @@
  max_mapper_iter: 30
  max_II: 32
  llvm_debug_type: 'no'
- morpher_light: 'no'

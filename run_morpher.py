@@ -57,7 +57,6 @@ def main(csource, function, config="config/default_config.yaml", runmode='runall
   max_II = config_dict.get("max_II", 32)
   llvm_debug_type = config_dict["llvm_debug_type"] #'nothing' #'instrumentation'
   
-  morpher_light = True if config_dict["morpher_light"].lower() == "yes" else False
   kernel = function
   appfolder, csourcefile = csource.rsplit('/', 1)
 
@@ -110,25 +109,24 @@ def main(csource, function, config="config/default_config.yaml", runmode='runall
 
     #if json_arch == 'hycube_original_mem.json':
     ###
-    if morpher_light==False:
-      print('\nCode instrumentation..\n')
-      subprocess.run('clang -target i386-unknown-linux-gnu -c -emit-llvm -S %s/src/instrumentation/instrumentation.cpp -o instrumentation.ll' % DFG_GEN_HOME, shell=True, check=True)
-      if kernel=='kernel_symm':
-          subprocess.run('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -c -emit-llvm -O2 -fno-tree-vectorize -fno-inline -fno-unroll-loops polybench.c -S -o polybench.ll', shell=True, check=True)
-          subprocess.run('llvm-link %s_opt_instrument.ll instrumentation.ll polybench.ll -o final.ll' % (kernel), shell=True, check=True)
-      else:
-          subprocess.run('llvm-link %s_opt_instrument.ll instrumentation.ll -o final.ll' % (kernel), shell=True, check=True)
+    print('\nCode instrumentation..\n')
+    subprocess.run('clang -target i386-unknown-linux-gnu -c -emit-llvm -S %s/src/instrumentation/instrumentation.cpp -o instrumentation.ll' % DFG_GEN_HOME, shell=True, check=True)
+    if kernel=='kernel_symm':
+        subprocess.run('clang -D CGRA_COMPILER -target i386-unknown-linux-gnu -c -emit-llvm -O2 -fno-tree-vectorize -fno-inline -fno-unroll-loops polybench.c -S -o polybench.ll', shell=True, check=True)
+        subprocess.run('llvm-link %s_opt_instrument.ll instrumentation.ll polybench.ll -o final.ll' % (kernel), shell=True, check=True)
+    else:
+        subprocess.run('llvm-link %s_opt_instrument.ll instrumentation.ll -o final.ll' % (kernel), shell=True, check=True)
 
-      subprocess.run('llc -filetype=obj final.ll -o final.o', shell=True, check=True)
-      subprocess.run('clang++ -m32 final.o -o final', shell=True, check=True)
+    subprocess.run('llc -filetype=obj final.ll -o final.o', shell=True, check=True)
+    subprocess.run('clang++ -m32 final.o -o final', shell=True, check=True)
 
-      print('Running instrumented code to generate the data memory content (memtraces/%s_trace_x.txt)..\n' % kernel)
-      result = subprocess.run('./final 1> final_log.txt 2> final_err_log.txt', shell=True, check=False)
-      if result.returncode != 0:
-        print('Warning: instrumented binary ./final exited with code %d; simulation traces will not be available.' % result.returncode)
-      else:
-        subprocess.run('cp memtraces/'+kernel+'_trace_0.txt '+SIMULATOR_KERNEL, shell=True, check=True)
-        subprocess.run('cp '+kernel+'_mem_alloc.txt '+SIMULATOR_KERNEL, shell=True, check=True)
+    print('Running instrumented code to generate the data memory content (memtraces/%s_trace_x.txt)..\n' % kernel)
+    result = subprocess.run('./final 1> final_log.txt 2> final_err_log.txt', shell=True, check=False)
+    if result.returncode != 0:
+      print('Warning: instrumented binary ./final exited with code %d; simulation traces will not be available.' % result.returncode)
+    else:
+      subprocess.run('cp memtraces/'+kernel+'_trace_0.txt '+SIMULATOR_KERNEL, shell=True, check=True)
+      subprocess.run('cp '+kernel+'_mem_alloc.txt '+SIMULATOR_KERNEL, shell=True, check=True)
     ###
     subprocess.run('rm *.ll', shell=True, check=False)
  
@@ -156,7 +154,7 @@ def main(csource, function, config="config/default_config.yaml", runmode='runall
   
 
 ##############################################################################################################################################
-  if ((runmode == 'runall' or runmode == 'sim_only') and not morpher_light):
+  if runmode == 'runall' or runmode == 'sim_only':
     print('\n-----Running hycube_simulator-----\n')
     os.chdir(SIMULATOR_KERNEL) 
     files = [f for f in listdir(MEM_TRACE) if isfile(join(MEM_TRACE, f)) and re.match(kernel+"_trace_[0-9]*\.txt", f)]
