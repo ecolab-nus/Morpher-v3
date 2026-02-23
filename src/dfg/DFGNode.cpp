@@ -134,8 +134,10 @@ std::string CGRAXMLCompile::DFGNode::getBinaryString() {
 
 void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
 {
+	std::string output_port_fullname;
 	if (rootDP != NULL)
 	{
+		output_port_fullname = rootDP->getOutputDP()->getOutPort("T")->getFullName();
 		rootDP->getOutputDP()->getOutPort("T")->clear();
 
 		rootDP->clear();
@@ -157,10 +159,18 @@ void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
 		rootDP = NULL;
 	}
 
+	std::set<std::string> erased_ports;
 	for (std::pair<Port *, int> pair : routingPorts)
 	{
 		Port *p = pair.first;
-		p->clear();
+		erased_ports.insert(p->getFullName() + std::to_string(pair.second));
+
+		if (p->getFullName() == output_port_fullname)
+		{
+			// Already cleared when root datapath output was reset.
+			continue;
+		}
+		p->erase(this, pair.second);
 	}
 
 	this->routingPorts.clear();
@@ -179,12 +189,16 @@ void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
 			if (parent->rootDP->getOutputDP()->getOutPort("T") == p)
 				continue;
 
-			if (destIdx == this->idx)
-			{
-				p->clear();
-				delPorts.insert(pair);
+				if (destIdx == this->idx)
+				{
+					if (erased_ports.find(p->getFullName() + std::to_string(destIdx)) == erased_ports.end())
+					{
+						p->erase(parent, destIdx);
+						erased_ports.insert(p->getFullName() + std::to_string(destIdx));
+					}
+					delPorts.insert(pair);
+				}
 			}
-		}
 		// std::cout << "delPorts.size = " << delPorts.size() << "\n";
 		// std::cout << "parentRoutingPort size(before) = " << parent->routingPorts.size() << "\n";
 		for (std::pair<Port *, int> pair : delPorts)

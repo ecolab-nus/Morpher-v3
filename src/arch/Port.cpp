@@ -264,7 +264,8 @@ void CGRAXMLCompile::Port::erase(DFGNode * eraseNode, int  node_value_dest){
 		}
 	}
 			
-	assert(found_node_num < 2);
+	// A (node,dest) pair can legitimately appear with multiple historical
+	// latencies during reroute/backtrack; erase all matching entries.
 
 	// std::cout<<" after erase \n";
 	// for(auto it =  mapped_nodes.begin(); it != mapped_nodes.end(); it++){
