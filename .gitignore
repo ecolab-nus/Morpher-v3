@@ -1,0 +1,8 @@
+# Benchmarks are generated artifacts for simulator.
+benchmarks/**
+!benchmarks/
+!benchmarks/.gitkeep
+
+# Build outputs
+build/
+src/build/
