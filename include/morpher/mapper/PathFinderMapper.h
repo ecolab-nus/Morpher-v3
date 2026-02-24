@@ -319,6 +319,8 @@ public:
 
 	void printHyCUBEBinary(CGRA* cgra);
 	void printBinFile(const std::vector<InsFormat>& insFArr, std::string fName, CGRA* cgra);
+	void setRestartOffset(int offset){restartOffset = offset;}
+	void setStrictBookkeeping(bool enable){strictBookkeeping = enable;}
 
 	int getIndexOfBin(int t, int y, int x){
 		return t * cgra->get_y_max() * cgra->get_x_max() + y * cgra->get_x_max() + x;
@@ -342,6 +344,7 @@ protected:
 	std::vector<DFGNode *> sortedNodeList;
 
 	void removeFailedNode(std::stack<DFGNode *> &mappedNodes, std::stack<DFGNode *> &unmappedNodes, DFGNode *failedNode);
+	void clearMappedNode(DFGNode *node);
 	int getlatMinStarts(const std::map<DFGNode *, std::vector<Port *>> &possibleStarts);
 	std::map<DataPath *, int> getLatCandDests(const std::vector<DataPath *> &candidateDests, int minlat);
 	bool check_parent_violation = true;
@@ -353,6 +356,8 @@ protected:
 	std::map<Port *, std::set<DFGNode *>> conflictedPorts;
 
 	int maxIter = 30;
+	int restartOffset = 0;
+	bool strictBookkeeping = true;
 
 	std::map<int, int> conflictedTimeStepMap;
 

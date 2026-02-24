@@ -35,6 +35,8 @@ struct arguments
 	int max_hops = 4;  // for HyCUBE
 	int mapping_method = 0; // 0: PathFinderMapper, 1: SAMapper (SimulatedAnnealing)
 	int max_II = 32;
+	int ii_restarts = 1; // number of additional mapper retries at the same II
+	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 };
 
@@ -58,10 +60,12 @@ inline arguments parse_arguments(int argn, char *argc[]){
 		.add_option<int>("-r", "--max_iter", "max iteration", 30)
 		.add_option<int>("-h", "--hops", "hops for hycube", 4)
 		.add_option<bool>("-e", "--noMutexPaths", "noMutexPaths", false)
-		.add_option<int>("-b", "--backtrack_limit", "back track limit", 0)
-		.add_option<int>("", "--max_II", "max II", 32)
-		.add_option<std::string>("", "--arch_name", "architecture name", "")
-        .parse(argn, argc);
+			.add_option<int>("-b", "--backtrack_limit", "back track limit", 0)
+				.add_option<int>("", "--max_II", "max II", 32)
+				.add_option<int>("", "--ii_restarts", "additional mapper retries per II", 1)
+				.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
+				.add_option<std::string>("", "--arch_name", "architecture name", "")
+		        .parse(argn, argc);
 
 	ret.dfg_filename = args.get_option<std::string>("--dfg");
 	ret.xdim = args.get_option<int>("--xdim");
@@ -76,6 +80,8 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.max_hops =  args.get_option<int>("--hops");
 	ret.mapping_method = args.get_option<int>("--mapping");
 	ret.max_II = args.get_option<int>("--max_II");
+	ret.ii_restarts = args.get_option<int>("--ii_restarts");
+	ret.spm_mode = args.get_option<std::string>("--spm_mode");
 	ret.use_json = true;
 	ret.arch_name = args.get_option<std::string>("--arch_name");
 	assert(ret.dfg_filename!= "");

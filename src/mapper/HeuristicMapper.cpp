@@ -419,8 +419,20 @@ bool CGRAXMLCompile::PathFinderMapper::sanityCheck()
 	return true;
 }
 
+void CGRAXMLCompile::PathFinderMapper::clearMappedNode(DFGNode *node)
+{
+	if (strictBookkeeping)
+	{
+		node->clear(this->dfg);
+	}
+	else
+	{
+		node->relaxedClear(this->dfg);
+	}
+}
+
 void CGRAXMLCompile::PathFinderMapper::removeFailedNode(std::stack<DFGNode *> &mappedNodes,
-													   std::stack<DFGNode *> &unmappedNodes, DFGNode *failedNode)
+														   std::stack<DFGNode *> &unmappedNodes, DFGNode *failedNode)
 {
 
 	DFGNode *fNode = failedNode;

@@ -209,6 +209,63 @@ void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
 	}
 }
 
+void CGRAXMLCompile::DFGNode::relaxedClear(DFG *dfg)
+{
+	if (rootDP != NULL)
+	{
+		rootDP->getOutputDP()->getOutPort("T")->clear();
+
+		rootDP->clear();
+
+		CGRA *cgra = rootDP->getCGRA();
+		FU *fu = rootDP->getFU();
+		if (fu->supportedOPs.find("LOAD") != fu->supportedOPs.end())
+		{
+			cgra->freeMemNodes++;
+			cgra->freeMemNodeSet.insert(rootDP);
+		}
+
+		if (this->isMemOp())
+		{
+			dfg->unmappedMemOps++;
+			dfg->unmappedMemOpSet.insert(this);
+		}
+
+		rootDP = NULL;
+	}
+
+	for (std::pair<Port *, int> pair : routingPorts)
+	{
+		Port *p = pair.first;
+		p->clear();
+	}
+
+	this->routingPorts.clear();
+
+	for (DFGNode *parent : parents)
+	{
+		std::set<std::pair<Port *, int>> delPorts;
+		for (std::pair<Port *, int> pair : parent->routingPorts)
+		{
+			Port *p = pair.first;
+			int destIdx = pair.second;
+
+			if (parent->rootDP->getOutputDP()->getOutPort("T") == p)
+				continue;
+
+			if (destIdx == this->idx)
+			{
+				p->clear();
+				delPorts.insert(pair);
+			}
+		}
+		for (std::pair<Port *, int> pair : delPorts)
+		{
+			parent->routingPorts.erase(std::find(parent->routingPorts.begin(), parent->routingPorts.end(), pair));
+		}
+	}
+}
+
 
 void CGRAXMLCompile::DFGNode::SAClear(DFG *dfg)
 {

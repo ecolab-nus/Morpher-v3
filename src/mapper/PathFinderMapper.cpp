@@ -1034,7 +1034,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 
 		if (!alreadMappedChildRouteSucc)
 		{
-			node->clear(this->dfg);
+			clearMappedNode(node);
 			continue; //try the next dest
 		}
 		else
@@ -1107,7 +1107,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 				else
 				{
 					addedRoutingParentPorts = 0;
-					node->clear(this->dfg);
+					clearMappedNode(node);
 					LOG(ROUTE) << "Route Failed :: from=" << src.second->getFullName() << "--> to=" << dest.second->getFullName() << "\n";
 				}
 				path.clear();
@@ -1115,7 +1115,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			if (!succ)
 			{
 				*failedNode = parent;
-				node->clear(this->dfg);
+				clearMappedNode(node);
 				addedRoutingParentPorts = 0;
 				parentRoutSucc = false; // at least one parent failed to route, try a new dest
 				break;
@@ -1165,7 +1165,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			node->rootDP = currDest.dest;
 			break;
 		}
-		node->clear(this->dfg);
+		clearMappedNode(node);
 	}
 
 	if (routeSucc)
@@ -1197,7 +1197,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 	{
 		currDest.dest->assignNode(node, currDest.destLat, this->dfg);
 		node->rootDP = currDest.dest;
-		node->clear(this->dfg);
+		clearMappedNode(node);
 		LOG(ROUTE) << "Route failed...\n";
 
 		int parentRoutingPortCountEnd = 0;
@@ -1344,6 +1344,37 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 	//	SortSCCDFG();
 	//	SortTopoGraphicalDFG();
 	sortBackEdgePriorityASAP();
+	if (!sortedNodeList.empty() && restartOffset != 0)
+	{
+		const size_t nodeCount = sortedNodeList.size();
+		int normalizedRestart = restartOffset % static_cast<int>(nodeCount);
+		if (normalizedRestart < 0)
+		{
+			normalizedRestart += static_cast<int>(nodeCount);
+		}
+
+		// Diversify restart attempts beyond a simple shift to escape repeated failures.
+		size_t primaryOffset = (static_cast<size_t>(normalizedRestart) * 7u) % nodeCount;
+		if (primaryOffset == 0)
+		{
+			primaryOffset = 1;
+		}
+		std::rotate(sortedNodeList.begin(), sortedNodeList.begin() + primaryOffset, sortedNodeList.end());
+
+		if ((normalizedRestart % 2) == 1 && nodeCount > 2)
+		{
+			std::reverse(sortedNodeList.begin(), sortedNodeList.end());
+		}
+
+		if (normalizedRestart > 1 && nodeCount > 4)
+		{
+			size_t secondaryOffset = (static_cast<size_t>(normalizedRestart) * 13u) % nodeCount;
+			if (secondaryOffset != 0)
+			{
+				std::rotate(sortedNodeList.begin(), sortedNodeList.begin() + secondaryOffset, sortedNodeList.end());
+			}
+		}
+	}
 	//	sortBackEdgePriorityALAP();
 
 	std::string mappingLogFileName = fNameLog1 + cgra->getCGRAName() + "_MTP=" + std::to_string(enableMutexPaths);  // + ".mapping.csv";
@@ -1503,7 +1534,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						//					mappedNodes.pop();
 						//					unmappedNodes.push(node);
 						//					unmappedNodes.push(prevNode);
-						//					prevNode->clear(this->dfg);
+						//					clearMappedNode(prevNode);
 						//					std::cout << "route estimation failed...\n";
 						//					mappingLog << "route estimation failed...\n";
 						//					continue;
@@ -1513,7 +1544,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						unmappedNodes.push(node);
 						unmappedNodes.push(prevNode);
 
-						prevNode->clear(this->dfg);
+						clearMappedNode(prevNode);
 						estimatedRouteInfo.erase(node);
 
 						//										assert(failedNode!=NULL);
@@ -1532,7 +1563,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						{
 							DFGNode *prevNode = mappedNodes.top();
 							mappedNodes.pop();
-							prevNode->clear(this->dfg);
+							clearMappedNode(prevNode);
 						}
 						std::cout << "Map Failed!.\n";
 						mappingLog << "Map Failed!.\n";
@@ -1602,7 +1633,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 					unmappedNodes.push(node);
 					unmappedNodes.push(prevNode);
 
-					prevNode->clear(this->dfg);
+					clearMappedNode(prevNode);
 					estimatedRouteInfo.erase(node);
 
 					//					unmappedNodes.push(node);
@@ -1619,7 +1650,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 					{
 						DFGNode *prevNode = mappedNodes.top();
 						mappedNodes.pop();
-						prevNode->clear(this->dfg);
+						clearMappedNode(prevNode);
 					}
 					mappingLog << "Map Failed!.\n";
 					std::cout << "Map Failed!.\n";
@@ -1679,7 +1710,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		{
 			DFGNode *prevNode = mappedNodes.top();
 			mappedNodes.pop();
-			prevNode->clear(this->dfg);
+			clearMappedNode(prevNode);
 		}
 		mappingLog << "Map Failed!.\n";
 		std::cout << "Map Failed!.\n";
@@ -1890,7 +1921,7 @@ bool CGRAXMLCompile::PathFinderMapper::clearCurrMapping()
 	for (DFGNode *node : sortedNodeList)
 	{
 		LOG(ROUTE) << "CLEARING :: node=" << node->idx << ",destDP=" << node->rootDP->getName() << ",destPE=" << node->rootDP->getPE()->getName() << "\n";
-		node->clear(this->dfg);
+		clearMappedNode(node);
 	}
 
 	std::stack<Module *> searchStack;

@@ -13,6 +13,7 @@
 #include <morpher/arch/CGRA.h>
 #include <stack>
 #include <iostream>
+#include <stdexcept>
 
 namespace CGRAXMLCompile
 {
@@ -324,7 +325,14 @@ void CGRAXMLCompile::Port::setLat(int lat)
 	// std::cout<<this->getFullName()<<"set latency:"<<lat<<"\n";
 	CGRA *cgra = this->getMod()->getCGRA();
 	int ii = cgra->get_t_max();
-	assert(lat % ii == this->getMod()->getPE()->T);
+	if (ii <= 0 || lat % ii != this->getMod()->getPE()->T)
+	{
+		throw std::runtime_error(
+			"Port::setLat invariant failed for " + this->getFullName() +
+			" (lat=" + std::to_string(lat) +
+			", ii=" + std::to_string(ii) +
+			", peT=" + std::to_string(this->getMod()->getPE()->T) + ")");
+	}
 	latency = lat;
 }
 
@@ -332,6 +340,13 @@ int CGRAXMLCompile::Port::getLat()
 {
 	CGRA *cgra = this->getMod()->getCGRA();
 	int ii = cgra->get_t_max();
-	assert(latency % ii == this->getMod()->getPE()->T);
+	if (ii <= 0 || latency % ii != this->getMod()->getPE()->T)
+	{
+		throw std::runtime_error(
+			"Port::getLat invariant failed for " + this->getFullName() +
+			" (latency=" + std::to_string(latency) +
+			", ii=" + std::to_string(ii) +
+			", peT=" + std::to_string(this->getMod()->getPE()->T) + ")");
+	}
 	return latency;
 }
