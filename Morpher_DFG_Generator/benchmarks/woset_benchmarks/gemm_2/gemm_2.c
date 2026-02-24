@@ -20,7 +20,7 @@ void gemm_2(){
           #ifdef CGRA_COMPILER
            please_map_me();
            #endif
-		       A[i][j] =  B[i][k]* C[k][j] + B[i][k+1]* C[k+1][j]
+		       A[i][j] = A[i][j] + B[i][k]* C[k][j] + B[i][k+1]* C[k+1][j]
 			       + B[i][k+2]* C[k+2][j] + B[i][k+3]* C[k+3][j];
             }
 
