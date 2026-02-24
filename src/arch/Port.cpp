@@ -13,6 +13,7 @@
 #include <morpher/arch/CGRA.h>
 #include <stack>
 #include <iostream>
+#include <stdexcept>
 
 namespace CGRAXMLCompile
 {
@@ -26,7 +27,7 @@ Port::Port(std::string name, PortType pType, Module *mod)
 	this->pe = mod->getPE();
 }
 
-void Port::increaseUse(HeuristicMapper *hm)
+void Port::increaseUse(PathFinderMapper *hm)
 {
 	assert(mapped_nodes.size() > 0);
 	DFGNode * last_mapped_node = std::get<0>(*(this->mapped_nodes.rbegin()));
@@ -66,7 +67,7 @@ void Port::increaseUse(HeuristicMapper *hm)
 
 }
 
-void Port::decreaseUse(DFGNode *extnode, HeuristicMapper *hm)
+void Port::decreaseUse(DFGNode *extnode, PathFinderMapper *hm)
 {
 	if (number_signals > 0)
 	{
@@ -89,7 +90,7 @@ void Port::decreaseUse(DFGNode *extnode, HeuristicMapper *hm)
 	}
 }
 
-void Port::setNode(DFGNode *node, int latency,  int dest ,  HeuristicMapper *hm)
+void Port::setNode(DFGNode *node, int latency,  int dest ,  PathFinderMapper *hm)
 {
 	// std::cout<<this->getFullName()<<"\n";
 
@@ -135,7 +136,7 @@ void Port::setNode(DFGNode *node, int latency,  int dest ,  HeuristicMapper *hm)
 	}
 }
 
-void Port::increaseConflictedUse(DFGNode *node, HeuristicMapper *hm)
+void Port::increaseConflictedUse(DFGNode *node, PathFinderMapper *hm)
 {
 	increaseUse();
 
@@ -264,7 +265,8 @@ void CGRAXMLCompile::Port::erase(DFGNode * eraseNode, int  node_value_dest){
 		}
 	}
 			
-	assert(found_node_num < 2);
+	// A (node,dest) pair can legitimately appear with multiple historical
+	// latencies during reroute/backtrack; erase all matching entries.
 
 	// std::cout<<" after erase \n";
 	// for(auto it =  mapped_nodes.begin(); it != mapped_nodes.end(); it++){
@@ -323,7 +325,14 @@ void CGRAXMLCompile::Port::setLat(int lat)
 	// std::cout<<this->getFullName()<<"set latency:"<<lat<<"\n";
 	CGRA *cgra = this->getMod()->getCGRA();
 	int ii = cgra->get_t_max();
-	assert(lat % ii == this->getMod()->getPE()->T);
+	if (ii <= 0 || lat % ii != this->getMod()->getPE()->T)
+	{
+		throw std::runtime_error(
+			"Port::setLat invariant failed for " + this->getFullName() +
+			" (lat=" + std::to_string(lat) +
+			", ii=" + std::to_string(ii) +
+			", peT=" + std::to_string(this->getMod()->getPE()->T) + ")");
+	}
 	latency = lat;
 }
 
@@ -331,6 +340,13 @@ int CGRAXMLCompile::Port::getLat()
 {
 	CGRA *cgra = this->getMod()->getCGRA();
 	int ii = cgra->get_t_max();
-	assert(latency % ii == this->getMod()->getPE()->T);
+	if (ii <= 0 || latency % ii != this->getMod()->getPE()->T)
+	{
+		throw std::runtime_error(
+			"Port::getLat invariant failed for " + this->getFullName() +
+			" (latency=" + std::to_string(latency) +
+			", ii=" + std::to_string(ii) +
+			", peT=" + std::to_string(this->getMod()->getPE()->T) + ")");
+	}
 	return latency;
 }

@@ -6,7 +6,6 @@
 
 #include <morpher/mapper/PathFinderMapper.h>
 #include <morpher/arch/DataPath.h>
-#include <morpher/util/debug.h>
 
 #include <string>
 #include <random>

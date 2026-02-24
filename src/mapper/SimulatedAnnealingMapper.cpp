@@ -13,6 +13,7 @@
 #include <set>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 #include <unordered_map>
 #include <memory>
@@ -93,9 +94,7 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	//initial mapping
 	if (!initMap())
 	{
-		assert(false && "how come?");
-		std::cout << "cannot find an initial mapping, exit....\n";
-		return false;
+		throw std::runtime_error("SAMap: failed to find an initial mapping");
 	}
 
 	//get mapping information
@@ -295,6 +294,15 @@ float CGRAXMLCompile::SAMapper::inner_map()
 		old_data_routing_path.insert(data_routing_path.begin(), data_routing_path.end());
 
 		LOG(SA)<<"select DFG node "<< selected_dfg_node->idx <<" to unmap";
+
+		// Check candidates before clearing, so we can skip without corrupting state
+		auto dp_candidates = getRandomDPCandidate(selected_dfg_node);
+		if (dp_candidates.empty())
+		{
+			LOG(SA) << "no candidate DPs for node " << selected_dfg_node->idx << " op:" << selected_dfg_node->op << ", skipping movement\n";
+			continue;
+		}
+
 		// start map
 		if (dfg_node_placement.find(selected_dfg_node) != dfg_node_placement.end()){
 			LOG(SA)<<"current placement:" << selected_dfg_node->rootDP->getFullName();
@@ -302,8 +310,8 @@ float CGRAXMLCompile::SAMapper::inner_map()
 		}else{
 			LOG(SA)<<"this DFG node is not placed yet" ;
 		}
-		
-		auto dp_candidate = getRandomDPCandidate(selected_dfg_node).front();
+
+		auto dp_candidate = dp_candidates.front();
 		LOG(SA) << "map this DFG node:" << selected_dfg_node->idx << " op:" << selected_dfg_node->op << "to pe:" << dp_candidate->getPE()->getName() ;
 		bool route_succ = SARoute(selected_dfg_node, dp_candidate);
 		moved_nodes.push_back(selected_dfg_node);
@@ -636,8 +644,8 @@ bool CGRAXMLCompile::SAMapper::SARoute(DFGNode *node, DataPath *candidateDP)
 				}else if (node->childNextIter[child] == 0){
 					alreadyMappedChildPorts[child]->setLat(child->rootDP->getLat() );
 				}else {
-					assert(false);
-				} 
+					throw std::runtime_error("SAMapper: unexpected childNextIter value " + std::to_string(node->childNextIter[child]) + " for child node " + std::to_string(child->idx));
+				}
 			}
 			else if (child->idx == node->idx)
 			{

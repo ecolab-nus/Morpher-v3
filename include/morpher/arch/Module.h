@@ -30,7 +30,7 @@ namespace CGRAXMLCompile
 class CGRA;
 class PE;
 class FU;
-class HeuristicMapper;
+class PathFinderMapper;
 typedef std::pair<int, Port *> LatPort;
 
 class Module
@@ -61,9 +61,9 @@ public:
 	PE *getPE();
 	FU *getFU();
 
-	std::vector<LatPort> getNextPorts(LatPort currPort, HeuristicMapper *hm);
+	std::vector<LatPort> getNextPorts(LatPort currPort, PathFinderMapper *hm);
 	std::vector<Port *> getNextPorts(Port *currPort);
-	std::vector<Port *> getFromPorts(Port *currPort, HeuristicMapper *hm);
+	std::vector<Port *> getFromPorts(Port *currPort, PathFinderMapper *hm);
 	std::vector<Port *> getFromPorts(Port *currPort);
 
 	std::set<Port *> getConflictPorts(Port *currPort);

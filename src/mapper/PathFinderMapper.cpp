@@ -19,8 +19,6 @@
  */
 
 #include <morpher/mapper/PathFinderMapper.h>
-
-#include <morpher/mapper/HeuristicMapper.h>
 #include <queue>
 #include <assert.h>
 #include <math.h>
@@ -33,6 +31,8 @@
 #include <set>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
+#include <chrono>
 #include <unordered_set>
 #include <unordered_map>
 #include <memory>
@@ -316,7 +316,6 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 				}
 			}
 
-			if (true)
 			{ // unmapped port
 				if (detailedDebug)
 					LOG(ROUTE) << "\tnextPort=" << nextPort->getFullName() << ",";
@@ -430,12 +429,6 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 						q.push(port_heuristic(nextLatPort, end, nextPortCost));
 					}
 				}
-			}
-			else
-			{
-				assert(false);
-				if (detailedDebug)
-					LOG(ROUTE) << "\t[MAPPED=" << nextPort->getNode()->idx << "]nextPort=" << nextPort->getFullName() << "\n";
 			}
 		}
 		if (q.size() == q_len)
@@ -605,13 +598,13 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 				alreadyMappedChildPorts[child]->setLat(child->rootDP->getLat() + ii);
 			}else if (node->childNextIter[child] == 0){
 				if(mapping_method_name.find("SA") != std::string::npos){
-					assert(false);
+					throw std::runtime_error("EstimateRouting: SA mapper encountered childNextIter==0 for child node " + std::to_string(child->idx));
 				}
 				alreadyMappedChildPorts[child]->setLat(child->rootDP->getLat() );
 			}else {
-				assert(false);
+				throw std::runtime_error("EstimateRouting: unexpected childNextIter value " + std::to_string(node->childNextIter[child]) + " for child node " + std::to_string(child->idx));
 			}
-			
+
 		}
 		else if(child->idx == node->idx){
 			//adding a placeholder as this will be modified according to the destination in consideration.
@@ -1041,7 +1034,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 
 		if (!alreadMappedChildRouteSucc)
 		{
-			node->clear(this->dfg);
+			clearMappedNode(node);
 			continue; //try the next dest
 		}
 		else
@@ -1114,7 +1107,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 				else
 				{
 					addedRoutingParentPorts = 0;
-					node->clear(this->dfg);
+					clearMappedNode(node);
 					LOG(ROUTE) << "Route Failed :: from=" << src.second->getFullName() << "--> to=" << dest.second->getFullName() << "\n";
 				}
 				path.clear();
@@ -1122,7 +1115,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			if (!succ)
 			{
 				*failedNode = parent;
-				node->clear(this->dfg);
+				clearMappedNode(node);
 				addedRoutingParentPorts = 0;
 				parentRoutSucc = false; // at least one parent failed to route, try a new dest
 				break;
@@ -1172,7 +1165,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			node->rootDP = currDest.dest;
 			break;
 		}
-		node->clear(this->dfg);
+		clearMappedNode(node);
 	}
 
 	if (routeSucc)
@@ -1204,7 +1197,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 	{
 		currDest.dest->assignNode(node, currDest.destLat, this->dfg);
 		node->rootDP = currDest.dest;
-		node->clear(this->dfg);
+		clearMappedNode(node);
 		LOG(ROUTE) << "Route failed...\n";
 
 		int parentRoutingPortCountEnd = 0;
@@ -1315,7 +1308,7 @@ int CGRAXMLCompile::PathFinderMapper::calculateCost(LatPort src,
 			distance = distance + (int)memrescost_dbl;
 			if (this->dfg->unmappedMemOps == cgra->freeMemNodes)
 			{
-				distance = distance + MRC * 10;
+				distance = distance + kMaxResourceCost * 10;
 				
 			}
 
@@ -1351,6 +1344,37 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 	//	SortSCCDFG();
 	//	SortTopoGraphicalDFG();
 	sortBackEdgePriorityASAP();
+	if (!sortedNodeList.empty() && restartOffset != 0)
+	{
+		const size_t nodeCount = sortedNodeList.size();
+		int normalizedRestart = restartOffset % static_cast<int>(nodeCount);
+		if (normalizedRestart < 0)
+		{
+			normalizedRestart += static_cast<int>(nodeCount);
+		}
+
+		// Diversify restart attempts beyond a simple shift to escape repeated failures.
+		size_t primaryOffset = (static_cast<size_t>(normalizedRestart) * 7u) % nodeCount;
+		if (primaryOffset == 0)
+		{
+			primaryOffset = 1;
+		}
+		std::rotate(sortedNodeList.begin(), sortedNodeList.begin() + primaryOffset, sortedNodeList.end());
+
+		if ((normalizedRestart % 2) == 1 && nodeCount > 2)
+		{
+			std::reverse(sortedNodeList.begin(), sortedNodeList.end());
+		}
+
+		if (normalizedRestart > 1 && nodeCount > 4)
+		{
+			size_t secondaryOffset = (static_cast<size_t>(normalizedRestart) * 13u) % nodeCount;
+			if (secondaryOffset != 0)
+			{
+				std::rotate(sortedNodeList.begin(), sortedNodeList.begin() + secondaryOffset, sortedNodeList.end());
+			}
+		}
+	}
 	//	sortBackEdgePriorityALAP();
 
 	std::string mappingLogFileName = fNameLog1 + cgra->getCGRAName() + "_MTP=" + std::to_string(enableMutexPaths);  // + ".mapping.csv";
@@ -1367,6 +1391,13 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 	for (int i = 0; i < this->maxIter; ++i)
 	{
+		const size_t nodeCount = sortedNodeList.size();
+		const size_t progressPrintEvery = 2000;
+		const size_t maxNodeAttemptsInIter = std::max<size_t>(10000, nodeCount * 1000);
+		const int maxSecondsInIter = 120;
+		size_t nodeAttemptsInIter = 0;
+		int lastPrintedElapsedSec = -1;
+		auto iterStartTime = std::chrono::steady_clock::now();
 
 		std::string mappingLogFileName_withIter = mappingLogFileName + "_Iter=" + std::to_string(i) + ".mapping.csv";
 		std::string mappingLog2FileName_withIter = mappingLog2FileName + "_Iter=" + std::to_string(i) + ".routeInfo.log";
@@ -1401,6 +1432,44 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 		while (!unmappedNodes.empty())
 		{
+			nodeAttemptsInIter++;
+			int elapsedInIter = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+				std::chrono::steady_clock::now() - iterStartTime).count());
+			if (nodeAttemptsInIter % progressPrintEvery == 0)
+			{
+				std::cout << "Mapping progress: II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << ", attempts = " << nodeAttemptsInIter
+				          << ", mapped = " << mappedNodes.size()
+				          << ", unmapped = " << unmappedNodes.size()
+				          << ", btCredits = " << backTrackCredits
+				          << ", elapsed = " << elapsedInIter << " sec\n";
+			}
+			if (elapsedInIter >= 10 && elapsedInIter % 10 == 0 && elapsedInIter != lastPrintedElapsedSec)
+			{
+				lastPrintedElapsedSec = elapsedInIter;
+				std::cout << "Mapping still running: II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << ", mapped = " << mappedNodes.size()
+				          << ", unmapped = " << unmappedNodes.size()
+				          << ", btCredits = " << backTrackCredits
+				          << ", elapsed = " << elapsedInIter << " sec\n";
+			}
+			if (nodeAttemptsInIter > maxNodeAttemptsInIter || elapsedInIter > maxSecondsInIter)
+			{
+				std::cout << "Iteration guard hit at II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << " (attempts = " << nodeAttemptsInIter
+				          << ", elapsed = " << elapsedInIter
+				          << " sec). Failing this II.\n";
+				mappingLog << "Iteration guard hit; failing this II.\n";
+				mappingLog2 << "Iteration guard hit; failing this II.\n";
+				mappingLog4 << "Iteration guard hit; failing this II.\n";
+				mappingLog.close();
+				mappingLog2.close();
+				mappingLog4.close();
+				return false;
+			}
 
 			DFGNode *node = unmappedNodes.top();
 			unmappedNodes.pop();
@@ -1465,7 +1534,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						//					mappedNodes.pop();
 						//					unmappedNodes.push(node);
 						//					unmappedNodes.push(prevNode);
-						//					prevNode->clear(this->dfg);
+						//					clearMappedNode(prevNode);
 						//					std::cout << "route estimation failed...\n";
 						//					mappingLog << "route estimation failed...\n";
 						//					continue;
@@ -1475,7 +1544,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						unmappedNodes.push(node);
 						unmappedNodes.push(prevNode);
 
-						prevNode->clear(this->dfg);
+						clearMappedNode(prevNode);
 						estimatedRouteInfo.erase(node);
 
 						//										assert(failedNode!=NULL);
@@ -1494,7 +1563,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						{
 							DFGNode *prevNode = mappedNodes.top();
 							mappedNodes.pop();
-							prevNode->clear(this->dfg);
+							clearMappedNode(prevNode);
 						}
 						std::cout << "Map Failed!.\n";
 						mappingLog << "Map Failed!.\n";
@@ -1564,7 +1633,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 					unmappedNodes.push(node);
 					unmappedNodes.push(prevNode);
 
-					prevNode->clear(this->dfg);
+					clearMappedNode(prevNode);
 					estimatedRouteInfo.erase(node);
 
 					//					unmappedNodes.push(node);
@@ -1581,7 +1650,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 					{
 						DFGNode *prevNode = mappedNodes.top();
 						mappedNodes.pop();
-						prevNode->clear(this->dfg);
+						clearMappedNode(prevNode);
 					}
 					mappingLog << "Map Failed!.\n";
 					std::cout << "Map Failed!.\n";
@@ -1641,7 +1710,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		{
 			DFGNode *prevNode = mappedNodes.top();
 			mappedNodes.pop();
-			prevNode->clear(this->dfg);
+			clearMappedNode(prevNode);
 		}
 		mappingLog << "Map Failed!.\n";
 		std::cout << "Map Failed!.\n";
@@ -1852,7 +1921,7 @@ bool CGRAXMLCompile::PathFinderMapper::clearCurrMapping()
 	for (DFGNode *node : sortedNodeList)
 	{
 		LOG(ROUTE) << "CLEARING :: node=" << node->idx << ",destDP=" << node->rootDP->getName() << ",destPE=" << node->rootDP->getPE()->getName() << "\n";
-		node->clear(this->dfg);
+		clearMappedNode(node);
 	}
 
 	std::stack<Module *> searchStack;
@@ -2119,7 +2188,7 @@ bool CGRAXMLCompile::PathFinderMapper::checkDPFree(DataPath *dp, DFGNode *node, 
 		if ((!node->isMemOp()) && (!memop_found))
 		{
 			double penalty_ratio_dbl = (double)memnode_const_count / (double)freeMemPEs_const;
-			double penalty_dbl = penalty_ratio_dbl * (double)MRC;
+			double penalty_dbl = penalty_ratio_dbl * (double)kMaxResourceCost;
 			penalty = (int)penalty_dbl;
 		}
 	}
@@ -2841,7 +2910,7 @@ int CGRAXMLCompile::PathFinderMapper::getMaxLatencyBE(DFGNode *node, std::map<Da
 	// samplePE->getNonMEMIns(OpLatency);
 	// samplePE->getMemOnlyIns(OpLatency);
 
-	int maxLat = LARGE_VALUE;
+	int maxLat = kLargeValue;
 
 	for (BackEdge be : setBackEdges)
 	{
@@ -2950,66 +3019,13 @@ int CGRAXMLCompile::PathFinderMapper::getMaxLatencyBE(DFGNode *node, std::map<Da
 		}
 	}
 
-	if (maxLat != LARGE_VALUE)
+	if (maxLat != kLargeValue)
 	{
 		LOG(ROUTE) << "getMaxLatencyBE :: node=" << node->idx << " maxLat = " << maxLat << "\n";
 		//		assert(false);
 	}
 	LOG(ROUTE) << "getMaxLatencyBE done!\n";
 	return maxLat;
-}
-
-void CGRAXMLCompile::PathFinderMapper::addPseudoEdgesOrphans(DFG *dfg)
-{
-
-	std::set<int> orphanNodes;
-
-	for (DFGNode &node : dfg->nodeList)
-	{
-		if (node.parents.empty())
-		{
-			orphanNodes.insert(node.idx);
-		}
-	}
-
-	for (int nodeIdx : orphanNodes)
-	{
-		DFGNode *node = dfg->findNode(nodeIdx);
-
-		std::map<int, DFGNode *> asapchild;
-		for (DFGNode *child : node->children)
-		{
-			if (node->childNextIter[child])
-				continue;
-			asapchild[child->ASAP] = child;
-		}
-
-		assert(!asapchild.empty());
-		DFGNode *earliestChild = (*asapchild.begin()).second;
-
-		std::map<int, DFGNode *> asapcousin;
-		for (DFGNode *parent : earliestChild->parents)
-		{
-			if (parent == node)
-				continue;
-			if (parent->childNextIter[earliestChild])
-				continue;
-			asapcousin[parent->ASAP] = parent;
-		}
-
-		if (!asapcousin.empty())
-		{
-			DFGNode *latestCousin = (*asapcousin.rbegin()).second;
-
-			LOG(ROUTE) << "Adding Pseudo Connection :: parent=" << latestCousin->idx << ",to" << node->idx << "\n";
-			latestCousin->children.push_back(node);
-			latestCousin->childNextIter[node] = 0;
-			latestCousin->childrenOPType[node] = "P";
-			node->parents.push_back(latestCousin);
-		}
-	}
-
-	assert(false);
 }
 
 std::vector<CGRAXMLCompile::DFGNode *> CGRAXMLCompile::PathFinderMapper::getLongestDFGPath(
@@ -3097,7 +3113,7 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::PathFinderMapper::modify
 	int downStreamOps = 0;
 	int maxLat = getMaxLatencyBE(node, beParentDests, downStreamOps);
 
-	if (maxLat != LARGE_VALUE)
+	if (maxLat != kLargeValue)
 		assert(!beParentDests.empty());
 
 	changed = false;
@@ -3149,7 +3165,7 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::PathFinderMapper::modify
 					LOG(ROUTE) << "**MEM FOUND DOWN**\n";
 				}
 
-				if (maxLat != LARGE_VALUE)
+				if (maxLat != kLargeValue)
 				{
 					LOG(ROUTE)<< "pe=" << pe->getName() << ",";
 					LOG(ROUTE) << "dist=" << dist << ",";
@@ -3290,6 +3306,7 @@ bool CGRAXMLCompile::PathFinderMapper::Check_DFG_CGRA_Compatibility(){
 		string op = node.op;
 		if(all_supp_ops.find(op) == all_supp_ops.end()){
 			output_ss << "op=" << op << " is not supported in this CGRA, exiting....\n";
+			std::cerr << "Error: op=" << op << " is not supported in this CGRA\n";
 			exit(EXIT_FAILURE);
 			return false;
 		}
@@ -3300,6 +3317,7 @@ bool CGRAXMLCompile::PathFinderMapper::Check_DFG_CGRA_Compatibility(){
 			string pointer = it->first;
 			if(all_supp_pointers.find(pointer) == all_supp_pointers.end()){
 				output_ss << "pointer=" << pointer << " is not present in the CGRA, exiting....\n";
+				std::cerr << "Error: pointer=" << pointer << " is not present in the CGRA\n";
 				exit(EXIT_FAILURE);
 				return false;
 			}
@@ -3462,8 +3480,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << northo->getFullName() << ",node = " << northo->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.northo = "111";
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for northo port: " + northo->getFullName());
 						}
 					}
 
@@ -3498,8 +3515,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << easto->getFullName() << ",node = " << easto->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.easto = "111";
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for easto port: " + easto->getFullName());
 						}
 					}
 					else{
@@ -3533,8 +3549,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << westo->getFullName() << ",node = " << westo->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.westo = "111";
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for westo port: " + westo->getFullName());
 						}
 					}
 					else{
@@ -3567,8 +3582,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << southo->getFullName() << ",node = " << southo->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.southo = "111";
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for southo port: " + southo->getFullName());
 						}
 					}
 					else{
@@ -3605,8 +3619,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << p_ip->getFullName() << ",node = " << p_ip->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.alu_p = "111";
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for alu_p port: " + p_ip->getFullName());
 						}
 					}
 					else{
@@ -3668,11 +3681,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << i1_ip->getFullName() << ",node = " << i1_ip->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.alu_i1 = "111";
-							if(currentMappedOP && currentMappedOP->type_i1i2){
-								insF.alu_i2 = "111";
-							}
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for alu_i1 port: " + i1_ip->getFullName());
 						}
 					}
 					else{
@@ -3715,8 +3724,7 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 						}
 						else{
 							LOG(ROUTE) << "Port : " << i2_ip->getFullName() << ",node = " << i2_ip->getNode()->idx << ", source not found!\n";
-							assert(false);
-							insF.alu_i2 = "111";
+							throw std::runtime_error("printHyCUBEBinary: unsupported source for alu_i2 port: " + i2_ip->getFullName());
 						}
 					}
 					else{
@@ -3804,9 +3812,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(northi_node &&
 							northi_node == pe->getInternalPort("NORTH_XBARI")->getNode() && northi->getLat() == pe->getInternalPort("NORTH_XBARI")->getLat()){
-						if(pe->getSingleRegPort("NR_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("NR_RI")->getNode()->idx << ",portnode=" << northi_node->idx << "\n";
-							assert(pe->getSingleRegPort("NR_RI")->getNode() != pe->getInternalPort("NORTH_XBARI")->getNode());
+						if(pe->getSingleRegPort("NR_RI")->getNode() &&
+								pe->getSingleRegPort("NR_RI")->getNode() == pe->getInternalPort("NORTH_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on NORTH at PE " + pe->getName() + " for node " + std::to_string(northi_node->idx));
 						}
 						insF.north_reg_bypass = "0";
 					}
@@ -3816,9 +3824,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(easti_node &&
 							easti_node == pe->getInternalPort("EAST_XBARI")->getNode() && easti->getLat() == pe->getInternalPort("EAST_XBARI")->getLat()){
-						if(pe->getSingleRegPort("ER_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("ER_RI")->getNode()->idx << ",portnode=" << easti_node->idx << "\n";
-							assert(pe->getSingleRegPort("ER_RI")->getNode() != pe->getInternalPort("EAST_XBARI")->getNode());
+						if(pe->getSingleRegPort("ER_RI")->getNode() &&
+								pe->getSingleRegPort("ER_RI")->getNode() == pe->getInternalPort("EAST_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on EAST at PE " + pe->getName() + " for node " + std::to_string(easti_node->idx));
 						}
 						insF.east_reg_bypass = "0";
 					}
@@ -3828,9 +3836,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(westi_node &&
 							westi_node == pe->getInternalPort("WEST_XBARI")->getNode() && westi->getLat() == pe->getInternalPort("WEST_XBARI")->getLat()){
-						if(pe->getSingleRegPort("WR_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("WR_RI")->getNode()->idx << ",portnode=" << westi_node->idx << "\n";
-							assert(pe->getSingleRegPort("WR_RI")->getNode() != pe->getInternalPort("WEST_XBARI")->getNode());
+						if(pe->getSingleRegPort("WR_RI")->getNode() &&
+								pe->getSingleRegPort("WR_RI")->getNode() == pe->getInternalPort("WEST_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on WEST at PE " + pe->getName() + " for node " + std::to_string(westi_node->idx));
 						}
 						insF.west_reg_bypass = "0";
 					}
@@ -3840,9 +3848,9 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 
 					if(southi_node &&
 							southi_node == pe->getInternalPort("SOUTH_XBARI")->getNode() && southi->getLat() == pe->getInternalPort("SOUTH_XBARI")->getLat()){
-						if(pe->getSingleRegPort("SR_RI")->getNode()){
-							//LOG(ROUTE) << "pe=" << pe->getName() << ",node=" << pe->getSingleRegPort("SR_RI")->getNode()->idx << ",portnode=" << southi_node->idx << "\n";
-							assert(pe->getSingleRegPort("SR_RI")->getNode() != pe->getInternalPort("SOUTH_XBARI")->getNode());
+						if(pe->getSingleRegPort("SR_RI")->getNode() &&
+								pe->getSingleRegPort("SR_RI")->getNode() == pe->getInternalPort("SOUTH_XBARI")->getNode()){
+							throw std::runtime_error("printHyCUBEBinary: reg/bypass conflict on SOUTH at PE " + pe->getName() + " for node " + std::to_string(southi_node->idx));
 						}
 						insF.south_reg_bypass = "0";
 					}

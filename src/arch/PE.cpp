@@ -10,6 +10,7 @@
 #include <morpher/arch/RegFile.h>
 #include <morpher/arch/CGRA.h>
 #include <assert.h>
+#include <stdexcept>
 #include <sstream>
 #include <iostream>
 
@@ -2550,6 +2551,6 @@ std::pair<CGRAXMLCompile::Port *, CGRAXMLCompile::Port *> CGRAXMLCompile::PE::ge
 			return pair;
 		}
 	}
-	assert(false);
+	throw std::runtime_error("PE::getRegConPort: register connection port '" + pName + "' not found");
 }
 

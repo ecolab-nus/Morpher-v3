@@ -9,6 +9,7 @@
 #include <morpher/arch/Port.h>
 #include <algorithm>
 #include <assert.h>
+#include <stdexcept>
 #include <iostream>
 #include <morpher/arch/DataPath.h>
 #include <morpher/arch/CGRA.h>
@@ -125,14 +126,90 @@ std::string CGRAXMLCompile::DFGNode::getBinaryString() {
                return "11111";
        }
        else{
-               std::cout << "Op not compatible : " << op << "\n";
-               assert(false);
+               throw std::runtime_error("DFGNode::getBinaryString: unsupported operation '" + op + "'");
        }
 
 }
 
 
 void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
+{
+	std::string output_port_fullname;
+	if (rootDP != NULL)
+	{
+		output_port_fullname = rootDP->getOutputDP()->getOutPort("T")->getFullName();
+		rootDP->getOutputDP()->getOutPort("T")->clear();
+
+		rootDP->clear();
+
+		CGRA *cgra = rootDP->getCGRA();
+		FU *fu = rootDP->getFU();
+		if (fu->supportedOPs.find("LOAD") != fu->supportedOPs.end())
+		{
+			cgra->freeMemNodes++;
+			cgra->freeMemNodeSet.insert(rootDP);
+		}
+
+		if (this->isMemOp())
+		{
+			dfg->unmappedMemOps++;
+			dfg->unmappedMemOpSet.insert(this);
+		}
+
+		rootDP = NULL;
+	}
+
+	std::set<std::string> erased_ports;
+	for (std::pair<Port *, int> pair : routingPorts)
+	{
+		Port *p = pair.first;
+		erased_ports.insert(p->getFullName() + std::to_string(pair.second));
+
+		if (p->getFullName() == output_port_fullname)
+		{
+			// Already cleared when root datapath output was reset.
+			continue;
+		}
+		p->erase(this, pair.second);
+	}
+
+	this->routingPorts.clear();
+
+	for (DFGNode *parent : parents)
+	{
+		std::set<std::pair<Port *, int>> delPorts;
+		for (std::pair<Port *, int> pair : parent->routingPorts)
+		{
+			Port *p = pair.first;
+			int destIdx = pair.second;
+			//			assert(parent->routingPortDestMap.find(p)!=parent->routingPortDestMap.end());
+			//			int dest_idx = routingPortDestMap[p];
+			//			assert(dest!=NULL);
+
+			if (parent->rootDP->getOutputDP()->getOutPort("T") == p)
+				continue;
+
+				if (destIdx == this->idx)
+				{
+					if (erased_ports.find(p->getFullName() + std::to_string(destIdx)) == erased_ports.end())
+					{
+						p->erase(parent, destIdx);
+						erased_ports.insert(p->getFullName() + std::to_string(destIdx));
+					}
+					delPorts.insert(pair);
+				}
+			}
+		// std::cout << "delPorts.size = " << delPorts.size() << "\n";
+		// std::cout << "parentRoutingPort size(before) = " << parent->routingPorts.size() << "\n";
+		for (std::pair<Port *, int> pair : delPorts)
+		{
+			parent->routingPorts.erase(std::find(parent->routingPorts.begin(), parent->routingPorts.end(), pair));
+		}
+		// std::cout << "parentRoutingPort size(after) = " << parent->routingPorts.size() << "\n";
+	}
+}
+
+void CGRAXMLCompile::DFGNode::relaxedClear(DFG *dfg)
 {
 	if (rootDP != NULL)
 	{
@@ -172,9 +249,6 @@ void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
 		{
 			Port *p = pair.first;
 			int destIdx = pair.second;
-			//			assert(parent->routingPortDestMap.find(p)!=parent->routingPortDestMap.end());
-			//			int dest_idx = routingPortDestMap[p];
-			//			assert(dest!=NULL);
 
 			if (parent->rootDP->getOutputDP()->getOutPort("T") == p)
 				continue;
@@ -185,13 +259,10 @@ void CGRAXMLCompile::DFGNode::clear(DFG *dfg)
 				delPorts.insert(pair);
 			}
 		}
-		// std::cout << "delPorts.size = " << delPorts.size() << "\n";
-		// std::cout << "parentRoutingPort size(before) = " << parent->routingPorts.size() << "\n";
 		for (std::pair<Port *, int> pair : delPorts)
 		{
 			parent->routingPorts.erase(std::find(parent->routingPorts.begin(), parent->routingPorts.end(), pair));
 		}
-		// std::cout << "parentRoutingPort size(after) = " << parent->routingPorts.size() << "\n";
 	}
 }
 
