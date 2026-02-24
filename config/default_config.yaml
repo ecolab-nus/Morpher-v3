@@ -3,7 +3,7 @@
  json_arch_before_memupdate: 'hycube_original_updatemem.json'
  mapper_subfolder: 'hycube'
  dfg_type: 'PartPred'
- init_II: 0
+ init_II: 4
  ydim: 4
  xdim: 4
  numberofbanks: 2
@@ -13,4 +13,6 @@
  backtrack_limit: 4
  max_mapper_iter: 30
  max_II: 32
+ ii_restarts: 0
+ spm_mode: 'off'
  llvm_debug_type: 'no'

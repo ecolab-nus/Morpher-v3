@@ -1,3 +1,6 @@
+cmake_minimum_required(VERSION 3.10)
+project(hycube_simulator LANGUAGES C CXX)
+
 FILE(GLOB MyCPPSources *.cpp)
 FILE(GLOB MyHSources *.h)
 
