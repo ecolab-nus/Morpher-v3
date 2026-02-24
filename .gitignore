@@ -1,5 +1,14 @@
+# Build outputs
+build/
+
+# Common generated artifacts
 *.ll
 *.log
 *.png
 *.o
 *.pdf
+
+# Benchmarks: keep only C sources in version control.
+benchmarks/**/*
+!benchmarks/**/
+!benchmarks/**/*.c

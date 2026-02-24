@@ -7,12 +7,17 @@
 #include <functional>
 #include <bitset>
 #include <set>
+#include <unordered_set>
 #include <morpherdfggen/common/astar.h>
 #include <morpherdfggen/arch/CGRA.h>
 #include <morpherdfggen/util/tinyxml2.h>
+#include <morpherdfggen/common/DFGError.h>
 
 #define LV_NAME "dfg_gen" //"sfp"
 #define DEBUG_TYPE LV_NAME
+
+static bool isPositivePowerOfTwo(int value);
+static void configureGEPScaleNode(dfgNode *node, int stride);
 
 dfgNode *DFG::getEntryNode()
 {
@@ -6525,38 +6530,22 @@ int DFG::nameNodes()
 			{
 				//				node->setFinalIns(BR);
 				node->setFinalIns(Hy_LOADB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE - 1);
-#else
 				node->setConstantVal(MEM_SIZE - 2);
-#endif
 			}
 			else if (node->getNameType().compare("LOADSTART") == 0)
 			{
 				node->setFinalIns(Hy_LOADB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE - 1);
-#else
 				node->setConstantVal(MEM_SIZE - 2);
-#endif
 			}
 			else if (node->getNameType().compare("STORESTART") == 0)
 			{
 				node->setFinalIns(Hy_STOREB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE - 1);
-#else
 				node->setConstantVal(MEM_SIZE - 2);
-#endif		
 			}
 			else if (node->getNameType().compare("LOOPEXIT") == 0)
 			{
 				node->setFinalIns(Hy_STOREB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE  - 2);
-#else
 				node->setConstantVal(MEM_SIZE/2  - 1);
-#endif	
 			}
 			else if (node->getNameType().compare("MOVC") == 0)
 			{
@@ -6572,14 +6561,18 @@ int DFG::nameNodes()
 				node->setFinalIns(OR);
 				node->setConstantVal(0);
 			}
-			else if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
-			{
-				node->setFinalIns(LS);
-			}
-			else if (node->getNameType().compare("GEPADD") == 0)
-			{
-				node->setFinalIns(ADD);
-			}
+				else if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
+				{
+					node->setFinalIns(LS);
+				}
+				else if (node->getNameType().compare("GEPSCALE") == 0)
+				{
+					node->setFinalIns(MUL);
+				}
+				else if (node->getNameType().compare("GEPADD") == 0)
+				{
+					node->setFinalIns(ADD);
+				}
 			else if (node->getNameType().compare("MASKAND") == 0)
 			{
 				node->setFinalIns(AND);
@@ -6603,439 +6596,6 @@ int DFG::nameNodes()
 	}
 	return 0;
 }
-
-int DFG::nameNodesCGRAME()
-{
-	dfgNode *node;
-
-	for (int i = 0; i < NodeList.size(); ++i)
-	{
-		node = NodeList[i];
-
-		if (node->getNode() != NULL)
-		{
-			switch (node->getNode()->getOpcode())
-			{
-			case Instruction::Add:
-			case Instruction::FAdd:
-				node->setFinalIns(ADD);
-				break;
-			case Instruction::Sub:
-			case Instruction::FSub:
-				node->setFinalIns(SUB);
-				break;
-			case Instruction::Mul:
-			case Instruction::FMul:
-				node->setFinalIns(MUL);
-				break;
-			case Instruction::UDiv:
-			case Instruction::SDiv:
-			case Instruction::FDiv:
-				node->setFinalIns(DIV);
-				break;
-			case Instruction::URem:
-			case Instruction::SRem:
-			case Instruction::FRem:
-				LLVM_DEBUG(dbgs() << "REM operations are not implemented\n");
-				assert(false);
-				break;
-			case Instruction::Shl:
-				node->setFinalIns(LS);
-				break;
-			case Instruction::LShr:
-				node->setFinalIns(RS);
-				break;
-			case Instruction::AShr:
-				node->setFinalIns(ARS);
-				break;
-			case Instruction::And:
-				node->setFinalIns(AND);
-				break;
-			case Instruction::Or:
-				node->setFinalIns(OR);
-				break;
-			case Instruction::Xor:
-				node->setFinalIns(XOR);
-				break;
-			case Instruction::Load:
-				if (node->getTypeSizeBytes() >= 4)
-				{ //TODO : remove this, we dont support 8 byte data structs
-					node->setFinalIns(Hy_LOAD);
-				}
-				else if (node->getTypeSizeBytes() == 2)
-				{
-					node->setFinalIns(Hy_LOADH);
-				}
-				else if (node->getTypeSizeBytes() == 1)
-				{
-					node->setFinalIns(Hy_LOADB);
-				}
-				else if (node->getNode()->getType()->isPointerTy())
-				{ //pointer is a 32 bit address
-					node->setFinalIns(Hy_LOAD);
-				}
-				else
-				{
-					LLVM_DEBUG(node->getNode()->dump());
-					LLVM_DEBUG(dbgs() << "OutLoopLOAD size = " << node->getTypeSizeBytes() << "\n");
-					if (node->getNode()->getType() == Type::getDoubleTy(node->getNode()->getContext()))
-					{
-						node->setFinalIns(Hy_LOAD);
-					}
-					if (node->getNode()->getType() == Type::getDoublePtrTy(node->getNode()->getContext()))
-					{
-						node->setFinalIns(Hy_LOAD);
-					}
-					else
-					{
-						assert(0);
-					}
-				}
-				break;
-			case Instruction::Store:
-				if (node->getTypeSizeBytes() >= 4)
-				{ //TODO : remove this, we dont support 8 byte data structs
-					node->setFinalIns(Hy_STORE);
-				}
-				else if (node->getTypeSizeBytes() == 2)
-				{
-					node->setFinalIns(Hy_STOREH);
-				}
-				else if (node->getTypeSizeBytes() == 1)
-				{
-					node->setFinalIns(Hy_STOREB);
-				}
-				else if (node->getNode()->getType()->isPointerTy() || node->getNode()->getOperand(0)->getType()->isPointerTy())
-				{ //pointer is a 32 bit address
-					node->setFinalIns(Hy_STORE);
-				}
-				else
-				{
-					LLVM_DEBUG(node->getNode()->dump());
-					LLVM_DEBUG(dbgs() << "TypeSize : " << node->getTypeSizeBytes() << "\n");
-					assert(0);
-				}
-				break;
-			case Instruction::GetElementPtr:
-				node->setFinalIns(ADD);
-				{
-					GetElementPtrInst *GEP = cast<GetElementPtrInst>(node->getNode());
-					//assert(GEPOffsetMap.find(GEP) != GEPOffsetMap.end());
-
-//					if (node->getGEPbaseAddr() != -1)
-//					{
-//						node->setGEPbaseAddr(node->getGEPbaseAddr() + GEPOffsetMap[GEP]);
-//					}
-//					else
-//					{
-//						node->setGEPbaseAddr(GEPOffsetMap[GEP]);
-//					}
-					node->setGEPbaseAddr(0);
-					//node->setConstantVal(node->getGEPbaseAddr());
-					node->setConstantVal(0);
-				}
-				break;
-
-				break;
-			case Instruction::Trunc:
-			{
-				TruncInst *TI = cast<TruncInst>(node->getNode());
-				//					node->setConstantVal(TI->getDestTy()->getIntegerBitWidth()/8);
-				double destBitWidthDbl = (double)(TI->getDestTy()->getIntegerBitWidth());
-				double bitMaskDbl = pow(2, destBitWidthDbl) - 1;
-				uint32_t bitMask = ((uint32_t)bitMaskDbl);
-				node->setConstantVal(bitMask);
-				node->setFinalIns(AND);
-			}
-			break;
-			case Instruction::SExt:
-			{
-				SExtInst *SI = cast<SExtInst>(node->getNode());
-				uint32_t srcByteWidth = SI->getSrcTy()->getIntegerBitWidth() / 8;
-				uint32_t destByteWidth = SI->getDestTy()->getIntegerBitWidth() / 8;
-				uint32_t constOperand = (srcByteWidth << 16) | destByteWidth;
-				node->setConstantVal(constOperand);
-				node->setFinalIns(SEXT);
-			}
-			break;
-			case Instruction::ZExt:
-				node->setFinalIns(OR);
-				node->setConstantVal(0);
-				break;
-			case Instruction::SIToFP:
-			case Instruction::FPExt:
-			case Instruction::FPTrunc:
-			case Instruction::FPToUI:
-			case Instruction::FPToSI:
-			case Instruction::UIToFP:
-			case Instruction::PtrToInt:
-			case Instruction::IntToPtr:
-			case Instruction::BitCast:
-			case Instruction::AddrSpaceCast:
-				LLVM_DEBUG(node->getNode()->dump());
-				//					assert(0);
-				//2019 work
-				node->setFinalIns(OR);
-				node->setConstantVal(0);
-				break;
-			case Instruction::PHI:
-				node->setFinalIns(DIV);
-			case Instruction::Select:
-				node->setFinalIns(SELECT);
-				break;
-			case Instruction::Br:
-			{
-				BranchInst *BRI = cast<BranchInst>(node->getNode());
-				if (BRI->isUnconditional())
-				{
-					node->setFinalIns(OR);
-					node->setConstantVal(1);
-				}
-				else
-				{
-					node->setFinalIns(OR);
-					node->setConstantVal(0);
-				}
-			}
-			break;
-			case Instruction::ICmp:
-			{
-				LLVM_DEBUG(dbgs() << "NameNodes::Node=" << node->getIdx() << ",CMP=");
-				CmpInst *CI = cast<CmpInst>(node->getNode());
-				LLVM_DEBUG(CI->dump());
-				switch (CI->getPredicate())
-				{
-				case CmpInst::ICMP_SLT:
-				case CmpInst::ICMP_ULT:
-					LLVM_DEBUG(dbgs() << "LT\n");
-					node->setFinalIns(CLT);
-					break;
-				case CmpInst::ICMP_SGT:
-				case CmpInst::ICMP_UGT:
-					LLVM_DEBUG(dbgs() << "GT\n");
-					node->setFinalIns(CGT);
-					break;
-				case CmpInst::ICMP_EQ:
-					LLVM_DEBUG(dbgs() << "EQ\n");
-					node->setFinalIns(CMP);
-					break;
-				default:
-					assert(false);
-					break;
-				}
-			}
-			break;
-			case Instruction::FCmp:
-				LLVM_DEBUG(dbgs() << "NameNodes::Node=" << node->getIdx() << ",FCMP\n");
-				node->setFinalIns(CMP);
-				//2019 work
-				//					assert(false);
-				break;
-			default:
-				LLVM_DEBUG(dbgs() << "The Op :" << node->getNode()->getOpcodeName() << " that I thought would not be in the compiled code\n");
-				LLVM_DEBUG(node->getNode()->dump());
-				assert(false);
-				break;
-			}
-		}
-		else
-		{
-			if (node->getNameType().compare("LOAD") == 0)
-			{
-				if (node->getTypeSizeBytes() == 4)
-				{
-					node->setFinalIns(Hy_LOAD);
-				}
-				else if (node->getTypeSizeBytes() == 2)
-				{
-					node->setFinalIns(Hy_LOADH);
-				}
-				else if (node->getTypeSizeBytes() == 1)
-				{
-					node->setFinalIns(Hy_LOADB);
-				}
-				else
-				{
-					assert(0);
-				}
-			}
-			else if (node->getNameType().compare("STORE") == 0)
-			{
-				if (node->getTypeSizeBytes() == 4)
-				{
-					node->setFinalIns(Hy_STORE);
-				}
-				else if (node->getTypeSizeBytes() == 2)
-				{
-					node->setFinalIns(Hy_STOREH);
-				}
-				else if (node->getTypeSizeBytes() == 1)
-				{
-					node->setFinalIns(Hy_STOREB);
-				}
-				else
-				{
-					assert(0);
-				}
-			}
-			else if (node->getNameType().compare("NORMAL") == 0)
-			{
-				node->setFinalIns(ADD);
-			}
-			else if (node->getNameType().compare("CTRLBrOR") == 0)
-			{
-				node->setFinalIns(OR);
-			}
-			else if (node->getNameType().compare("SELECTPHI") == 0)
-			{
-				node->setFinalIns(SELECT);
-			}
-			else if (node->getNameType().compare("OutLoopSTORE") == 0)
-			{
-				if (node->getTypeSizeBytes() == 4)
-				{
-					node->setFinalIns(Hy_STORE);
-				}
-				else if (node->getTypeSizeBytes() == 2)
-				{
-					node->setFinalIns(Hy_STOREH);
-				}
-				else if (node->getTypeSizeBytes() == 1)
-				{
-					node->setFinalIns(Hy_STOREB);
-				}
-				else
-				{
-					LLVM_DEBUG(OutLoopNodeMapReverse[node]->dump());
-					if (OutLoopNodeMapReverse[node]->getType()->isDoubleTy())
-					{
-						//TODO : to make it compatible with double
-						node->setFinalIns(Hy_STORE);
-					}
-					else
-					{
-						assert(0);
-					}
-				}
-				node->setConstantVal(node->getoutloopAddr());
-			}
-			else if (node->getNameType().compare("OutLoopLOAD") == 0)
-			{
-				if (node->getTypeSizeBytes() == 4)
-				{
-					node->setFinalIns(Hy_LOAD);
-				}
-				else if (node->getTypeSizeBytes() == 2)
-				{
-					node->setFinalIns(Hy_LOADH);
-				}
-				else if (node->getTypeSizeBytes() == 1)
-				{
-					node->setFinalIns(Hy_LOADB);
-				}
-				else
-				{
-					LLVM_DEBUG(OutLoopNodeMapReverse[node]->dump());
-					LLVM_DEBUG(dbgs() << "OutLoopLOAD size = " << node->getTypeSizeBytes() << "\n");
-					if (OutLoopNodeMapReverse[node]->getType()->isDoubleTy())
-					{
-						//TODO : to make it compatible with double
-						node->setFinalIns(Hy_LOAD);
-					}
-					else
-					{
-						assert(0);
-					}
-				}
-				node->setConstantVal(node->getoutloopAddr());
-			}
-			else if (node->getNameType().compare("CMERGE") == 0)
-			{
-				node->setFinalIns(CMERGE);
-			}
-			else if (node->getNameType().compare("LOOPSTART") == 0)
-			{
-				//				node->setFinalIns(BR);
-				node->setFinalIns(Hy_LOADB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE - 1);
-#else
-				node->setConstantVal(MEM_SIZE - 2);
-#endif
-			}
-			else if (node->getNameType().compare("LOADSTART") == 0)
-			{
-				node->setFinalIns(Hy_LOADB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE - 1);
-#else
-				node->setConstantVal(MEM_SIZE - 2);
-#endif
-			}
-			else if (node->getNameType().compare("STORESTART") == 0)
-			{
-				node->setFinalIns(Hy_STOREB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE - 1);
-#else
-				node->setConstantVal(MEM_SIZE - 2);
-#endif
-			}
-			else if (node->getNameType().compare("LOOPEXIT") == 0)
-			{
-				node->setFinalIns(Hy_STOREB);
-#ifdef ARCHI_16BIT
-				node->setConstantVal(MEM_SIZE  - 2);
-#else
-				node->setConstantVal(MEM_SIZE/2  - 1);
-#endif
-			}
-			else if (node->getNameType().compare("MOVC") == 0)
-			{
-				node->setFinalIns(MOVC);
-			}
-			else if (node->getNameType().compare("XORNOT") == 0)
-			{
-				node->setFinalIns(XOR);
-				node->setConstantVal(1);
-			}
-			else if (node->getNameType().compare("ORZERO") == 0)
-			{
-				node->setFinalIns(OR);
-				node->setConstantVal(0);
-			}
-			else if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
-			{
-				node->setFinalIns(LS);
-			}
-			else if (node->getNameType().compare("GEPADD") == 0)
-			{
-				node->setFinalIns(ADD);
-			}
-			else if (node->getNameType().compare("MASKAND") == 0)
-			{
-				node->setFinalIns(AND);
-			}
-			else if (node->getNameType().compare("PREDAND") == 0)
-			{
-				node->setFinalIns(AND);
-			}
-			else if (node->getNameType().compare("TRIGMERGE") == 0)
-			{
-				node->setFinalIns(SELECT);
-			}
-			else
-			{
-				LLVM_DEBUG(dbgs() << "Unknown custom node \n");
-				assert(false);
-			}
-		}
-
-		hyCUBEInsHist[node->getFinalIns()]++;
-	}
-	return 0;
-}
-
 
 int DFG::checkSanity()
 {
@@ -8645,11 +8205,12 @@ int DFG::classifyParents()
 					node->parentClassification[1] = parent;
 					continue;
 				}
-				if (node->getNameType().compare("GEPLEFTSHIFT") == 0)
-				{
-					if (parent->getNode() != NULL)
+					if (node->getNameType().compare("GEPLEFTSHIFT") == 0
+						|| node->getNameType().compare("GEPSCALE") == 0)
 					{
-						parentIns = parent->getNode();
+						if (parent->getNode() != NULL)
+						{
+							parentIns = parent->getNode();
 						if (BranchInst *BRI = dyn_cast<BranchInst>(parentIns))
 						{
 							node->parentClassification[0] = parent;
@@ -8954,11 +8515,12 @@ int DFG::classifyParents()
 				//						node->parentClassification[1]=parent;
 				//						continue;
 				//					}
-				if (parent->getNameType().compare("GEPLEFTSHIFT") == 0)
-				{
-					assert(parent->getAncestors().size() < 3);
-					node->parentClassification[1] = parent;
-					continue;
+					if (parent->getNameType().compare("GEPLEFTSHIFT") == 0
+						|| parent->getNameType().compare("GEPSCALE") == 0)
+					{
+						assert(parent->getAncestors().size() < 3);
+						node->parentClassification[1] = parent;
+						continue;
 				}
 				if (parent->getNameType().compare("MASKAND") == 0)
 				{
@@ -9253,14 +8815,13 @@ int DFG::insertshiftGEPs()
 						tempADD->addAncestorNode(parent);
 					}
 
-					if (elementSize > 1)
-					{
-						dfgNode *temp = new dfgNode(this);
-						temp->setNameType("GEPLEFTSHIFT");
-						temp->setIdx(NodeList.size());
-						NodeList.push_back(temp);
-						temp->setConstantVal(Log2_32(elementSize));
-						temp->BB = node->BB;
+						if (elementSize > 1)
+						{
+							dfgNode *temp = new dfgNode(this);
+							temp->setIdx(NodeList.size());
+							NodeList.push_back(temp);
+							configureGEPScaleNode(temp, elementSize);
+							temp->BB = node->BB;
 
 						tempADD->addChildNode(temp);
 						temp->addAncestorNode(tempADD);
@@ -9272,14 +8833,13 @@ int DFG::insertshiftGEPs()
 				else
 				{
 					assert(non_control_parents.size() == 1);
-					if (elementSize > 1)
-					{
-						dfgNode *temp = new dfgNode(this);
-						temp->setNameType("GEPLEFTSHIFT");
-						temp->setIdx(NodeList.size());
-						NodeList.push_back(temp);
-						temp->setConstantVal(Log2_32(elementSize));
-						temp->BB = node->BB;
+						if (elementSize > 1)
+						{
+							dfgNode *temp = new dfgNode(this);
+							temp->setIdx(NodeList.size());
+							NodeList.push_back(temp);
+							configureGEPScaleNode(temp, elementSize);
+							temp->BB = node->BB;
 
 						for (dfgNode *parent : node->getAncestors())
 						{
@@ -10609,75 +10169,93 @@ void populateStructOffset(StructType *ST, std::unordered_map<int, int> &structOf
 	}
 }
 
-int DFG::CalculateGEPBaseAddr(GetElementPtrInst *GEP)
+static bool isPositivePowerOfTwo(int value)
 {
-	// dfgNode* gep_node = findNode(GEP); assert(gep_node);
-	int base_addr = 0;
-	const DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
+	return value > 0 && ((value & (value - 1)) == 0);
+}
 
-	int total_size = -1;
-
-	PointerType *PT = cast<PointerType>(GEP->getPointerOperand()->getType());
-	if (StructType *ST = dyn_cast<StructType>(PT->getElementType()))
+static void configureGEPScaleNode(dfgNode *node, int stride)
+{
+	assert(node);
+	assert(stride > 0);
+	if (isPositivePowerOfTwo(stride))
 	{
-		LLVM_DEBUG(dbgs() << "\t");
-		LLVM_DEBUG(ST->dump());
-		total_size = DL.getTypeAllocSize(ST);
-		// LLVM_DEBUG(dbgs() << "\t\t sample element 2 = " ; ST->getElementType(2)->dump();
-	}
-	else if (ArrayType *AT = dyn_cast<ArrayType>(PT->getElementType()))
-	{
-		LLVM_DEBUG(dbgs() << "\t");
-		LLVM_DEBUG(AT->dump());
-		total_size = DL.getTypeAllocSize(AT);
+		node->setNameType("GEPLEFTSHIFT");
+		node->setConstantVal(Log2_32(stride));
 	}
 	else
 	{
-		//no further offset calculation is required.
-		return base_addr;
+		node->setNameType("GEPSCALE");
+		node->setConstantVal(stride);
 	}
+}
 
+int DFG::CalculateGEPBaseAddr(GetElementPtrInst *GEP)
+{
+	// dfgNode* gep_node = findNode(GEP); assert(gep_node);
+	const DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
 	int offset = 0;
-
-	if (ConstantInt *cv_main_offset = dyn_cast<ConstantInt>(GEP->getOperand(1)))
+	Type *currType = GEP->getSourceElementType();
+	for (unsigned i = 1; i < GEP->getNumOperands(); i++)
 	{
-		int cv_main_offest_int = cv_main_offset->getSExtValue();
-		offset = cv_main_offest_int * total_size;
-		Type *currType = GEP->getSourceElementType();
+		LLVM_DEBUG(dbgs() << "currType = ");
+		LLVM_DEBUG(currType->dump());
+		Value *idxVal = GEP->getOperand(i);
+		ConstantInt *CV = dyn_cast<ConstantInt>(idxVal);
 
-		if (GEP->getNumOperands() > 1)
+		// Operand[1] indexes the source element type directly.
+		if (i == 1)
 		{
-			for (int i = 2; i < GEP->getNumOperands(); i++)
+			int stride = (int)DL.getTypeAllocSize(currType);
+			if (CV)
 			{
-				LLVM_DEBUG(dbgs() << "currType = ");
-				LLVM_DEBUG(currType->dump());
-				if (ConstantInt *CV = dyn_cast<ConstantInt>(GEP->getOperand(i)))
-				{
-					int cv_int = CV->getSExtValue();
-					LLVM_DEBUG(dbgs() << "\t offset_idx" << i << "=" << cv_int << "\n");
-
-					if (StructType *ST = dyn_cast<StructType>(currType))
-					{
-						LLVM_DEBUG(dbgs() << "ST Type!.\n");
-						std::unordered_map<int, int> structOffset;
-						populateStructOffset(ST, structOffset, DL);
-						offset += structOffset[cv_int];
-						currType = ST->getElementType(cv_int);
-					}
-					else if (ArrayType *AT = dyn_cast<ArrayType>(currType))
-					{
-						LLVM_DEBUG(dbgs() << "AT Type!.\n");
-						int element_size = DL.getTypeAllocSize(AT->getElementType());
-						offset += cv_int * element_size;
-						currType = AT->getElementType();
-					}
-					else
-					{
-						LLVM_DEBUG(dbgs() << "scalar Type.\n");
-						assert(i == GEP->getNumOperands() - 1);
-					}
-				}
+				int cv_int = CV->getSExtValue();
+				offset += cv_int * stride;
+				LLVM_DEBUG(dbgs() << "\t offset_idx" << i << "=" << cv_int
+								  << " stride=" << stride << "\n");
 			}
+			continue;
+		}
+
+		if (StructType *ST = dyn_cast<StructType>(currType))
+		{
+			// LLVM requires struct indices to be constants. If not, skip safely.
+			if (!CV)
+			{
+				LLVM_DEBUG(dbgs() << "Non-constant struct index; skipping constant offset contribution\n");
+				continue;
+			}
+
+			int cv_int = CV->getSExtValue();
+			LLVM_DEBUG(dbgs() << "\t struct offset_idx" << i << "=" << cv_int << "\n");
+			std::unordered_map<int, int> structOffset;
+			populateStructOffset(ST, structOffset, DL);
+			auto offIt = structOffset.find(cv_int);
+			if (offIt != structOffset.end())
+			{
+				offset += offIt->second;
+				currType = ST->getElementType(cv_int);
+			}
+			continue;
+		}
+
+		int stride = 0;
+		if (ArrayType *AT = dyn_cast<ArrayType>(currType))
+		{
+			stride = (int)DL.getTypeAllocSize(AT->getElementType());
+			currType = AT->getElementType();
+		}
+		else
+		{
+			stride = (int)DL.getTypeAllocSize(currType);
+		}
+
+		if (CV)
+		{
+			int cv_int = CV->getSExtValue();
+			offset += cv_int * stride;
+			LLVM_DEBUG(dbgs() << "\t offset_idx" << i << "=" << cv_int
+							  << " stride=" << stride << "\n");
 		}
 	}
 
@@ -10703,6 +10281,82 @@ void DFG::GEPBaseAddrCheck(Function &F)
 			}
 		}
 	}
+}
+
+// Trace through GEPs and pointer loads to find the root GlobalVariable name.
+// Handles patterns like volatile int **A where intermediate pointer loads
+// produce unnamed temporaries that break simple getName() lookups.
+static std::string traceBaseArrayNameImpl(Value *V, std::unordered_set<const Value *> &visited, unsigned depth) {
+	if (!V)
+		return "";
+	if (depth > 64)
+		return "";
+	if (!visited.insert(V).second)
+		return "";
+
+	std::string result;
+	if (isa<GlobalVariable>(V))
+	{
+		result = V->getName().str();
+	}
+	else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V))
+	{
+		result = traceBaseArrayNameImpl(GEP->getPointerOperand(), visited, depth + 1);
+	}
+	else if (LoadInst *LI = dyn_cast<LoadInst>(V))
+	{
+		result = traceBaseArrayNameImpl(LI->getPointerOperand(), visited, depth + 1);
+	}
+	// For loop-carried pointer PHIs (e.g. B_elem created by FlattenDoublePointers),
+	// follow the first incoming value (from outside the loop / preheader) to find
+	// the original global array name (e.g. B_elem -> B_elem_init -> B).
+	else if (PHINode *PHI = dyn_cast<PHINode>(V))
+	{
+		if (PHI->getNumIncomingValues() > 0)
+			result = traceBaseArrayNameImpl(PHI->getIncomingValue(0), visited, depth + 1);
+	}
+	else
+	{
+		result = V->getName().str();
+	}
+
+	visited.erase(V);
+	return result;
+}
+
+static std::string traceBaseArrayName(Value *V) {
+	std::unordered_set<const Value *> visited;
+	return traceBaseArrayNameImpl(V, visited, 0);
+}
+
+// Traverse a GEP chain to find the root GlobalVariable (e.g. @A from
+// %arrayidx7 = gep [8 x i32]* %arrayidx4, 0, %j
+//   where %arrayidx4 = gep @A, 0, %i).
+static Value* getGlobalBaseImpl(Value *V, std::unordered_set<const Value *> &visited, unsigned depth) {
+	if (!V)
+		return nullptr;
+	if (depth > 64)
+		return nullptr;
+	if (!visited.insert(V).second)
+		return nullptr;
+	if (isa<GlobalVariable>(V))
+	{
+		visited.erase(V);
+		return V;
+	}
+	if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V))
+	{
+		Value *base = getGlobalBaseImpl(GEP->getPointerOperand(), visited, depth + 1);
+		visited.erase(V);
+		return base;
+	}
+	visited.erase(V);
+	return V;
+}
+
+static Value* getGlobalBase(Value *V) {
+	std::unordered_set<const Value *> visited;
+	return getGlobalBaseImpl(V, visited, 0);
 }
 
 void checkGEPDerivatives(Instruction *root, GetElementPtrInst *GEP, std::unordered_map<Value *, GetElementPtrInst *> &deriv)
@@ -10844,9 +10498,16 @@ void DFG::getTransferVariables(std::unordered_set<Value *> &outer_vals,
 				else{
 					LLVM_DEBUG(dbgs()<<"ld_ptr:" );
 					LLVM_DEBUG(ld_ptr->dump());
-					assert(gep_derivatives.find(ld_ptr) != gep_derivatives.end());
-					mem_ptrs[ld_ptr] = gep_derivatives[ld_ptr];
-					acc[gep_derivatives[ld_ptr]->getPointerOperand()] = acc[gep_derivatives[ld_ptr]->getPointerOperand()] + 1;
+					if (gep_derivatives.find(ld_ptr) != gep_derivatives.end()) {
+						mem_ptrs[ld_ptr] = gep_derivatives[ld_ptr];
+						acc[gep_derivatives[ld_ptr]->getPointerOperand()] = acc[gep_derivatives[ld_ptr]->getPointerOperand()] + 1;
+					} else if (LDI->getType()->isPointerTy()) {
+						// Loading a pointer value (e.g., volatile int **A pattern).
+						// Count access to the pointer source; SetBasePointers handles naming.
+						acc[ld_ptr] = acc[ld_ptr] + 1;
+					} else {
+						assert(false && "unexpected non-GEP pointer operand for data load");
+					}
 				}
 
 			}
@@ -10860,9 +10521,12 @@ void DFG::getTransferVariables(std::unordered_set<Value *> &outer_vals,
 					acc[STI->getPointerOperand()] = acc[STI->getPointerOperand()] + 1;
 				}
 				else{
-					assert(gep_derivatives.find(st_ptr) != gep_derivatives.end());
-					mem_ptrs[st_ptr] = gep_derivatives[st_ptr];
-					acc[gep_derivatives[st_ptr]->getPointerOperand()] = acc[gep_derivatives[st_ptr]->getPointerOperand()] + 1;
+					if (gep_derivatives.find(st_ptr) != gep_derivatives.end()) {
+						mem_ptrs[st_ptr] = gep_derivatives[st_ptr];
+						acc[gep_derivatives[st_ptr]->getPointerOperand()] = acc[gep_derivatives[st_ptr]->getPointerOperand()] + 1;
+					} else {
+						assert(false && "unexpected non-GEP pointer operand for store");
+					}
 				}
 
 			}
@@ -10913,6 +10577,19 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 	LLVM_DEBUG(dbgs() << "OutLoopNodeMapReverse size = " << OutLoopNodeMapReverse.size() << "\n");
 	LLVM_DEBUG(dbgs() << "OutLoopNodeMap size = " << OutLoopNodeMap.size() << "\n");
 
+	auto ensureResolvedBasePtr = [&](const std::string &basePtrName, Value *ptr) {
+		if (!basePtrName.empty())
+			return;
+		std::string ptrName = "<unnamed>";
+		if (ptr && !ptr->getName().empty())
+			ptrName = ptr->getName().str();
+		throw DFGGenerationError(
+			"UnsupportedArrayDimensions",
+			"could not resolve base pointer for '" + ptrName + "' in function '" +
+			F.getName().str() +
+			"'; this pointer/array pattern is not supported (Morpher currently supports only up to 2D arrays)");
+	};
+
 	for (dfgNode *node : NodeList)
 	{
 
@@ -10923,7 +10600,14 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 			LLVM_DEBUG(OutLoopNodeMapReverse[node]->dump());
 			LLVM_DEBUG(dbgs() << "Outer LOOP name = " << OutLoopNodeMapReverse[node]->getName() << "\n");
 			LLVM_DEBUG(dbgs() << "Outer LOOP node idx = " << node->getIdx() << "\n");
-			node->setArrBasePtr(OutLoopNodeMapReverse[node]->getName());
+			// Use a synthetic name for unnamed values to avoid empty BasePointerName in XML/mem_alloc.
+			{
+				StringRef rawName = OutLoopNodeMapReverse[node]->getName();
+				std::string outerName = rawName.empty()
+					? ("_ol_" + std::to_string(node->getIdx()))
+					: rawName.str();
+				node->setArrBasePtr(outerName);
+			}
 			/*
 			 *   %arrayidx = gep , []* @sum, ... //arrayidx is the address of sum[i]
 			 *
@@ -10954,7 +10638,8 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 			}
 
 			DataLayout DL = F.getParent()->getDataLayout();
-			array_pointer_sizes[OutLoopNodeMapReverse[node]->getName()] = DL.getTypeAllocSize(OutLoopNodeMapReverse[node]->getType());
+			// Use getArrBasePtr() to stay consistent with the synthetic name set above.
+			array_pointer_sizes[node->getArrBasePtr()] = DL.getTypeAllocSize(OutLoopNodeMapReverse[node]->getType());
 		}
 		else if (node->getNode() && node->getNode()->mayReadOrWriteMemory())
 		{
@@ -10966,10 +10651,17 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 					node->setArrBasePtr(pointer->getName().str());
 				}
 				else{
-					assert(mem_ptrs.find(pointer) != mem_ptrs.end());
-
-					std::string base_ptr_name = mem_ptrs[pointer]->getPointerOperand()->getName();
-					node->setArrBasePtr(base_ptr_name);
+					std::string base_ptr_name;
+						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+							// Use traceBaseArrayName so pointer-chain patterns (e.g., volatile int **A)
+							// correctly resolve to the global variable name instead of an unnamed temp.
+							base_ptr_name = traceBaseArrayName(mem_ptrs[pointer]->getPointerOperand());
+						} else {
+							// Pointer load from global (e.g., load i32** from @A in volatile int **A).
+							base_ptr_name = traceBaseArrayName(pointer);
+						}
+						ensureResolvedBasePtr(base_ptr_name, pointer);
+						node->setArrBasePtr(base_ptr_name);
 
 					if (sizeArrMap.find(base_ptr_name) != sizeArrMap.end())
 					{
@@ -10978,8 +10670,13 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 					else
 					{
 						DataLayout DL = LDI->getParent()->getParent()->getParent()->getDataLayout();
-						PointerType *PT = cast<PointerType>(mem_ptrs[pointer]->getPointerOperand()->getType());
-						array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+							PointerType *PT = cast<PointerType>(mem_ptrs[pointer]->getPointerOperand()->getType());
+							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+						} else {
+							// Size of the loaded type (pointer or data element).
+							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(LDI->getType());
+						}
 					}
 				}
 			}
@@ -10991,10 +10688,14 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 					node->setArrBasePtr(pointer->getName().str());
 				}
 				else{
-					assert(mem_ptrs.find(pointer) != mem_ptrs.end());
-
-					std::string base_ptr_name = mem_ptrs[pointer]->getPointerOperand()->getName();
-					node->setArrBasePtr(base_ptr_name);
+					std::string base_ptr_name;
+						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+							base_ptr_name = traceBaseArrayName(mem_ptrs[pointer]->getPointerOperand());
+						} else {
+							base_ptr_name = traceBaseArrayName(pointer);
+						}
+						ensureResolvedBasePtr(base_ptr_name, pointer);
+						node->setArrBasePtr(base_ptr_name);
 
 					if (sizeArrMap.find(base_ptr_name) != sizeArrMap.end())
 					{
@@ -11003,8 +10704,13 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 					else
 					{
 						DataLayout DL = STI->getParent()->getParent()->getParent()->getDataLayout();
-						PointerType *PT = cast<PointerType>(mem_ptrs[pointer]->getPointerOperand()->getType());
-						array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+							PointerType *PT = cast<PointerType>(mem_ptrs[pointer]->getPointerOperand()->getType());
+							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+						} else {
+							PointerType *PT = cast<PointerType>(STI->getValueOperand()->getType()->getPointerTo());
+							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(STI->getValueOperand()->getType());
+						}
 					}
 				}
 			}
@@ -11019,8 +10725,11 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 		else if (node->getNode() && isa<GetElementPtrInst>(node->getNode()))
 		{
 			GetElementPtrInst *GEP = cast<GetElementPtrInst>(node->getNode());
-			std::string base_ptr_name = GEP->getPointerOperand()->getName();
-			node->setArrBasePtr(base_ptr_name);
+				// Use traceBaseArrayName so pointer chains (e.g., volatile int **A) resolve
+				// to the global name rather than an unnamed intermediate temporary.
+				std::string base_ptr_name = traceBaseArrayName(GEP->getPointerOperand());
+				ensureResolvedBasePtr(base_ptr_name, GEP->getPointerOperand());
+				node->setArrBasePtr(base_ptr_name);
 
 			if (sizeArrMap.find(base_ptr_name) != sizeArrMap.end())
 			{
@@ -11131,9 +10840,10 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			"LiveInReportPtrTypeUsage",
 			FunctionType::getVoidTy(Ctx),
 			Type::getInt8PtrTy(Ctx), //variable name
-			Type::getInt8PtrTy(Ctx),//base addr var name
-			Type::getInt32Ty(Ctx), //addr offset
-			Type::getInt32Ty(Ctx) //size
+			Type::getInt8PtrTy(Ctx), //spm base address (as string)
+			Type::getInt8PtrTy(Ctx), //actual runtime pointer (GEP result, cast to i8*)
+			Type::getInt8PtrTy(Ctx), //actual array base pointer (root GlobalVariable, cast to i8*)
+			Type::getInt32Ty(Ctx)    //size
 	);
 
 	auto live_out_report_FN = F.getParent()->getOrInsertFunction(
@@ -11178,12 +10888,53 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 		LLVM_DEBUG(ptr->dump());
 
 
-		assert(array_pointer_sizes.find(ptr->getName()) != array_pointer_sizes.end());
-		int size = array_pointer_sizes[ptr->getName()];
+		// Skip unnamed intermediate pointer values (e.g., from volatile int **A chains).
+		// These appear in mem_accesses because GEP pointer operands are tracked in acc, but
+		// unnamed temporaries have no entry in array_pointer_sizes. They are still needed in
+		// acc for AllocateSPMBanks bank assignments, so we skip only the instrumentation here.
+		if (ptr->getName().empty()) {
+			LLVM_DEBUG(dbgs() << "Skipping unnamed intermediate pointer in InstrumentInOutVars\n");
+			continue;
+		}
+
+		// Resolve the array name for this pointer. For intermediate pointer loads
+		// like %9=load i32**,@C, acc[%9] is added by GEP-based loads that use
+		// %9 as their base pointer. array_pointer_sizes stores the traced base
+		// name ("C"), not the load-result value's own name. Use traceBaseArrayName
+		// as fallback to resolve through pointer-load chains to the real base name.
+		std::string arr_name = ptr->getName().str();
+		if (array_pointer_sizes.find(arr_name) == array_pointer_sizes.end()) {
+			arr_name = traceBaseArrayName(ptr);
+		}
+		if (array_pointer_sizes.find(arr_name) == array_pointer_sizes.end()) {
+			// Still not found: skip this entry (no known allocation for this pointer).
+			LLVM_DEBUG(dbgs() << "Skipping unknown pointer in InstrumentInOutVars: "
+			                  << ptr->getName() << "\n");
+			continue;
+		}
+		// Intermediate pointer-type values (e.g., %9=load i32**,@A) defined
+		// inside the loop body cannot be used at the loop entry/exit without
+		// violating SSA dominance. However, OLOAD nodes with pointer type
+		// (those in OLNodesWithPtrTyUsage) are computed OUTSIDE the inner loop
+		// and ARE available at the entry — they need LiveInReportPtrTypeUsage.
+		bool ptrIsOLNodeWithPtrTyUsage = false;
+		for (auto& olpair : OLNodesWithPtrTyUsage) {
+			if (olpair.second == ptr) {
+				ptrIsOLNodeWithPtrTyUsage = true;
+				break;
+			}
+		}
+		if (ptr->getType()->isPointerTy() && !isa<GlobalValue>(ptr) && !ptrIsOLNodeWithPtrTyUsage) {
+			LLVM_DEBUG(dbgs() << "Skipping loop-body pointer in instrumentation: "
+			                  << ptr->getName() << "\n");
+			continue;
+		}
+
+		int size = array_pointer_sizes[arr_name];
 
 		LLVM_DEBUG(dbgs() << "size = " << size << "\n");
 
-		Value* ptr_name_val = builder.CreateGlobalStringPtr(ptr->getName());
+		Value* ptr_name_val = builder.CreateGlobalStringPtr(arr_name);
 		Value *size_val = ConstantInt::get(Type::getInt32Ty(Ctx), size);
 		Value *size_val2 = ConstantInt::get(Type::getInt32Ty(Ctx), size/4);
 		bool isOLNodewithPtrTyUsage = false;
@@ -11203,20 +10954,13 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 				Value* ptrs = i.second;
 				//				ptrs->dump();
 				if(ptrs == ptr){
-					LLVM_DEBUG(dbgs() << "Adding LiveInReportPtrTypeUsage() call\n");
-					GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(ptrs);
-					LLVM_DEBUG(dbgs() << "GEP operand 2 =  ");
-					LLVM_DEBUG(GEP->getOperand(2)->dump());
-					LLVM_DEBUG(GEP->getOperand(0)->dump());
-					LLVM_DEBUG(dbgs() << "array base = " << GEP->getOperand(0)->getName() << "\n");
-					Value* gepop0 = builder.CreateGlobalStringPtr(GEP->getOperand(0)->getName());//base ptr of array
-					Value * gepop2= GEP->getOperand(2);// array offset
-					LLVM_DEBUG(dbgs() << "\n");
-
-					Value* ptr_spm_address_val = builder.CreateGlobalStringPtr(std::to_string(spm_base_address[GEP->getOperand(0)]));
-
-					Value* bitcastedptr = builder.CreateIntCast(gepop2, Type::getInt32Ty(Ctx),true);
-					builder.CreateCall(live_in_report_PtrTypeUsage,{ptr_name_val,ptr_spm_address_val,bitcastedptr,size_val});
+					Value* rootBase = getGlobalBase(ptrs);
+					Value* ptr_spm_address_val = builder.CreateGlobalStringPtr(
+							std::to_string(spm_base_address[rootBase]));
+					Value* actual_ptr = builder.CreateBitCast(ptrs, Type::getInt8PtrTy(Ctx));
+					Value* array_base = builder.CreateBitCast(rootBase, Type::getInt8PtrTy(Ctx));
+					builder.CreateCall(live_in_report_PtrTypeUsage,
+							{ptr_name_val, ptr_spm_address_val, actual_ptr, array_base, size_val});
 					isOLNodewithPtrTyUsage = true;
 					break;
 				}
@@ -11233,15 +10977,54 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			}
 			else{
 				LLVM_DEBUG(dbgs() << "type = "); LLVM_DEBUG(ptr->getType()->dump());
+				/* For integer OLOADs used as dimension indices in multi-dim inner-loop GEPs,
+				 * precompute  spm_base + idx * dim_stride  so the DFG ADD can combine it
+				 * with the inner-loop shifted index without needing a 3-operand ADD. */
+				Value* storeVal = nullptr;
+				for (User *U : ptr->users()) {
+					if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U)) {
+						if (loopBB.find(GEP->getParent()) == loopBB.end()) continue;
+						int numVarOps = 0;
+						for (unsigned ki = 1; ki < GEP->getNumOperands(); ki++)
+							if (!isa<ConstantInt>(GEP->getOperand(ki))) numVarOps++;
+						if (numVarOps < 2) continue;
+						DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
+						Type *currType = GEP->getSourceElementType();
+						for (unsigned opIdx = 1; opIdx < GEP->getNumOperands(); opIdx++) {
+							Value *opVal = GEP->getOperand(opIdx);
+							int stride;
+							if (opIdx == 1) {
+								stride = (int)DL.getTypeAllocSize(currType);
+							} else {
+								if (ArrayType *AT = dyn_cast<ArrayType>(currType)) {
+									stride = (int)DL.getTypeAllocSize(AT->getElementType());
+									currType = AT->getElementType();
+								} else {
+									stride = (int)DL.getTypeAllocSize(currType);
+								}
+							}
+							if (isa<ConstantInt>(opVal) || opVal != ptr) continue;
+							Value *gepBase = getGlobalBase(GEP->getPointerOperand());
+							auto baseIt = spm_base_address.find(gepBase);
+							if (baseIt == spm_base_address.end()) break;
+							Value* idx_int  = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx), true);
+							Value* stride_c = ConstantInt::get(Type::getInt32Ty(Ctx), stride);
+							Value* base_c   = ConstantInt::get(Type::getInt32Ty(Ctx), baseIt->second);
+							storeVal = builder.CreateAdd(base_c, builder.CreateMul(idx_int, stride_c));
+							break;
+						}
+						if (storeVal) break;
+					}
+				}
+				if (!storeVal)
+					storeVal = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx), true);
 				if(outVals_inorout.find(ptr)!=outVals_inorout.end()){
 					if(outVals_inorout[ptr]==1){//outLoopLoad
 						LLVM_DEBUG(dbgs() << "Adding live_in_report_intermediatevariable() call for OutloopLoad\n");
-						Value* bitcastedptr = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx),true);
-						builder.CreateCall(live_in_report_intvar_FN,{ptr_name_val,bitcastedptr});
+						builder.CreateCall(live_in_report_intvar_FN,{ptr_name_val,storeVal});
 					}
 				}else{
-					Value* bitcastedptr = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx),true);
-					builder.CreateCall(live_in_report_intvar_FN,{ptr_name_val,bitcastedptr});
+					builder.CreateCall(live_in_report_intvar_FN,{ptr_name_val,storeVal});
 				}
 			}
 
@@ -11349,7 +11132,8 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 			}
 			LLVM_DEBUG(dbgs() << "\t pointer " << OutLoopNodeMapReverse[node]->getName() << "\n");
 			LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[OutLoopNodeMapReverse[node]] << "\n");
-			var_name = OutLoopNodeMapReverse[node]->getName();
+			// Use getArrBasePtr() to get the (possibly synthetic) name for unnamed values.
+			var_name = node->getArrBasePtr();
 			base_addr = spm_base_address[OutLoopNodeMapReverse[node]];
 			base_address_map[var_name]=base_addr;
 		}
@@ -11365,9 +11149,12 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 					LLVM_DEBUG(GEP->dump());
 					LLVM_DEBUG(dbgs() << "\t pointer " << gep_pointer->getName() << "\n");
 					LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[gep_pointer] << "\n");
-					var_name = gep_pointer->getName();
+					// For double-pointer arrays, gep_pointer may be unnamed.
+					// Trace to the root global variable name (e.g., %row -> @A -> "A").
+					var_name = traceBaseArrayName(gep_pointer);
 					base_addr = spm_base_address[gep_pointer];
-					base_address_map[var_name]=base_addr;
+					if (!var_name.empty())
+						base_address_map[var_name]=base_addr;
 					//					mem_alloc_txt << var_name<<","<< base_addr<<"\n";
 				}
 			}
@@ -11376,12 +11163,15 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 				Value *ptr = LDI->getPointerOperand();
 				LLVM_DEBUG(ptr->dump());
 
-				if(arr_ptrs.find(ptr) == arr_ptrs.end()){
+				if (arr_ptrs.find(ptr) == arr_ptrs.end()) {
+					// Pointer-type load (e.g., volatile int **A pattern): no SPM slot needed.
+					if (LDI->getType()->isPointerTy())
+						continue;
 					LLVM_DEBUG(dbgs() << "\t pointer  " << ptr->getName() << "\n");
 					LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[ptr] << "\n");
+					assert(false && "unexpected non-GEP data load in UpdateSPMAllocation");
 				}
 
-				assert(arr_ptrs.find(ptr) != arr_ptrs.end());
 				Value *gep_ptr = arr_ptrs[ptr]->getPointerOperand();
 				assert(spm_base_allocation.find(gep_ptr) != spm_base_allocation.end());
 
@@ -11396,9 +11186,10 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 
 				LLVM_DEBUG(dbgs() << "\t pointer  " << gep_ptr->getName() << "\n");
 				LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[gep_ptr] << "\n");
-				var_name = gep_ptr->getName();
+				var_name = traceBaseArrayName(gep_ptr);
 				base_addr = spm_base_address[gep_ptr];
-				base_address_map[var_name]=base_addr;
+				if (!var_name.empty())
+					base_address_map[var_name]=base_addr;
 			}
 			else if (StoreInst *STI = dyn_cast<StoreInst>(node->getNode()))
 			{
@@ -11419,9 +11210,10 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 
 				LLVM_DEBUG(dbgs() << "\t pointer " << gep_ptr->getName() << "\n");
 				LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[gep_ptr] << "\n");
-				var_name = gep_ptr->getName();
+				var_name = traceBaseArrayName(gep_ptr);
 				base_addr = spm_base_address[gep_ptr];
-				base_address_map[var_name]=base_addr;
+				if (!var_name.empty())
+					base_address_map[var_name]=base_addr;
 			}
 		}
 	}
@@ -11436,15 +11228,9 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 		LLVM_DEBUG(dbgs() << "\t pointer " << i->first<<","<< i->second<<"\n");
 		mem_alloc_txt << i->first<<","<< i->second<<"\n";
 	}
-#ifdef ARCHI_16BIT
-		mem_alloc_txt << "loopstart" <<","<<(MEM_SIZE - 1)<<"\n";
-		mem_alloc_txt << "storestart" <<","<<(MEM_SIZE - 1)<<"\n";
-		mem_alloc_txt << "loopend" <<","<<(MEM_SIZE - 2)<<"\n";
-#else
 		mem_alloc_txt << "loopend" <<","<<(MEM_SIZE/2 - 1)<<"\n";
 //		mem_alloc_txt << "storestart" <<","<<(MEM_SIZE/2 - 1)<<"\n";
 		mem_alloc_txt << "loopstart" <<","<<(MEM_SIZE - 2)<<"\n";
-#endif
 	mem_alloc_txt.close();
 	LLVM_DEBUG(dbgs() << "\n Writing mem alloc end\n\n");
 	//std::cout << "Data layout generated ("<<this->kernelname<<"_mem_alloc.txt) \n";
@@ -11459,48 +11245,96 @@ int DFG::insertshiftGEPsCorrect(){
 		if(node->getNode()){
 			if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(node->getNode())){
 				DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
-				int array_size = DL.getTypeAllocSize(GEP->getSourceElementType());
 
-				/* Find total number of elements in array */
-				Type *T = cast<PointerType>(GEP->getPointerOperandType())->getElementType();
-				int no_of_elements;
-
-				if (isa<ArrayType>(GEP->getSourceElementType())){
-					no_of_elements = cast<ArrayType>(T)->getNumElements();
-					LLVM_DEBUG(dbgs() << "is an array\n");
-				}else{
-					no_of_elements = 1;
-					LLVM_DEBUG(dbgs()<< "not an array\n");
+				/* Build a per-operand stride map by walking the GEP type chain.
+				 *
+				 * For  gep [8x[8xi32]]* @B, 0, %i, %k :
+				 *   op[1] = 0  (constant, pointer-level dereference, skip)
+				 *   op[2] = %i  → stride = sizeof([8xi32]) = 32  → LS(5)
+				 *   op[3] = %k  → stride = sizeof(i32)    =  4  → LS(2)
+				 *
+				 * For OLOAD ancestors the LS is intentionally omitted: the
+				 * instrumentation stores  spm_base + outer_idx * outer_stride
+				 * directly into the trace, so the OLOAD value already carries
+				 * the correct byte address contribution for the outer dimension.
+				 * The inner-loop ancestor still gets the appropriate LS.
+				 */
+				std::map<Value*, int> operandStrideMap;
+				Type *currType = GEP->getSourceElementType();
+				for (unsigned opIdx = 1; opIdx < GEP->getNumOperands(); opIdx++) {
+					Value *opVal = GEP->getOperand(opIdx);
+					int stride;
+					if (opIdx == 1) {
+						/* First index: pointer-level dereference.
+						 * stride = sizeof(entire source element type). */
+						stride = (int)DL.getTypeAllocSize(currType);
+						/* currType does NOT advance here — subsequent indices
+						 * step into the source element type itself. */
+					} else {
+						if (ArrayType *AT = dyn_cast<ArrayType>(currType)) {
+							stride = (int)DL.getTypeAllocSize(AT->getElementType());
+							currType = AT->getElementType();
+						} else {
+							stride = (int)DL.getTypeAllocSize(currType);
+						}
+					}
+					if (!isa<ConstantInt>(opVal))
+						operandStrideMap[opVal] = stride;
 				}
 
-				int size = array_size/no_of_elements;
+				/* Fallback single stride (old behavior) for non-array GEPs or
+				 * ancestors that cannot be matched to a specific operand. */
+				int array_size = DL.getTypeAllocSize(GEP->getSourceElementType());
+				Type *T = cast<PointerType>(GEP->getPointerOperandType())->getElementType();
+				int no_of_elements = isa<ArrayType>(GEP->getSourceElementType()) ?
+						(int)cast<ArrayType>(T)->getNumElements() : 1;
+				int fallback_size = array_size / no_of_elements;
 
-				LLVM_DEBUG(dbgs() << "total array size=" << array_size << " no_of_elements=" << no_of_elements  << " element size(bytes)=" << size << "\n" );
+				LLVM_DEBUG(dbgs() << "total array size=" << array_size
+						<< " fallback element size(bytes)=" << fallback_size << "\n");
 				LLVM_DEBUG(GEP->dump());
 
-				if (size > 1)
-				{
-					for(dfgNode* anc : node->getAncestors()){
-						//ignore predicates
-						if(anc->childConditionalMap[node] != UNCOND) continue;
+				bool hasOLOADancestor = false;
+				for(dfgNode* anc : node->getAncestors()){
+					// ignore predicates
+					if(anc->childConditionalMap[node] != UNCOND) continue;
 
-						dfgNode *temp;
-						temp = new dfgNode(this);
-						temp->setNameType("GEPLEFTSHIFT");
+					/* OLOAD ancestors (getNode()==NULL, nameType=="OutLoopLOAD")
+					 * represent outer-loop values. Their trace entry is precomputed
+					 * by the instrumentation as  spm_base + idx * outer_stride, so
+					 * they already carry the correct byte contribution.
+					 * Adding a scale node on top would over-scale them.
+					 * Note: GEPLEFTSHIFT/GEPSCALE nodes also have getNode()==NULL, so we
+					 * must check nameType to distinguish them from real OLOADs. */
+					if (anc->getNode() == nullptr &&
+					    anc->getNameType() == "OutLoopLOAD") {
+						hasOLOADancestor = true;
+						LLVM_DEBUG(dbgs() << "Skipping LS for OLOAD ancestor of GEP\n");
+						continue;
+					}
+
+					/* Determine the per-dimension stride for this ancestor. */
+					Value *ancVal = anc->getNode();
+					int stride = fallback_size;
+					if (ancVal) {
+						auto it = operandStrideMap.find(ancVal);
+						if (it != operandStrideMap.end())
+							stride = it->second;
+					}
+
+					if (stride > 1) {
+						dfgNode *temp = new dfgNode(this);
 						temp->setIdx(NodeList.size() + newNodes.size());
 						newNodes.insert(temp);
-#ifdef ARCHI_16BIT				
-						temp->setConstantVal(Log2_32(size)-1);
-#else
-						temp->setConstantVal(Log2_32(size));
-#endif
-
+						configureGEPScaleNode(temp, stride);
 						temp->BB = node->BB;
-						LLVM_DEBUG(dbgs() << "adding node...\n");
+						if (isPositivePowerOfTwo(stride))
+							LLVM_DEBUG(dbgs() << "adding LS node (shift=" << Log2_32(stride) << ")...\n");
+						else
+							LLVM_DEBUG(dbgs() << "adding MUL scale node (const=" << stride << ")...\n");
 
 						anc->addChildNode(temp);
 						temp->addAncestorNode(anc);
-
 
 						temp->addChildNode(node);
 						node->addAncestorNode(temp);
@@ -11508,11 +11342,15 @@ int DFG::insertshiftGEPsCorrect(){
 						anc->removeChild(node);
 						node->removeAncestor(anc);
 					}
-
-
-
 				}
-
+				/* When an OLOAD ancestor is present, the OLOAD value already
+				 * carries (array_spm_base + outer_idx * outer_stride).
+				 * The ADD node must use two register inputs (OLOAD + LS),
+				 * so constValid must be false -- clear the GEPbaseAddr constant. */
+				if (hasOLOADancestor && node->hasConstantVal()) {
+					LLVM_DEBUG(dbgs() << "Clearing GEPbaseAddr for GEP node with OLOAD ancestor\n");
+					node->removeConstantVal();
+				}
 			}
 		}
 	}
@@ -11523,5 +11361,30 @@ int DFG::insertshiftGEPsCorrect(){
 	}
 
 	return 0;
-	// assert(false);
+}
+/* clearGEPbaseAddrForOLOADnodes:
+ * After GEPBaseAddrCheck/nameNodes have set GEPbaseAddr (constVal) on all GEP
+ * nodes, clear it for GEP nodes that have an OLOAD ancestor.  When an OLOAD
+ * ancestor is present its trace value already encodes  spm_base + idx*stride,
+ * so the ADD must use two register inputs (OLOAD + LS) with constValid=false.
+ * Keeping GEPbaseAddr would cause the mapper to emit constValid=true, which
+ * silently ignores the LS input and produces wrong addresses. */
+void DFG::clearGEPbaseAddrForOLOADnodes() {
+	for (dfgNode *node : NodeList) {
+		if (!node->getNode()) continue;
+		if (!dyn_cast<GetElementPtrInst>(node->getNode())) continue;
+		if (!node->hasConstantVal()) continue;
+		for (dfgNode *anc : node->getAncestors()) {
+			if (anc->childConditionalMap[node] != UNCOND) continue;
+			if (anc->getNode() == nullptr &&
+			    anc->getNameType() == "OutLoopLOAD") {
+				/* OLOAD ancestor found -- clear constVal so constValid=false.
+				 * Note: GEPLEFTSHIFT/GEPSCALE nodes also have getNode()==NULL; they must
+				 * NOT trigger removal here or 1-D GEP base addresses would be lost. */
+				LLVM_DEBUG(dbgs() << "clearGEPbaseAddrForOLOADnodes: removing constVal from GEP node\n");
+				node->removeConstantVal();
+				break;
+			}
+		}
+	}
 }

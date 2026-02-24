@@ -8,8 +8,6 @@
 extern "C" {
 #endif
 
-//Uncomment this for pace8x8_16bit
-//#define ARCHI_16BIT
 void printArr(const char* name, uint8_t* arr, int size, uint8_t io, uint32_t addr);
 void reportDynArrSize(const char* name, uint8_t* arr, uint32_t idx_i, int size);
 void printDynArrSize();
@@ -50,7 +48,7 @@ void LiveInReport2(const char* varname, uint32_t* value, uint32_t size);
 void LiveOutReport(const char* varname, uint8_t* value, uint32_t size);
 void LiveInReportIntermediateVar(const char* varname, uint32_t value);
 void LiveOutReportIntermediateVar(const char* varname, uint32_t value);
-void LiveInReportPtrTypeUsage(const char* varname,const char* varbaseaddr, uint32_t value, uint32_t size);
+void LiveInReportPtrTypeUsage(const char* varname, const char* varbaseaddr, uint8_t* actual_ptr, uint8_t* array_base, uint32_t size);
 
 
 #ifdef __cplusplus

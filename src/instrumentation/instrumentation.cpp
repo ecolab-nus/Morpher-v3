@@ -663,28 +663,21 @@ void LiveInReport(const char* varname, uint8_t* value, uint32_t size){
 	}
 }
 
-void LiveInReportPtrTypeUsage(const char* varname,const char* varbaseaddr, uint32_t value, uint32_t size){
+void LiveInReportPtrTypeUsage(const char* varname, const char* varbaseaddr, uint8_t* actual_ptr, uint8_t* array_base, uint32_t size){
 	std::string varname_str(varname);
 	std::string varbaseaddr_str(varbaseaddr);
 
-	uint32_t baseaddr_int =static_cast<uint32_t>(std::stoul(varbaseaddr_str));// *(uint32_t *)varbaseaddr;
-#ifdef ARCHI_16BIT
-	uint32_t addr= baseaddr_int+2*value;//2 is to get the byte address
-#else
-	uint32_t addr= baseaddr_int+4*value;//4 is to get the byte address
-#endif
-	//cout << "Call LiveInReportPtrTypeUsage var name:" << varname_str << " local base address(str):"<< varbaseaddr_str<< " address offset:"<< value<< " local address:"<< addr<<" size:" << (int)size <<"\n";
+	uint32_t spm_base = static_cast<uint32_t>(std::stoul(varbaseaddr_str));
+	// Compute byte offset of the element within the array at runtime, then
+	// translate to the equivalent SPM address. This handles any GEP pattern
+	// (1-D, 2-D, etc.) without needing to inspect individual GEP indices.
+	uint32_t byte_offset = (uint32_t)(actual_ptr - array_base);
+	uint32_t spm_addr = spm_base + byte_offset;
 
-//	for(int i=0; i<size; i++){
-////		data_morpher[varname_str].pre_data.push_back(value[i]);
-////		data_morpher[varname_str].post_data.push_back(value[i]);
-//		cout << "var name:" << varname_str << ",value:" <<(int)value[i] <<"\n";
-//	}
-//	std::string varname_str(varname);
-	uint8_t* value_ptr = (uint8_t*)&addr;
-	for(int i=0; i<4; i++){
-		data_morpher[varname_str].pre_data.push_back(value_ptr[i]);
-		data_morpher[varname_str].post_data.push_back(value_ptr[i]);
+	uint8_t* addr_bytes = (uint8_t*)&spm_addr;
+	for(int i = 0; i < 4; i++){
+		data_morpher[varname_str].pre_data.push_back(addr_bytes[i]);
+		data_morpher[varname_str].post_data.push_back(addr_bytes[i]);
 	}
 }
 

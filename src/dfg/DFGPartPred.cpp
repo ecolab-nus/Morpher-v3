@@ -1,4 +1,5 @@
 #include <morpherdfggen/dfg/DFGPartPred.h>
+#include <morpherdfggen/common/DFGError.h>
 
 #include "llvm/Analysis/CFG.h"
 #include <algorithm>
@@ -73,7 +74,9 @@ void DFGPartPred::connectBB() {
 						//							assert(false);
 						//						}
 						std::set<const BasicBlock*> searchSoFar;
-						assert(checkBRPath(BRParentBRI,currBB,conditionVal,searchSoFar));
+						DFG_CHECK(checkBRPath(BRParentBRI,currBB,conditionVal,searchSoFar),
+							"connectBB",
+							"failed to resolve branch path from parent BB to current BB (unsupported control flow pattern)");
 						isConditional=true; //this is always true. coz there is no backtoback unconditional branches.
 					}
 
@@ -118,7 +121,9 @@ void DFGPartPred::removeOutLoopLoad() {
 			if(oloadonlyparent) continue;
 
 			removalNodes.insert(node);
-			assert(node->getAncestors().empty());
+			DFG_CHECK(node->getAncestors().empty(),
+				"removeOutLoopLoad",
+				"OutLoopLOAD node " + std::to_string(node->getIdx()) + " unexpectedly has ancestors");
 
 			for(dfgNode* child : node->getChildren()){
 				node->removeChild(child);
@@ -205,10 +210,10 @@ int DFGPartPred::handlePHINodes(std::set<BasicBlock*> LoopBB) {
 			std::vector<dfgNode*> mergeNodes;
 			std::map<dfgNode*,std::pair<dfgNode*,bool>> mergeNodeControl;
 
-			if(!node->getAncestors().empty()){
-				LLVM_DEBUG(PHI->dump());
-				assert(false);
-			}
+			DFG_CHECK(node->getAncestors().empty(),
+				"handlePHINodes",
+				"PHI node " + std::to_string(node->getIdx()) + " should have no ancestors before PHI handling, but has " +
+				std::to_string(node->getAncestors().size()));
 
 			LLVM_DEBUG(dbgs() << "DEBUG........... begin\n");
 			LLVM_DEBUG(dbgs() << "PHI :: ");
@@ -268,7 +273,10 @@ int DFGPartPred::handlePHINodes(std::set<BasicBlock*> LoopBB) {
 							// }
 							std::set<const BasicBlock*> searchSoFar;
 							bool incomingCTRLVal;
-							assert(checkBRPath(BRParentBRI,currBB,incomingCTRLVal,searchSoFar));
+							DFG_CHECK(checkBRPath(BRParentBRI,currBB,incomingCTRLVal,searchSoFar),
+								"handlePHINodes",
+								"failed to resolve branch path for PHI node " + std::to_string(node->getIdx()) +
+								" (unsupported control flow pattern in PHI incoming blocks)");
 							cnodectrlvalmap[pcn]=incomingCTRLVal;
 							isConditional=true; //this is always true. coz there is no backtoback unconditional branches.
 
@@ -775,7 +783,10 @@ int DFGPartPred::handleSELECTNodes() {
 						combineConditionAND(parent,selCond,node);
 					}
 				}
-				assert(found);
+				DFG_CHECK(found,
+					"handleSELECTNodes",
+					"could not find conditional ancestor for leaf SELECT node " + std::to_string(node->getIdx()) +
+					" (unsupported SELECT pattern in input)");
 			}
 			else{
 				/// if its not a leaf instruction, I dont have to do anything
@@ -994,40 +1005,6 @@ void DFGPartPred::generateTrigDFGDOT(Function &F) {
 	//	balanceSched();
 
 
-#ifdef REMOVE_AGI
-	cerr <<"Experimental version with no AGI instructions. Don't use REMOVE_AGI directive in normal compilation"<< endl;
-	int baseline_node_count = NodeList.size();
-	removeAGI();
-	int post_removal_node_count = NodeList.size();
-	LLVM_DEBUG(dbgs() << "-------------------------------------BASELINE NODE COUNT = " << baseline_node_count << "\n");
-	LLVM_DEBUG(dbgs() << "-------------------------------------POST REMOVAL NODE COUNT = " << post_removal_node_count << "\n");
-
-	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][scheduleASAP begin]\n");
-	scheduleASAP();
-	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][scheduleASAP end]\n\n");
-	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][scheduleALAP begin]\n");
-	scheduleALAP();
-	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][scheduleALAP end]\n\n");
-
-	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][nameNodes begin]\n");
-	nameNodes();
-	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][nameNodes end]\n\n");
-
-	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][classifyParents begin]\n");
-	classifyParents();
-	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][classifyParents end]\n\n");
-	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][removeDisconnectedNodes begin]\n");
-	removeDisconnetedNodes();
-	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][removeDisconnectedNodes end]\n\n");
-//
-//	changeTypeofSingleSourceCompNodes();
-//	removeDisconnetedNodes();
-	printDOT(this->name + "_AGIremovedDFG.dot");
-	printNewDFGXML();
-
-
-#else
-
 	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][GEPBaseAddrCheck begin]\n");
 	GEPBaseAddrCheck(F);
 	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][GEPBaseAddrCheck end]\n\n");
@@ -1062,7 +1039,6 @@ void DFGPartPred::generateTrigDFGDOT(Function &F) {
 	//when new instructions are added
 	removeDisconnetedNodes();
 	LLVM_DEBUG(dbgs() << "[DFGPartPred.cpp][removeDisconnectedNodes end]\n\n");
-#endif
 }
 
 /*
@@ -1452,11 +1428,7 @@ void DFGPartPred::scheduleASAP() {
 		}
 		level++;
 	}
-#ifdef REMOVE_AGI
-	LLVM_DEBUG(dbgs() << "Visited nodes size : " << visitedNodes.size() << ", Nodes list size:" << NodeList.size() << endl);
-#else
 	assert(visitedNodes.size() == NodeList.size());
-#endif
 }
 
 void DFGPartPred::scheduleALAP() {
@@ -1551,9 +1523,6 @@ void DFGPartPred::printNewDFGXML() {
 
 
 	std::string fileName = kernelname + "_PartPredDFG.xml";
-#ifdef REMOVE_AGI
-	fileName = kernelname + "_PartPred_AGI_REMOVED_DFG.xml";
-#endif
 	std::ofstream xmlFile;
 	xmlFile.open(fileName.c_str());
 
@@ -1661,14 +1630,12 @@ void DFGPartPred::printNewDFGXML() {
 			xmlFile << "</BasePointerName>\n";
 		}
 
-//#ifdef ARCHI_16BIT
-		if(node->getNameType() == "LOOPSTART") 
+		if(node->getNameType() == "LOOPSTART")
 			xmlFile << "<BasePointerName size=\"1\">loopstart</BasePointerName>\n";
-		if(node->getNameType() == "LOOPEXIT") 
+		if(node->getNameType() == "LOOPEXIT")
 			xmlFile << "<BasePointerName size=\"1\">loopend</BasePointerName>\n";
-		if(node->getNameType() == "STORESTART") 
+		if(node->getNameType() == "STORESTART")
 			xmlFile << "<BasePointerName size=\"1\">loopstart</BasePointerName>\n";
-//#endif	
 		if(node->getGEPbaseAddr() != -1){
 			GetElementPtrInst* GEP = cast<GetElementPtrInst>(node->getNode());
 			int gep_offset = GEPOffsetMap[GEP];
@@ -1738,7 +1705,9 @@ void DFGPartPred::printNewDFGXML() {
 						}
 						else{
 							LLVM_DEBUG(dbgs() << "node=" << node->getIdx() << ",child=" << child->getIdx() << "\n");
-							assert(false);
+							DFG_CHECK(false, "generateXML",
+								"unexpected operand number for node " + std::to_string(node->getIdx()) +
+								" -> child " + std::to_string(child->getIdx()) + " (unsupported instruction pattern)");
 						}
 					}
 				}
@@ -1772,7 +1741,9 @@ void DFGPartPred::printNewDFGXML() {
 					}
 					else{
 						LLVM_DEBUG(dbgs() << "node = " << node->getIdx() << ", child = " << child->getIdx() << "\n");
-						assert(false);
+						DFG_CHECK(false, "generateXML",
+							"unexpected operand number for SELECTPHI node " + std::to_string(node->getIdx()) +
+							" -> child " + std::to_string(child->getIdx()) + " (unsupported SELECT pattern)");
 					}
 				}
 			}
@@ -1907,10 +1878,11 @@ int DFGPartPred::classifyParents() {
 					node->parentClassification[1]=parent;
 					continue;
 				}
-				if(node->getNameType().compare("GEPLEFTSHIFT")==0){
-					if(parent->getNode()!=NULL){
-						parentIns = parent->getNode();
-						if(BranchInst* BRI = dyn_cast<BranchInst>(parentIns)){
+					if(node->getNameType().compare("GEPLEFTSHIFT")==0 ||
+					   node->getNameType().compare("GEPSCALE")==0){
+						if(parent->getNode()!=NULL){
+							parentIns = parent->getNode();
+							if(BranchInst* BRI = dyn_cast<BranchInst>(parentIns)){
 							node->parentClassification[0]=parent;
 							continue;
 						}
@@ -1976,7 +1948,9 @@ int DFGPartPred::classifyParents() {
 						node->parentClassification[0]=parent;
 					}
 					else{
-						assert(false);
+						DFG_CHECK(false, "classifyParents",
+							"STORESTART node " + std::to_string(node->getIdx()) +
+							" has unrecognized parent type: " + parent->getNameType());
 					}
 					continue;
 				}
@@ -1992,7 +1966,9 @@ int DFGPartPred::classifyParents() {
 							node->parentClassification[0]=parent;
 						}
 						else{
-							assert(false);
+							DFG_CHECK(false, "classifyParents",
+								"LOOPEXIT node " + std::to_string(node->getIdx()) +
+								" has unrecognized parent type: " + parent->getNameType());
 						}
 					}
 					else{
@@ -2042,7 +2018,10 @@ int DFGPartPred::classifyParents() {
 						node->parentClassification[1] = parent;
 					}
 					else{
-						assert(false);
+						DFG_CHECK(false, "classifyParents",
+							"CMERGE node " + std::to_string(node->getIdx()) +
+							" has parent " + std::to_string(parent->getIdx()) +
+							" that is neither ctrl nor data input");
 					}
 					continue;
 
@@ -2142,10 +2121,11 @@ int DFGPartPred::classifyParents() {
 				//						node->parentClassification[1]=parent;
 				//						continue;
 				//					}
-				if(parent->getNameType().compare("GEPLEFTSHIFT")==0){
-					assert(parent->getAncestors().size() == 1);
-					dfgNode* parpar = parent->getAncestors()[0];
-					if(OutLoopNodeMapReverse.find(parpar) != OutLoopNodeMapReverse.end()
+				if(parent->getNameType().compare("GEPLEFTSHIFT")==0 ||
+				   parent->getNameType().compare("GEPSCALE")==0){
+						assert(parent->getAncestors().size() == 1);
+						dfgNode* parpar = parent->getAncestors()[0];
+						if(OutLoopNodeMapReverse.find(parpar) != OutLoopNodeMapReverse.end()
 							&& OutLoopNodeMapReverse[parpar]){
 						parentIns = OutLoopNodeMapReverse[parpar];
 					}
@@ -2202,11 +2182,44 @@ int DFGPartPred::classifyParents() {
 			}
 			else{
 				//Only ins!=NULL and non-PHI and non-BR will reach here
-				node->parentClassification[findOperandNumber(node, ins,parentIns)]=parent;
+				// DMD: findOperandNumber can return 3 when the parent corresponds to
+				// operand-index 2 of a 3-operand GEP instruction. Slot 3 is reserved
+				// in the mapper to mean type_i1i2 (single-source, e.g. x*x), so
+				// assigning a real register source to slot 3 causes the mapper to
+				// discard the other input and produce wrong addresses. If the result is
+				// slot 3 AND the node has an OutLoopLOAD ancestor (meaning there is a
+				// second distinct register input), remap slot 3 to slot 1 so both
+				// sources are encoded correctly.
+				int _slot = findOperandNumber(node, ins, parentIns);
+				if (_slot == 3) {
+					bool _hasOLOADAnc = false;
+					for (dfgNode* _anc : node->getAncestors())
+						if (_anc->getNode() == nullptr &&
+							_anc->getNameType().compare("OutLoopLOAD") == 0)
+							{ _hasOLOADAnc = true; break; }
+					if (_hasOLOADAnc)
+						_slot = 1;
+				}
+				node->parentClassification[_slot]=parent;
 			}
 
-			//DMD: Set type I3 to handle single source nodes in mapper
-			if(parent_count < 2 && node->hasConstantVal()==false && (HyCUBEInsStrings[node->getFinalIns()].compare("MUL")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("ADD")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("SUB")==0)){
+			// DMD: Set type I3 to handle single source nodes in mapper (e.g. x*x squaring).
+			// This must only fire when the node genuinely has a single register input.
+			// GEP ADD/SUB/MUL nodes with an OutLoopLOAD (OLOAD) ancestor have two distinct
+			// register inputs: the OLOAD value (loop-invariant outer dimension) and an
+			// LS-shifted inner-loop value. Triggering type_i1i2 in that case routes the same
+			// LS result to both ALU I1 and I2, silently discarding the OLOAD input and
+			// producing a wrong address (e.g. 2*(k<<5) instead of (k<<5)+j for a C[k][j] GEP).
+			// insertshiftGEPsCorrect() populates OLOAD ancestors so parent_count >= 2 normally
+			// guards this; the explicit hasOLOADAnc check below is a belt-and-suspenders guard.
+			bool hasOLOADAnc = false;
+			for (dfgNode* anc : node->getAncestors())
+				if (anc->getNode() == nullptr &&
+					anc->getNameType().compare("OutLoopLOAD") == 0) {
+					hasOLOADAnc = true;
+					break;
+				}
+			if(parent_count < 2 && !hasOLOADAnc && node->hasConstantVal()==false && (HyCUBEInsStrings[node->getFinalIns()].compare("MUL")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("ADD")==0 || HyCUBEInsStrings[node->getFinalIns()].compare("SUB")==0)){
 				node->parentClassification.erase(1);node->parentClassification.erase(2);
 				node->parentClassification[3]=parent;
 				LLVM_DEBUG(dbgs() <<"Has Const:" <<node->hasConstantVal()<<", Single source dest node:" << node->getIdx() << ", source node:" << parent->getIdx() << "\n");
@@ -2453,9 +2466,14 @@ dfgNode* DFGPartPred::addLoadParent(Value* ins, dfgNode* child) {
 		OutLoopNodeMap[ins] = temp;
 		OutLoopNodeMapReverse[temp]=ins;
 
-		temp->setArrBasePtr(ins->getName());
+		// Use a synthetic name for unnamed values (e.g., unnamed loop-bound scalars)
+		// to avoid empty BasePointerName in the DFG XML and mem_alloc.txt.
+		std::string baseName = ins->getName().empty()
+			? ("_ol_" + std::to_string(getNodesPtr()->size() - 1))
+			: ins->getName().str();
+		temp->setArrBasePtr(baseName);
 		DataLayout DL = temp->BB->getParent()->getParent()->getDataLayout();
-		array_pointer_sizes[ins->getName()] = DL.getTypeAllocSize(ins->getType());
+		array_pointer_sizes[baseName] = DL.getTypeAllocSize(ins->getType());
 
 		if(Instruction* real_ins = dyn_cast<Instruction>(ins)){
 			if(accumulatedBBs.find(real_ins->getParent())==accumulatedBBs.end()){
@@ -2992,7 +3010,8 @@ std::map<BasicBlock*, std::set<std::pair<BasicBlock*, CondVal> > > DFGPartPred::
 								cv = FALSE;
 							}
 							else{
-								assert(false);
+								DFG_CHECK(false, "getDependentCtrlBBs",
+									"branch has more than 2 successors (switch statements are not supported)");
 							}
 						}
 					}
@@ -3154,10 +3173,9 @@ void DFGPartPred::RemoveInductionControlLogic() {
 	// ScalarEvolution* SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
 
 	PHINode* ind_phi = currLoop->getInductionVariable(*SE);
-	if(!ind_phi){
-		// 'cannot find the induction variable, probably the increments in loop induction variables are not 1'
-		assert(false);
-	}
+	DFG_CHECK(ind_phi,
+		"RemoveInductionControlLogic",
+		"cannot find the induction variable; the loop induction variable increments may not be 1");
 
 	dfgNode* ind_phi_node = findNode(ind_phi);
 	assert(ind_phi_node);
@@ -3710,218 +3728,3 @@ void DFGPartPred::addLoopExitStoreHyCUBE(std::set<exitNode> &exitNodes)
 	// 	if(!isTruePath) loopexit->setNPB(true);
 	// }
 }
-
-#ifdef REMOVE_AGI
-//DMD
-/* Remove all address generation nodes in DFG -
-First, identify getelementptr(GEP)) nodes. Go through the parent nodes of GEP nodes till the PHI node. Then remove all the nodes between
-GEP and PHI node.
-Afterwards, identify Branchin instruction(BRI) nodes. Go through the parent nodes of BRI nodes till the PHI node. Then remove all the nodes between
-BRI and PHI node.
-Finally, remove the GEP nodes from its childrens parent list.
-
-Use tempNodeSet to store parents of GEP/BRI instructions. Add tempNodeSet to removalNodesSet when PHI is found in parents of GEP/BRI
- */
-
-
-
-void DFGPartPred::removeAGI(){
-	std::set<dfgNode*> removalNodes;
-	std::set<dfgNode*> allNodes;
-	std::set<dfgNode*> tempNodesSet;
-	std::set<dfgNode*> non_agi_NodesSet;
-
-	// Create set of non AGI nodes
-	for(dfgNode* node : NodeList){
-		LLVM_DEBUG(dbgs() << "Node Name Type/ ID:" << node->getNameType() << "/" << node->getIdx() << "\n");
-		allNodes.insert(node);
-		if(node->getNode()){
-
-			if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(node->getNode())){
-				LLVM_DEBUG(dbgs() << "removeAGI: found GEP instruction and goes through its child instructions ---------\n");
-
-				for(dfgNode* child : node->getChildren()){
-					if(non_agi_NodesSet.find(child) == non_agi_NodesSet.end()){//to avoid looping
-						non_agi_NodesSet.insert(child);
-						if(child->getNameType() == "OutLoopLOAD" || child->getNameType() == "CMERGE"|| child->getNameType() == "LOOPSTART"|| child->getNameType() != ""){
-							LLVM_DEBUG(dbgs() << "removeAGI: has Name Type---"<< child->getNameType() << child->getIdx()<<" ---------\n");
-							addChildsToNonAGINodes(child,non_agi_NodesSet,tempNodesSet);
-						}
-						if(StoreInst* strinst = dyn_cast<StoreInst>(child->getNode())){
-
-						}else{
-							addChildsToNonAGINodes(child,non_agi_NodesSet,tempNodesSet);
-						}
-					}
-				}
-
-			}
-
-		}
-	}
-
-	for(dfgNode* nagi : non_agi_NodesSet){
-		LLVM_DEBUG(dbgs() << "removeAGI: Non AGI Nodes = " << nagi->getIdx() << "\n");
-	}
-
-	//remove AGI
-
-	for(dfgNode* node : NodeList){
-		LLVM_DEBUG(dbgs() << "Node Name Type/ ID:" << node->getNameType() << "/" << node->getIdx() << "\n");
-		if(node->getNode()){
-
-			if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(node->getNode())){
-				LLVM_DEBUG(dbgs() << "removeAGI: found GEP instruction and goes through its parent instructions ---------\n");
-				for(dfgNode* child : node->getChildren()){
-					node->removeChild(child);
-					child->removeAncestor(node);
-				}
-				removalNodes.insert(node);
-				addParentsToRemovalNodes(node,removalNodes,non_agi_NodesSet);
-			}
-
-
-		}
-	}
-
-	//------------ Some AGI nodes will be missed by the above traversal
-	//------------ Following code segment safely remove the connection to those nodes and add the to removal nodes set
-	std::set<dfgNode*> agi_NodesSet;
-	std::set_difference(allNodes.begin(), allNodes.end(), non_agi_NodesSet.begin(), non_agi_NodesSet.end(),
-			std::inserter(agi_NodesSet, agi_NodesSet.end()));
-
-
-	std::set<dfgNode*> agi_rem_diff_NodesSet;
-	std::set_difference(agi_NodesSet.begin(), agi_NodesSet.end(), removalNodes.begin(), removalNodes.end(),
-			std::inserter(agi_rem_diff_NodesSet, agi_rem_diff_NodesSet.end()));
-
-	removalNodes.insert(agi_rem_diff_NodesSet.begin(),agi_rem_diff_NodesSet.end());
-
-	for(dfgNode* ard : agi_rem_diff_NodesSet){
-		LLVM_DEBUG(dbgs() << "DFGAGIRemove: Difference between removal Nodes and AGI nodes = " << ard->getIdx() << "\n");
-	}
-
-	for(dfgNode* node : NodeList){
-		for(dfgNode* ard : agi_rem_diff_NodesSet){
-			if(node->getIdx()==ard->getIdx()){
-				for(dfgNode* parent : node->getAncestors()){
-					parent->removeChild(node);
-				}
-				for(dfgNode* child : node->getChildren()){
-					child->removeAncestor(node);
-				}
-			}
-		}
-
-	}
-
-	//------------------------------------
-
-	for(dfgNode* rn : removalNodes){
-		LLVM_DEBUG(dbgs() << "removeAGI: Removing Node = " << rn->getIdx() << "\n");
-		NodeList.erase(std::remove(NodeList.begin(), NodeList.end(), rn), NodeList.end());
-	}
-	LLVM_DEBUG(dbgs() << "Nodelist size--"<< NodeList.size());
-
-}
-
-void DFGPartPred::addChildsToNonAGINodes(dfgNode* node, std::set<dfgNode*> &non_agi_NodesSet, std::set<dfgNode*> &tempNodesSet){
-
-	for(dfgNode* child : node->getChildren()){
-		if(non_agi_NodesSet.find(child) == non_agi_NodesSet.end()){//to avoid loops
-			non_agi_NodesSet.insert(child);
-			if(child->getNameType() == "OutLoopLOAD" || child->getNameType() == "CMERGE"|| child->getNameType() == "LOOPSTART" || child->getNameType() != ""){
-				LLVM_DEBUG(dbgs() << "DFGAGIRemove: removeAGI: has Name Type---"<< child->getNameType()<< child->getIdx() <<" ---------\n");
-				addChildsToNonAGINodes(child,non_agi_NodesSet,tempNodesSet);
-			}
-			else if(StoreInst* strinst = dyn_cast<StoreInst>(child->getNode())){
-
-			}else{
-				addChildsToNonAGINodes(child,non_agi_NodesSet,tempNodesSet);
-			}
-		}
-	}
-
-	if(!node->getAncestors().empty()){
-		for(dfgNode* parent : node->getAncestors()){
-			if(non_agi_NodesSet.find(parent) == non_agi_NodesSet.end()){//parent is not in the non AGI set
-				if(parent->getNameType() !=""){
-					non_agi_NodesSet.insert(parent);
-					addParentsToNonAGINodes(parent,non_agi_NodesSet,tempNodesSet);
-				}
-				else if(LoadInst* loadinst = dyn_cast<LoadInst>(parent->getNode())){
-
-				}
-				else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(parent->getNode())){
-
-				}
-				else{
-					non_agi_NodesSet.insert(parent);
-					addParentsToNonAGINodes(parent,non_agi_NodesSet,tempNodesSet);
-				}
-			}
-		}
-	}
-
-}
-
-void DFGPartPred::addParentsToNonAGINodes(dfgNode* node, std::set<dfgNode*> &non_agi_NodesSet, std::set<dfgNode*> &tempNodesSet){
-
-	if(!node->getAncestors().empty()){
-		for(dfgNode* parent : node->getAncestors()){
-			if(non_agi_NodesSet.find(parent) == non_agi_NodesSet.end()){//parent is not in the non AGI set
-				if(parent->getNameType() !=""){
-					non_agi_NodesSet.insert(parent);
-					addParentsToNonAGINodes(parent,non_agi_NodesSet,tempNodesSet);
-				}
-				else if(LoadInst* loadinst = dyn_cast<LoadInst>(parent->getNode())){
-
-				}
-				else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(parent->getNode())){
-
-				}
-				else{
-					non_agi_NodesSet.insert(parent);
-					addParentsToNonAGINodes(parent,non_agi_NodesSet,tempNodesSet);
-				}
-			}
-		}
-	}
-
-}
-
-void DFGPartPred::addParentsToRemovalNodes(dfgNode* node, std::set<dfgNode*> &removalNodes, std::set<dfgNode*> &non_agi_NodesSet){
-	/*if(node->getNameType() == "OutLoopLOAD" || node->getNameType() == "CMERGE"|| node->getNameType() == "LOOPSTART"  ){
-
-        }
-        else if(PHINode* PHI = dyn_cast<PHINode>(node->getNode())){
-
-			LLVM_DEBUG(dbgs() << "DFGAGIRemove: PHI node found in parent instructions. Adding all nodes between PHI and GEP/BRI to removalNodes------ \n";
-            removalNodes.insert(tempNodesSet.begin(),tempNodesSet.end());
-            LLVM_DEBUG(dbgs() << "DFGAGIRemove: Done adding\n";
-            tempNodesSet.clear();
-		}*/
-
-
-
-
-	if(!node->getAncestors().empty()){
-		for(dfgNode* parent : node->getAncestors()){
-			if(removalNodes.find(parent) == removalNodes.end()){//if the node is not in the removal node set - to break the loops with backedges
-				if(non_agi_NodesSet.find(parent) == non_agi_NodesSet.end()){//if parent is not in the non AGI set=parent is AGI
-					removalNodes.insert(parent);
-					addParentsToRemovalNodes(parent,removalNodes,non_agi_NodesSet);
-				}
-				else{
-					parent->removeChild(node);
-				}
-			}
-		}
-
-	}else{
-		LLVM_DEBUG(dbgs() << "DFGAGIRemove: removeAGI: No parents------"<< node->getIdx()<< "\n");
-	}
-
-
-}
-#endif
