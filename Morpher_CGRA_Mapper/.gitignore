@@ -1,0 +1,19 @@
+/Debug/
+/Release/
+build/
+build/src/
+src/build/
+
+*.log
+*.csv
+*jsonmapping_i.txt
+*verbose.json
+applications/**/*.txt
+applications/**/*.info
+applications/**/*.json
+*.output
+
+# Benchmarks are generated artifacts for mapper.
+benchmarks/**
+!benchmarks/
+!benchmarks/.gitkeep
