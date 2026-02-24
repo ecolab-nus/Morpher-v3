@@ -48,6 +48,10 @@ def build_mapper_commands(context):
           str(config.max_mapper_iter),
           "--max_II",
           str(config.max_II),
+          "--ii_restarts",
+          str(config.ii_restarts),
+          "--spm_mode",
+          str(config.spm_mode),
         ],
         cwd=context.mapper_kernel,
       )
@@ -75,6 +79,10 @@ def build_mapper_commands(context):
           str(config.max_mapper_iter),
           "--max_II",
           str(config.max_II),
+          "--ii_restarts",
+          str(config.ii_restarts),
+          "--spm_mode",
+          str(config.spm_mode),
         ],
         cwd=context.mapper_kernel,
       )

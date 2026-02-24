@@ -1,54 +1,62 @@
-name: Build and Test
-on: 
+name: Build and Smoke Test
+
+on:
   push:
-  schedule:
-    # run the workflow every day
-    - cron: '0 0 * * *'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: "ci-${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
 jobs:
-  Explore-GitHub-Actions:
+  build-and-smoke:
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
-      - run: echo "🎉 The job was automatically triggered by a ${{ github.event_name }} event."
-      - run: echo "🐧 This job is now running on a ${{ runner.os }} server hosted by GitHub!"
-      - run: echo "🔎 The name of your branch is ${{ github.ref }} and your repository is ${{ github.repository }}."
       - name: Check out repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: echo "💡 The ${{ github.repository }} repository has been cloned to the runner."
-      - run: echo "🖥️ The workflow is now ready to test your code on the runner."
-      - name: List files in the repository
-        run: |
-          ls ${{ github.workspace }}
-      - name: Install LLVM and Clang
+
+      - name: Enforce generated-artifact tracking policy
+        run: bash scripts/check_no_generated_tracked.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install LLVM and Clang 10
         uses: KyleMayes/install-llvm-action@v1
         with:
-         version: "10.0"
-      - name: Check LLVM opt and g++ version
+          version: "10.0"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            gcc-multilib \
+            g++-multilib \
+            graphviz \
+            libtinfo5
+
+      - name: Install Python dependencies
+        run: python3 -m pip install -r python_requirements.txt
+
+      - name: Validate toolchain
         run: |
           opt -version
-          g++ -v 
-      - name: Setup Python version
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.8
-      - name: Create and start virtual environment
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-      - name: Install dependencies
-        run: | 
-         pip install -r python_requirements.txt
-         sudo apt update
-         sudo apt-get install gcc-multilib g++-multilib
-         sudo apt install build-essential 
-         sudo apt -y install g++-7 
-      - name: Get the latest update
-        run: |
-           git submodule update --init --remote
-      - name: Build all
-        run: |
-          bash build_all.sh
-      - name: Run array add
-        run: python -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add
-      - run: echo "🍏 This job's status is ${{ job.status }}."
+          clang --version
+          g++ -v
+
+      - name: Build all components
+        run: bash build_all.sh
+
+      - name: Smoke test array_add
+        run: python3 -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add
+
+      - name: Smoke test fir
+        run: python3 -u run_morpher.py opencgra_benchmarks/fir/fir.c fir

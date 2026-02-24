@@ -19,6 +19,8 @@ class RunnerConfig:
   backtrack_limit: int
   max_mapper_iter: int
   max_II: int
+  ii_restarts: int
+  spm_mode: str
   llvm_debug_type: str
 
   @classmethod
@@ -39,6 +41,8 @@ class RunnerConfig:
       backtrack_limit=config_dict.get("backtrack_limit", 0),
       max_mapper_iter=config_dict.get("max_mapper_iter", 30),
       max_II=config_dict.get("max_II", 32),
+      ii_restarts=config_dict.get("ii_restarts", 1),
+      spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],
     )
 
@@ -101,4 +105,3 @@ def build_context(csource, function, config_path, runmode):
     simulator_kernel=simulator_kernel,
     mem_trace=mem_trace,
   )
-
