@@ -21,14 +21,14 @@ def main(csource, function, config="config/default_config.yaml", runmode="runall
   context = build_context(csource, function, config, runmode)
 
   print(
-    "\n Kernel: %s \n C source: %s/benchmarks/%s \n CGRA arch: %s/json_arch/%s "
+    "\n Kernel: %s \n C source: %s/benchmarks/%s \n Memory mode: %s \n Arch template: %s"
     "\n Config: %s\n Run mode: %s\n"
     % (
       context.kernel,
       context.dfg_gen_home,
       context.csource,
-      context.mapper_home,
-      context.config.json_arch,
+      context.config.memory_mode,
+      context.config.arch_template_json,
       context.config_path,
       context.runmode,
     )

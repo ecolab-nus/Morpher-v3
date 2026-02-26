@@ -1,6 +1,6 @@
 ---
- json_arch: "hycube_original_mem.json"
- json_arch_before_memupdate: 'hycube_original_updatemem.json'
+ memory_mode: "auto"
+ arch_template_json: "hycube_original_updatemem.json"
  mapper_subfolder: 'hycube'
  dfg_type: 'PartPred'
  init_II: 4

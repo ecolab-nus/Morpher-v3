@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <math.h>
 
 #include <iostream>
@@ -42,6 +43,9 @@ static std::map<std::string,int> InsInBB;
 static std::map<std::string,std::set<std::string> > loopBasicBlocks;
 static std::map<std::string,std::string> BBMappingUnitMap;
 static std::map<std::string,std::string> loopPreHeaderBBMap;
+
+static int maxTraceFiles = -1;
+static bool maxTraceFilesInitialized = false;
 
 //recording transitions
                 //src Munit           //dest Munit
@@ -97,6 +101,33 @@ typedef struct{
 } AddrDataTupleMorpher;
 
 static std::map<std::string,AddrDataTupleMorpher> data_morpher;
+
+static void initMaxTraceFilesFromEnv(){
+	if(maxTraceFilesInitialized){
+		return;
+	}
+	maxTraceFilesInitialized = true;
+	maxTraceFiles = -1;
+
+	const char* rawValue = getenv("MORPHER_MAX_TRACES");
+	if(rawValue == NULL || rawValue[0] == '\0'){
+		return;
+	}
+
+	char* endPtr = NULL;
+	long parsedValue = strtol(rawValue, &endPtr, 10);
+	if(endPtr == rawValue || *endPtr != '\0'){
+		return;
+	}
+
+	if(parsedValue < 0){
+		parsedValue = 0;
+	}
+	if(parsedValue > INT_MAX){
+		parsedValue = INT_MAX;
+	}
+	maxTraceFiles = (int)parsedValue;
+}
 
 void printArr(const char* name, uint8_t* arr, int size, uint8_t io, uint32_t addr){
 
@@ -250,9 +281,14 @@ void loopStart(const char* loopName){
 	std::string ln(loopName);
 	std::stringstream ss;
 	data_morpher.clear();
+	initMaxTraceFilesFromEnv();
 
 	if(loopRunIdx.find(ln)==loopRunIdx.end()){
 		loopRunIdx[ln]=0;
+	}
+
+	if(maxTraceFiles >= 0 && loopRunIdx[ln] >= maxTraceFiles){
+		exit(0);
 	}
 
 	ss << "memtraces/"  << loopName  << "_trace_" << loopRunIdx[ln] << ".txt";
@@ -723,7 +759,6 @@ void LiveOutReportIntermediateVar(const char* varname, uint32_t value){
 //		data_morpher[varname_str].post_data[i] = value_ptr[i];
 	}
 }
-
 
 
 

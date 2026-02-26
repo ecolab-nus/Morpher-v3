@@ -12,6 +12,9 @@
 #include <string>
 #include <sstream>
 #include <fstream>
+#include <chrono>
+#include <cstdlib>
+#include <unordered_map>
 //#include <nlohmann/json.hpp>
 #include <iomanip>
 #include <regex>
@@ -28,6 +31,11 @@ namespace CGRAXMLCompile
 //}
 
 } /* namespace CGRAXMLCompile */
+
+namespace
+{
+	std::unordered_map<std::string, std::shared_ptr<const json>> g_preprocessed_arch_cache;
+}
 
 void CGRAXMLCompile::CGRA::createGenericCGRA(int x_max, int y_max, int t_max, std::string peType, int numberofDPs)
 {
@@ -162,7 +170,7 @@ void CGRAXMLCompile::CGRA::insertConflictPort(Port *a, Port *b)
 	conflictPorts[a].insert(b);
 }
 
-void CGRAXMLCompile::CGRA::ParseCGRA(json &cgra_desc, int II)
+void CGRAXMLCompile::CGRA::ParseCGRA(const json &cgra_desc, int II)
 {
 
 	//NOTE you can only have sub modules at the CGRA level.
@@ -186,11 +194,11 @@ void CGRAXMLCompile::CGRA::ParseCGRA(json &cgra_desc, int II)
 				{
 					int y = sm["Y"];
 					int x = sm["X"];
-					submod = ParseModule(top_desc["ARCH"][type], this, name, type, t, x, y);// y, x);
+					submod = ParseModule((*top_desc)["ARCH"][type], this, name, type, t, x, y);// y, x);
 				}
 				else
 				{
-					submod = ParseModule(top_desc["ARCH"][type], this, name, type, t);
+					submod = ParseModule((*top_desc)["ARCH"][type], this, name, type, t);
 				}
 				// Module *submod = ParseModule(top_desc["ARCH"][type], this, name, type, t);
 				assert(submod);
@@ -203,84 +211,84 @@ void CGRAXMLCompile::CGRA::ParseCGRA(json &cgra_desc, int II)
 			}
 		}
 
-		for (auto &p : cgra_desc["INTERNALS"])
+		auto internals_it = cgra_desc.find("INTERNALS");
+		if (internals_it != cgra_desc.end())
 		{
-			Port *port_ptr = new Port(p, INT, this);
-			this->Name2Port[p] = port_ptr;
-			this->internalPorts.push_back(port_ptr);
+			for (auto &p : *internals_it)
+			{
+				Port *port_ptr = new Port(p, INT, this);
+				this->Name2Port[p] = port_ptr;
+				this->internalPorts.push_back(port_ptr);
+			}
 		}
 
-		for (auto &el : cgra_desc["CONNECTIONS"].items())
+		auto connections_it = cgra_desc.find("CONNECTIONS");
+		if (connections_it != cgra_desc.end())
 		{
-			string src = el.key();
-			string src_mod_str = src.substr(0, src.find("."));
-			string src_port_str = src.erase(0, src.find(".") + 1);
+			for (auto &el : connections_it->items())
+			{
+				string src = el.key();
+				string src_mod_str = src.substr(0, src.find("."));
+				string src_port_str = src.erase(0, src.find(".") + 1);
 
-			Module *src_mod;
-			if (src_mod_str == "THIS")
-			{
-				src_mod = this;
-			}
-			else
-			{
-				src_mod_str = src_mod_str + "-T" + to_string(t);
-				src_mod = Name2SubMod[src_mod_str];
-			}
-			if (!src_mod)
-			{
-				LOG(JSONARCH) << "src mod =" << src_mod_str << ", cannot be found.\n";
-			}
-			assert(src_mod);
-
-			for (string dest : el.value())
-			{
-				string dest_mod_str = dest.substr(0, dest.find("."));
-				string dest_port_str = dest.erase(0, dest.find(".") + 1);
-
-				Module *dest_mod;
-				if (dest_mod_str == "THIS")
+				Module *src_mod;
+				if (src_mod_str == "THIS")
 				{
-					dest_mod = this;
+					src_mod = this;
 				}
 				else
 				{
-					dest_mod_str = dest_mod_str + "-T" + to_string(t);
-					dest_mod = Name2SubMod[dest_mod_str];
+					src_mod_str = src_mod_str + "-T" + to_string(t);
+					src_mod = Name2SubMod[src_mod_str];
 				}
-				LOG(JSONARCH)  << "dest mod str = " << dest_mod_str << "\n";
-				assert(dest_mod);
+				if (!src_mod)
+				{
+					LOG(JSONARCH) << "src mod =" << src_mod_str << ", cannot be found.\n";
+				}
+				assert(src_mod);
 
-				Port *src_p;
-				// cout << "src_mod_str = " << src_mod_str << "\n";
-				// cout << "src_port_str = " << src_port_str << "\n";
-				// cout << "src_mod->Name2RegPort.empty()  = " << src_mod->Name2RegPort.empty() << "\n";
-				// cout << "src_mod real = " << src_mod->getName() << "\n";
-				if (!src_mod->Name2RegPort.empty() && src_mod->Name2RegPort.find(src_port_str) != src_mod->Name2RegPort.end())
+				for (string dest : el.value())
 				{
-					//in a regport second is used for outgoing connections
-					src_p = src_mod->Name2RegPort[src_port_str].second;
-				}
-				else
-				{
-					src_p = src_mod->Name2Port[src_port_str];
-				}
-				assert(src_p);
+					string dest_mod_str = dest.substr(0, dest.find("."));
+					string dest_port_str = dest.erase(0, dest.find(".") + 1);
 
-				Port *dest_p;
-				// cout << "dest_port_str = " << dest_port_str << "\n";
-				if (!dest_mod->Name2RegPort.empty() && dest_mod->Name2RegPort.find(dest_port_str) != dest_mod->Name2RegPort.end())
-				{
-					//in a regport first is used for incoming connections
-					dest_p = dest_mod->Name2RegPort[dest_port_str].first;
+					Module *dest_mod;
+					if (dest_mod_str == "THIS")
+					{
+						dest_mod = this;
+					}
+					else
+					{
+						dest_mod_str = dest_mod_str + "-T" + to_string(t);
+						dest_mod = Name2SubMod[dest_mod_str];
+					}
+					LOG(JSONARCH)  << "dest mod str = " << dest_mod_str << "\n";
+					assert(dest_mod);
+
+					Port *src_p;
+					if (!src_mod->Name2RegPort.empty() && src_mod->Name2RegPort.find(src_port_str) != src_mod->Name2RegPort.end())
+					{
+						src_p = src_mod->Name2RegPort[src_port_str].second;
+					}
+					else
+					{
+						src_p = src_mod->Name2Port[src_port_str];
+					}
+					assert(src_p);
+
+					Port *dest_p;
+					if (!dest_mod->Name2RegPort.empty() && dest_mod->Name2RegPort.find(dest_port_str) != dest_mod->Name2RegPort.end())
+					{
+						dest_p = dest_mod->Name2RegPort[dest_port_str].first;
+					}
+					else
+					{
+						dest_p = dest_mod->Name2Port[dest_port_str];
+					}
+					if (!dest_p)
+						throw 20;
+					this->insertConnection(src_p, dest_p);
 				}
-				else
-				{
-					dest_p = dest_mod->Name2Port[dest_port_str];
-				}
-				// assert(dest_p);
-				if (!dest_p)
-					throw 20;
-				this->insertConnection(src_p, dest_p);
 			}
 		}
 	}
@@ -313,11 +321,10 @@ void CGRAXMLCompile::CGRA::ParseCGRA(json &cgra_desc, int II)
 	}
 }
 
-Module *CGRAXMLCompile::CGRA::ParseModule(json &module_desc, Module *parent, string module_name, string type, int t, int x, int y)
+Module *CGRAXMLCompile::CGRA::ParseModule(const json &module_desc, Module *parent, string module_name, string type, int t, int x, int y)
 {
-	// module_name = module_name + "-T" + to_string(t);
 	LOG(JSONARCH)  << "Parsing module  :: module name = " << module_name << ", type = " << type << "\n";
-	assert(!top_desc.empty());
+	assert(top_desc && !top_desc->empty());
 	Module *ret;
 
 	if (type == "DP" || type == "MDP")
@@ -327,7 +334,6 @@ Module *CGRAXMLCompile::CGRA::ParseModule(json &module_desc, Module *parent, str
 		ret->Name2Port["I2"] = ret->getInPort("I2");
 		ret->Name2Port["P"] = ret->getInPort("P");
 		ret->Name2Port["T"] = ret->getOutPort("T");
-		//Datapath has a fixed design for now, so no need to modify just return
 
 		FU *ret_fu = ret->getFU();
 		if (ret_fu->isMEMFU())
@@ -340,25 +346,37 @@ Module *CGRAXMLCompile::CGRA::ParseModule(json &module_desc, Module *parent, str
 
 		if (type == "MDP")
 		{
-			for (auto &p : module_desc["SOCKETS"])
+			auto sockets_it = module_desc.find("SOCKETS");
+			if (sockets_it != module_desc.end())
 			{
-				Port *port_ptr = new Port(p, SOCKET, ret);
-				ret->Name2Port[p] = port_ptr;
-				ret->internalPorts.push_back(port_ptr);
+				for (auto &p : *sockets_it)
+				{
+					Port *port_ptr = new Port(p, SOCKET, ret);
+					ret->Name2Port[p] = port_ptr;
+					ret->internalPorts.push_back(port_ptr);
+				}
 			}
 
-			for (auto &p : module_desc["TSOCKETS"])
+			auto tsockets_it = module_desc.find("TSOCKETS");
+			if (tsockets_it != module_desc.end())
 			{
-				Port *port_ptr = new Port(p, SOCKET, ret);
-				ret->Name2Port[p] = port_ptr;
-				ret->socketPorts.push_back(port_ptr);
+				for (auto &p : *tsockets_it)
+				{
+					Port *port_ptr = new Port(p, SOCKET, ret);
+					ret->Name2Port[p] = port_ptr;
+					ret->socketPorts.push_back(port_ptr);
+				}
 			}
 
-			for (auto &p : module_desc["ISOCKETS"])
+			auto isockets_it = module_desc.find("ISOCKETS");
+			if (isockets_it != module_desc.end())
 			{
-				Port *port_ptr = new Port(p, SOCKET, ret);
-				ret->Name2Port[p] = port_ptr;
-				ret->socketPorts.push_back(port_ptr);
+				for (auto &p : *isockets_it)
+				{
+					Port *port_ptr = new Port(p, SOCKET, ret);
+					ret->Name2Port[p] = port_ptr;
+					ret->socketPorts.push_back(port_ptr);
+				}
 			}
 		}
 
@@ -373,7 +391,7 @@ Module *CGRAXMLCompile::CGRA::ParseModule(json &module_desc, Module *parent, str
 		assert(type.find("PE") != string::npos);
 		assert(x != -1);
 		assert(y != -1);
-		ret = new PE(parent, module_name, t, x, y);//y, x);
+		ret = new PE(parent, module_name, t, x, y);
 	}
 	else if (type == "CGRA")
 	{
@@ -381,146 +399,170 @@ Module *CGRAXMLCompile::CGRA::ParseModule(json &module_desc, Module *parent, str
 	}
 	else
 	{
-		// cout << "No special module for type = " << type << ", implementing geneic module.\n";
 		ret = new Module(parent, module_name, type, t);
 	}
 
-	for (auto &p : module_desc["INPUTS"])
+	auto inputs_it = module_desc.find("INPUTS");
+	if (inputs_it != module_desc.end())
 	{
-		Port *port_ptr = new Port(p, IN, ret);
-		ret->Name2Port[p] = port_ptr;
-		ret->inputPorts.push_back(port_ptr);
-	}
-
-	for (auto &p : module_desc["OUTPUTS"])
-	{
-		Port *port_ptr = new Port(p, OUT, ret);
-		// cout << "output port = " << p << "\n";
-		ret->Name2Port[p] = port_ptr;
-		ret->outputPorts.push_back(port_ptr);
-	}
-
-	for (auto &p : module_desc["INTERNALS"])
-	{
-		Port *port_ptr = new Port(p, INT, ret);
-		ret->Name2Port[p] = port_ptr;
-		ret->internalPorts.push_back(port_ptr);
-	}
-
-	for (auto &p : module_desc["SOCKETS"])
-	{
-		Port *port_ptr = new Port(p, SOCKET, ret);
-		ret->Name2Port[p] = port_ptr;
-		ret->socketPorts.push_back(port_ptr);
-	}
-
-	for (auto &p : module_desc["TSOCKETS"])
-	{
-		Port *port_ptr = new Port(p, SOCKET, ret);
-		ret->Name2Port[p] = port_ptr;
-		ret->socketPorts.push_back(port_ptr);
-	}
-
-	for (auto &p : module_desc["ISOCKETS"])
-	{
-		Port *port_ptr = new Port(p, SOCKET, ret);
-		ret->Name2Port[p] = port_ptr;
-		ret->socketPorts.push_back(port_ptr);
-	}
-
-	for (auto &p : module_desc["REGS"])
-	{
-		assert(ret->getPE());
-		ret->insertRegPort(p);
-		ret->Name2RegPort[p] = ret->getRegPort(p);
-	}
-
-	for (auto &el : module_desc["OPS"].items())
-	{
-		//OPS should only be present in FUs
-		FU *ret_fu = static_cast<FU *>(ret);
-		string OP = el.key();
-		int lat = el.value();
-		ret_fu->supportedOPs[OP] = lat;
-		insertGlobalOP(OP, lat);
-	}
-
-	for (auto &el : module_desc["SUBMODS"].items())
-	{
-
-		//if not at CGRA level, a single instance suffice
-		string type = el.key();
-
-		for (auto &sm : el.value())
+		for (auto &p : *inputs_it)
 		{
-			string name = sm["name"];
-			Module *submod;
-			if (sm.find("X") != sm.end() && sm.find("Y") != sm.end())
+			Port *port_ptr = new Port(p, IN, ret);
+			ret->Name2Port[p] = port_ptr;
+			ret->inputPorts.push_back(port_ptr);
+		}
+	}
+
+	auto outputs_it = module_desc.find("OUTPUTS");
+	if (outputs_it != module_desc.end())
+	{
+		for (auto &p : *outputs_it)
+		{
+			Port *port_ptr = new Port(p, OUT, ret);
+			ret->Name2Port[p] = port_ptr;
+			ret->outputPorts.push_back(port_ptr);
+		}
+	}
+
+	auto internals_it = module_desc.find("INTERNALS");
+	if (internals_it != module_desc.end())
+	{
+		for (auto &p : *internals_it)
+		{
+			Port *port_ptr = new Port(p, INT, ret);
+			ret->Name2Port[p] = port_ptr;
+			ret->internalPorts.push_back(port_ptr);
+		}
+	}
+
+	auto sockets_it = module_desc.find("SOCKETS");
+	if (sockets_it != module_desc.end())
+	{
+		for (auto &p : *sockets_it)
+		{
+			Port *port_ptr = new Port(p, SOCKET, ret);
+			ret->Name2Port[p] = port_ptr;
+			ret->socketPorts.push_back(port_ptr);
+		}
+	}
+
+	auto tsockets_it = module_desc.find("TSOCKETS");
+	if (tsockets_it != module_desc.end())
+	{
+		for (auto &p : *tsockets_it)
+		{
+			Port *port_ptr = new Port(p, SOCKET, ret);
+			ret->Name2Port[p] = port_ptr;
+			ret->socketPorts.push_back(port_ptr);
+		}
+	}
+
+	auto isockets_it = module_desc.find("ISOCKETS");
+	if (isockets_it != module_desc.end())
+	{
+		for (auto &p : *isockets_it)
+		{
+			Port *port_ptr = new Port(p, SOCKET, ret);
+			ret->Name2Port[p] = port_ptr;
+			ret->socketPorts.push_back(port_ptr);
+		}
+	}
+
+	auto regs_it = module_desc.find("REGS");
+	if (regs_it != module_desc.end())
+	{
+		for (auto &p : *regs_it)
+		{
+			assert(ret->getPE());
+			ret->insertRegPort(p);
+			ret->Name2RegPort[p] = ret->getRegPort(p);
+		}
+	}
+
+	auto ops_it = module_desc.find("OPS");
+	if (ops_it != module_desc.end())
+	{
+		for (auto &el : ops_it->items())
+		{
+			FU *ret_fu = static_cast<FU *>(ret);
+			string OP = el.key();
+			int lat = el.value();
+			ret_fu->supportedOPs[OP] = lat;
+			insertGlobalOP(OP, lat);
+		}
+	}
+
+	auto submods_it = module_desc.find("SUBMODS");
+	if (submods_it != module_desc.end())
+	{
+		for (auto &el : submods_it->items())
+		{
+			string child_type = el.key();
+			for (auto &sm : el.value())
 			{
-				int y = sm["Y"];
-				int x = sm["X"];
-				submod = ParseModule(top_desc["ARCH"][type], ret, name, type, t, x, y);//y, x);
-			}
-			else
-			{
-				submod = ParseModule(top_desc["ARCH"][type], ret, name, type, t);
-				if (type == "SPM")
+				string name = sm["name"];
+				Module *submod;
+				if (sm.find("X") != sm.end() && sm.find("Y") != sm.end())
 				{
-					submod->isSPM = true;
-					if (module_desc.find("DATA_LAYOUT") != module_desc.end())
+					int child_y = sm["Y"];
+					int child_x = sm["X"];
+					submod = ParseModule((*top_desc)["ARCH"][child_type], ret, name, child_type, t, child_x, child_y);
+				}
+				else
+				{
+					submod = ParseModule((*top_desc)["ARCH"][child_type], ret, name, child_type, t);
+					if (child_type == "SPM")
 					{
-						for (auto &el : module_desc["DATA_LAYOUT"].items())
+						submod->isSPM = true;
+						auto data_layout_it = module_desc.find("DATA_LAYOUT");
+						if (data_layout_it != module_desc.end())
 						{
-							LOG(JSONARCH)  << "Inserting to module = " << submod->getName() << ", data_layout var name = " << static_cast<std::string>(el.key());
-							LOG(JSONARCH)  << ",size = " << (int)el.value() << "\n";
-							submod->data_layout.insert(static_cast<std::string>(el.key()));
-							this->Variable2SPM[static_cast<std::string>(el.key())] = submod;
-							this->Variable2SPMAddr[static_cast<std::string>(el.key())] = (int)el.value();
+							for (auto &layout_el : data_layout_it->items())
+							{
+								LOG(JSONARCH) << "Inserting to module = " << submod->getName() << ", data_layout var name = " << static_cast<std::string>(layout_el.key());
+								LOG(JSONARCH) << ",size = " << (int)layout_el.value() << "\n";
+								submod->data_layout.insert(static_cast<std::string>(layout_el.key()));
+								this->Variable2SPM[static_cast<std::string>(layout_el.key())] = submod;
+								this->Variable2SPMAddr[static_cast<std::string>(layout_el.key())] = (int)layout_el.value();
+							}
 						}
 					}
 				}
+
+				ret->Name2SubMod[name] = submod;
+				ret->subModules.push_back(submod);
 			}
-
-			ret->Name2SubMod[name] = submod;
-			ret->subModules.push_back(submod);
-		}
-
-		// for (string name : el.value())
-		// {
-		// 	Module *submod = ParseModule(top_desc["ARCH"][type], ret, name, type, t);
-		// 	assert(submod);
-
-		// 	// cout << "submod name = " << name << "\n";
-		// 	// cout << "submod real name = " << submod->getFullName() << "\n";
-
-		// 	ret->Name2SubMod[name] = submod;
-		// 	ret->subModules.push_back(submod);
-		// }
-	}
-
-	for (auto &el : module_desc["CONNECTIONS"].items())
-	{
-		string src = el.key();
-		Port *src_p = ret->getJSONPort(src, true);
-
-		for (string dest : el.value())
-		{
-			Port *dest_p = ret->getJSONPort(dest, false);
-			ret->insertConnection(src_p, dest_p);
 		}
 	}
 
-	for (auto &el : module_desc["CONFLICTS"].items())
+	auto conns_it = module_desc.find("CONNECTIONS");
+	if (conns_it != module_desc.end())
 	{
-
-		string src = el.key();
-		Port *src_p = ret->getJSONPort(src, true);
-
-		for (string dest : el.value())
+		for (auto &el : conns_it->items())
 		{
-			Port *dest_p = ret->getJSONPort(dest, false);
-			this->insertConflictPort(src_p, dest_p);
-			this->insertConflictPort(dest_p, src_p);
+			string src = el.key();
+			Port *src_p = ret->getJSONPort(src, true);
+			for (string dest : el.value())
+			{
+				Port *dest_p = ret->getJSONPort(dest, false);
+				ret->insertConnection(src_p, dest_p);
+			}
+		}
+	}
+
+	auto conflicts_it = module_desc.find("CONFLICTS");
+	if (conflicts_it != module_desc.end())
+	{
+		for (auto &el : conflicts_it->items())
+		{
+			string src = el.key();
+			Port *src_p = ret->getJSONPort(src, true);
+			for (string dest : el.value())
+			{
+				Port *dest_p = ret->getJSONPort(dest, false);
+				this->insertConflictPort(src_p, dest_p);
+				this->insertConflictPort(dest_p, src_p);
+			}
 		}
 	}
 
@@ -534,6 +576,8 @@ Module *CGRAXMLCompile::CGRA::ParseModule(json &module_desc, Module *parent, str
 
 bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 {
+	using Clock = std::chrono::steady_clock;
+	auto phase_start = Clock::now();
 	this->t_max = II;
 
 	std::stringstream ss(fileName);
@@ -551,21 +595,54 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 	assert(filename_extention == ".json");
 	string filename_withoutext = cgra_json_name.substr(0, cgra_json_name.size() - 5);
 
-	ifstream json_file(fileName.c_str());
-	assert(json_file.is_open());
-	json json;
-	json_file >> json;
+	const char *dump_verbose_env = std::getenv("MORPHER_DUMP_VERBOSE_JSON");
+	bool dump_verbose_json = false;
+	if (dump_verbose_env != nullptr && dump_verbose_env[0] != '\0')
+	{
+		dump_verbose_json = (std::string(dump_verbose_env) != "0");
+	}
 
-	// cout << json;
+	bool cache_hit = false;
+	auto parse_done = phase_start;
+	auto pattern_done = phase_start;
+	auto interconn_done = phase_start;
+	auto verbose_done = phase_start;
 
-	PreprocessPattern(json["ARCH"]["CGRA"]);
-	PreprocessInterSubmodConns(json["ARCH"]);
-	string verbose_json_filename = filename_withoutext + "_verbose.json";
-	ofstream verbose_json_file(verbose_json_filename.c_str());
-	verbose_json_file << setw(4) << json << std::endl;
-	verbose_json_file.close();
+	auto cache_it = g_preprocessed_arch_cache.find(fileName);
+	if (cache_it != g_preprocessed_arch_cache.end())
+	{
+		cache_hit = true;
+		top_desc = cache_it->second;
+		parse_done = Clock::now();
+		pattern_done = parse_done;
+		interconn_done = parse_done;
+		verbose_done = parse_done;
+	}
+	else
+	{
+		ifstream json_file(fileName.c_str());
+		assert(json_file.is_open());
+		json parsed_json;
+		json_file >> parsed_json;
+		parse_done = Clock::now();
 
-	top_desc = json;
+		PreprocessPattern(parsed_json["ARCH"]["CGRA"]);
+		pattern_done = Clock::now();
+		PreprocessInterSubmodConns(parsed_json["ARCH"]);
+		interconn_done = Clock::now();
+
+		if (dump_verbose_json)
+		{
+			string verbose_json_filename = filename_withoutext + "_verbose.json";
+			ofstream verbose_json_file(verbose_json_filename.c_str());
+			verbose_json_file << setw(4) << parsed_json << std::endl;
+			verbose_json_file.close();
+		}
+		verbose_done = Clock::now();
+
+		top_desc = std::make_shared<json>(std::move(parsed_json));
+		g_preprocessed_arch_cache[fileName] = top_desc;
+	}
 
 	LOG(JSONARCH)  << "TOP_ARCH :: begin %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 	// std::cout<< setw(4) << top_desc << std::endl;
@@ -575,8 +652,22 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 	// ParseModule(json["ARCH"]["CGRA"], NULL, "CGRA_Ins", "CGRA", 0);
 
 	//TODO : remove hardcoding of II=2
-	ParseCGRA(json["ARCH"]["CGRA"], II);
+	ParseCGRA((*top_desc)["ARCH"]["CGRA"], II);
+	auto construct_done = Clock::now();
 	LOG(JSONARCH)  << "Parsing JSON Success!!!\n";
+	auto to_ms = [](const Clock::time_point &start, const Clock::time_point &end) -> long long
+	{
+		return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+	};
+	std::cout << "Mapper startup timings (ms): "
+	          << "cache_hit=" << (cache_hit ? "yes" : "no")
+	          << ", "
+	          << "json_parse=" << to_ms(phase_start, parse_done)
+	          << ", preprocess_pattern=" << to_ms(parse_done, pattern_done)
+	          << ", preprocess_interconn=" << to_ms(pattern_done, interconn_done)
+	          << ", verbose_dump=" << to_ms(interconn_done, verbose_done)
+	          << ", cgra_construct=" << to_ms(verbose_done, construct_done)
+	          << "\n";
 
 
 	// exit(EXIT_SUCCESS);

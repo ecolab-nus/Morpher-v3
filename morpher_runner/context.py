@@ -4,10 +4,57 @@ from dataclasses import dataclass
 import yaml
 
 
+def _resolve_memory_mode(config_dict):
+  mode = config_dict.get("memory_mode")
+  if mode is None:
+    legacy_json_arch = config_dict.get("json_arch")
+    legacy_before_memupdate = config_dict.get("json_arch_before_memupdate")
+    if legacy_before_memupdate or (isinstance(legacy_json_arch, str) and "_mem" in legacy_json_arch):
+      return "auto"
+    return "static"
+
+  mode = str(mode).strip().lower()
+  if mode not in ("auto", "static"):
+    raise RuntimeError("Invalid memory_mode=%r. Expected one of: auto, static." % mode)
+  return mode
+
+
+def _resolve_arch_template_json(config_dict, memory_mode):
+  if "arch_template_json" in config_dict:
+    return config_dict["arch_template_json"]
+
+  legacy_before_memupdate = config_dict.get("json_arch_before_memupdate")
+  legacy_json_arch = config_dict.get("json_arch")
+
+  if memory_mode == "auto" and legacy_before_memupdate:
+    return legacy_before_memupdate
+  if legacy_json_arch:
+    return legacy_json_arch
+
+  raise RuntimeError(
+    "Missing required config key 'arch_template_json'. "
+    "Legacy fallback keys json_arch/json_arch_before_memupdate were also not found."
+  )
+
+
+def _print_deprecation_warning(config_dict):
+  deprecated_keys = []
+  if "json_arch" in config_dict:
+    deprecated_keys.append("json_arch")
+  if "json_arch_before_memupdate" in config_dict:
+    deprecated_keys.append("json_arch_before_memupdate")
+  if deprecated_keys:
+    print(
+      "Warning: deprecated config keys in use (%s). "
+      "Please migrate to memory_mode + arch_template_json."
+      % ", ".join(deprecated_keys)
+    )
+
+
 @dataclass
 class RunnerConfig:
-  json_arch_before_memupdate: str
-  json_arch: str
+  memory_mode: str
+  arch_template_json: str
   mapper_subfolder: str
   init_II: int
   ydim: int
@@ -27,9 +74,16 @@ class RunnerConfig:
   def from_yaml(cls, config_path):
     with open(config_path, "r", encoding="utf-8") as stream:
       config_dict = yaml.safe_load(stream)
+    if not isinstance(config_dict, dict):
+      raise RuntimeError("Config %s must contain a top-level mapping." % config_path)
+
+    memory_mode = _resolve_memory_mode(config_dict)
+    arch_template_json = _resolve_arch_template_json(config_dict, memory_mode)
+    _print_deprecation_warning(config_dict)
+
     return cls(
-      json_arch_before_memupdate=config_dict["json_arch_before_memupdate"],
-      json_arch=config_dict["json_arch"],
+      memory_mode=memory_mode,
+      arch_template_json=arch_template_json,
       mapper_subfolder=config_dict["mapper_subfolder"],
       init_II=config_dict["init_II"],
       ydim=config_dict["ydim"],

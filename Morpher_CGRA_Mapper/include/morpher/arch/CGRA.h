@@ -144,15 +144,15 @@ public:
 
 	int minLatBetweenPEs = 1;
 
-	Module* ParseModule(json& module_desc, Module* parent, string module_name, string type, int t, int x = -1, int y = -1);
-	void ParseCGRA(json& cgra_desc, int II);
+		Module* ParseModule(const json& module_desc, Module* parent, string module_name, string type, int t, int x = -1, int y = -1);
+		void ParseCGRA(const json& cgra_desc, int II);
 	unordered_map<int,std::vector<Module*>> subModArr;
 
 
 	bool ParseJSONArch(string fileName, int II);
 	bool PreprocessPattern(json& top);
 	bool PreprocessInterSubmodConns(json& top);
-	json top_desc;
+		std::shared_ptr<const json> top_desc;
 
 	unordered_set<PE*> getAllPEList();
 	vector<PE*> getSpatialPEList(int t);

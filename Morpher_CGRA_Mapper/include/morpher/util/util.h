@@ -87,6 +87,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	assert(ret.dfg_filename!= "");
 	assert(ret.json_file_name!= "");
 	args.print_as_ini(std::cout);
+	std::cout << std::flush;
 
 	return ret;
 

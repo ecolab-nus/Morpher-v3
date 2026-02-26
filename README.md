@@ -58,6 +58,27 @@ python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runm
 - `config_path` default: `config/default_config.yaml`
 - `runmode`: `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`
 
+Key config knobs in `config/default_config.yaml`:
+
+- `memory_mode`: `auto` or `static`
+  - `auto`: generate per-kernel runtime arch JSON from `arch_template_json` + `<kernel>_mem_alloc.txt`
+    at `Morpher_CGRA_Mapper/benchmarks/<mapper_subfolder>/<suite>/<kernel>/<kernel>_arch_runtime.json`
+  - `static`: use `arch_template_json` directly with no mem-layout regeneration
+    (the JSON must already contain any required memory wrapper/data-layout definitions)
+- `arch_template_json`: architecture template JSON (resolved from `Morpher_CGRA_Mapper/json_arch/` unless absolute path is provided)
+- `max_test_samples`: also used as trace-generation cap for instrumentation (`MORPHER_MAX_TRACES`) so trace generation and simulator sampling stay aligned
+
+Deprecated config keys still accepted (with warning):
+
+- `json_arch`
+- `json_arch_before_memupdate`
+
+Mapper startup diagnostics:
+
+- Mapper prints startup timings for JSON parse/preprocess/CGRA construction.
+- Verbose expanded-JSON dump is now disabled by default for speed.
+  Set `MORPHER_DUMP_VERBOSE_JSON=1` if you need `<arch>_verbose.json` for debugging.
+
 Example:
 
 ```bash

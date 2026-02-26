@@ -1,4 +1,7 @@
+import os
+import re
 import subprocess
+import time
 
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
@@ -7,6 +10,15 @@ from morpher_runner.fs_ops import copy_file
 from morpher_runner.fs_ops import remove_glob
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
+
+
+def count_trace_files(trace_dir, kernel):
+  pattern = re.compile(r"^%s_trace_[0-9]+\\.txt$" % re.escape(kernel))
+  count = 0
+  for filename in os.listdir(trace_dir):
+    if pattern.match(filename):
+      count += 1
+  return count
 
 
 def build_ir_generation_commands(context):
@@ -183,15 +195,37 @@ def run_dfg_generator(context):
   print("\nCode instrumentation..\n")
   run_commands(build_instrumentation_commands(context))
 
+  trace_limit = int(config.max_test_samples)
+  if trace_limit < 0:
+    raise RuntimeError("max_test_samples must be >= 0, got %d" % trace_limit)
+
+  trace_env = os.environ.copy()
+  trace_env["MORPHER_MAX_TRACES"] = str(trace_limit)
+  print("Trace generation limit (MORPHER_MAX_TRACES): %d" % trace_limit)
   print("Running instrumented code to generate the data memory content (memtraces/%s_trace_x.txt)..\n" % kernel)
+  start_time = time.time()
   with open("%s/final_log.txt" % dfg_kernel.rstrip("/"), "w", encoding="utf-8") as stdout_log:
     with open("%s/final_err_log.txt" % dfg_kernel.rstrip("/"), "w", encoding="utf-8") as stderr_log:
-      result = subprocess.run(["./final"], cwd=dfg_kernel, stdout=stdout_log, stderr=stderr_log, check=False)
+      result = subprocess.run(
+        ["./final"],
+        cwd=dfg_kernel,
+        stdout=stdout_log,
+        stderr=stderr_log,
+        check=False,
+        env=trace_env,
+      )
+  elapsed = time.time() - start_time
+  trace_count = count_trace_files("%s/memtraces" % dfg_kernel.rstrip("/"), kernel)
+  print("Instrumentation run complete in %.2f sec. Generated %d trace file(s)." % (elapsed, trace_count))
   if result.returncode != 0:
     printable_code = result.returncode if result.returncode >= 0 else (128 + (-result.returncode))
     print("Warning: instrumented binary ./final exited with code %d; simulation traces will not be available." % printable_code)
   else:
-    copy_file("%s/memtraces/%s_trace_0.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
-    copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
+    trace_zero = "%s/memtraces/%s_trace_0.txt" % (dfg_kernel.rstrip("/"), kernel)
+    if os.path.isfile(trace_zero):
+      copy_file(trace_zero, context.simulator_kernel)
+    else:
+      print("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
+  copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
 
   remove_glob(dfg_kernel, "*.ll")
