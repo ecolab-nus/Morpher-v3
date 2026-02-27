@@ -1,5 +1,6 @@
 import re
 import glob
+import os
 from os import listdir
 from os.path import isfile, join
 
@@ -56,16 +57,20 @@ def build_sim_command(context, trace_file):
 
 
 def run_simulator(context):
+  verbose_cmds = os.getenv("MORPHER_VERBOSE_CMDS", "").strip().lower() not in ("", "0", "false", "off", "no")
   print("\n-----Running hycube_simulator-----\n")
 
   files = collect_trace_files(context)
   samplefiles = select_trace_samples(files, context.config.max_test_samples)
+  print("Trace samples: %d\n" % len(samplefiles))
 
   matches = 0
   mismatches = 0
-  for file in tqdm(samplefiles):
+  total = len(samplefiles)
+  for idx, file in enumerate(tqdm(samplefiles), start=1):
     command = build_sim_command(context, file)
-    print(" ".join(command.argv))
+    if verbose_cmds:
+      print("[sim %d/%d] %s" % (idx, total, " ".join(command.argv)))
     run_command(command)
 
     with open("%s/sim_result.txt" % context.simulator_kernel.rstrip("/"), "r", encoding="utf-8") as f:

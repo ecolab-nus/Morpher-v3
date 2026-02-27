@@ -41,7 +41,10 @@ def main(csource, function, config="config/default_config.yaml", runmode="runall
     run_mapper(context)
 
   if runmode == "runall" or runmode == "sim_only":
-    run_simulator(context)
+    if context.config.enable_simulation:
+      run_simulator(context)
+    else:
+      print("\nSimulation disabled by config (enable_simulation=false); skipping hycube_simulator.\n")
 
 
 if __name__ == "__main__":

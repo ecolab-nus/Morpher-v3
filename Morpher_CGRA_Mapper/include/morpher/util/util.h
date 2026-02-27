@@ -36,6 +36,8 @@ struct arguments
 	int mapping_method = 0; // 0: PathFinderMapper, 1: SAMapper (SimulatedAnnealing)
 	int max_II = 32;
 	int ii_restarts = 1; // number of additional mapper retries at the same II
+	int skip_ii_estimation = 0; // 1: skip Res/Rec II estimation and start from user II
+	int print_dfg = 0; // 1: print parsed DFG details
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 };
@@ -63,6 +65,8 @@ inline arguments parse_arguments(int argn, char *argc[]){
 			.add_option<int>("-b", "--backtrack_limit", "back track limit", 0)
 				.add_option<int>("", "--max_II", "max II", 32)
 				.add_option<int>("", "--ii_restarts", "additional mapper retries per II", 1)
+				.add_option<int>("", "--skip_ii_estimation", "skip Res/Rec II estimation", 0)
+				.add_option<int>("", "--print_dfg", "print parsed DFG", 0)
 				.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 				.add_option<std::string>("", "--arch_name", "architecture name", "")
 		        .parse(argn, argc);
@@ -81,13 +85,13 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.mapping_method = args.get_option<int>("--mapping");
 	ret.max_II = args.get_option<int>("--max_II");
 	ret.ii_restarts = args.get_option<int>("--ii_restarts");
+	ret.skip_ii_estimation = args.get_option<int>("--skip_ii_estimation");
+	ret.print_dfg = args.get_option<int>("--print_dfg");
 	ret.spm_mode = args.get_option<std::string>("--spm_mode");
 	ret.use_json = true;
 	ret.arch_name = args.get_option<std::string>("--arch_name");
 	assert(ret.dfg_filename!= "");
 	assert(ret.json_file_name!= "");
-	args.print_as_ini(std::cout);
-	std::cout << std::flush;
 
 	return ret;
 

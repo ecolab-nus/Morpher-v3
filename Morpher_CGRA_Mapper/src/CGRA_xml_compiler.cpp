@@ -24,10 +24,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <cstdlib>
 
 using namespace std;
 using namespace CGRAXMLCompile;
 
+namespace
+{
+void print_mapper_arguments(const arguments &args)
+{
+	std::cout << "Mapper arguments:\n";
+	std::cout << "xdim=" << args.xdim << "\n";
+	std::cout << "ydim=" << args.ydim << "\n";
+	std::cout << "json_arch=" << args.json_file_name << "\n";
+	std::cout << "dfg=" << args.dfg_filename << "\n";
+	std::cout << "petype=" << args.PEType << "\n";
+	std::cout << "ii=" << args.userII << "\n";
+	std::cout << "mapping=" << args.mapping_method << "\n";
+	std::cout << "datapath_number=" << args.ndps << "\n";
+	std::cout << "max_iter=" << args.maxiter << "\n";
+	std::cout << "hops=" << args.max_hops << "\n";
+	std::cout << "noMutexPaths=" << (args.noMutexPaths ? "true" : "false") << "\n";
+	std::cout << "backtrack_limit=" << args.backtracklimit << "\n";
+	std::cout << "max_II=" << args.max_II << "\n";
+	std::cout << "ii_restarts=" << args.ii_restarts << "\n";
+	std::cout << "skip_ii_estimation=" << args.skip_ii_estimation << "\n";
+	std::cout << "print_dfg=" << args.print_dfg << "\n";
+	std::cout << "spm_mode=" << args.spm_mode << "\n";
+	std::cout << "arch_name=" << args.arch_name << "\n\n";
+	std::cout << std::flush;
+}
+}
 
 int main(int argn, char *argc[])
 {
@@ -38,9 +65,8 @@ int main(int argn, char *argc[])
 	// 	std::cout << "arguments : <DFG.xml> <peType::\nGENERIC_8REGF,\nHyCUBE_8REGF,\nHyCUBE_4REG,\nN2N_4REGF,\nN2N_8REGF,\nSTDNOC_8REGF,\nSTDNOC_4REGF,\nSTDNOC_4REG,\nSTDNOC_4REGF_1P\nMFU_HyCUBE_4REG\nMFU_HyCUBE_4REGF\nMFU_STDNOC_4REG\nMFU_STDNOC_4REGF> <XYDim> <numberofDPS> <backtracklimit> <initII> <-arch_json> <-noMTpath>\n";
 	// }
 	// assert(argn >= 7);
-	std::cout<<"Mapper arguments:\n"<<std::flush;
 	arguments args = parse_arguments(argn,argc);
-	std::cout<<"\n";
+	print_mapper_arguments(args);
 	std::string inputDFG_filename = args.dfg_filename;
 	int xdim = args.xdim;
 	int ydim = args.ydim;
@@ -52,6 +78,13 @@ int main(int argn, char *argc[])
 	int max_II = args.max_II;
 	int ii_restarts = args.ii_restarts >= 0 ? args.ii_restarts : 0;
 	int attempts_per_ii = ii_restarts + 1;
+	bool skip_ii_estimation = (args.skip_ii_estimation != 0);
+	bool print_dfg = (args.print_dfg != 0);
+	const char *print_dfg_env = std::getenv("MORPHER_PRINT_DFG");
+	if (print_dfg_env != nullptr && print_dfg_env[0] != '\0')
+	{
+		print_dfg = (std::string(print_dfg_env) != "0");
+	}
 	std::string spm_mode = args.spm_mode;
 	for (char &ch : spm_mode)
 	{
@@ -69,7 +102,10 @@ int main(int argn, char *argc[])
 	
 	DFG currDFG;
 	currDFG.parseXML(inputDFG_filename);
-	currDFG.printDFG();
+	if (print_dfg)
+	{
+		currDFG.printDFG();
+	}
 
 	bool isGenericPE;
 
@@ -80,14 +116,6 @@ int main(int argn, char *argc[])
 	// CGRA testCGRA(NULL, "testCGRA", 1, ydim, xdim, &currDFG, PEType, numberOfDPs);
 
 	CGRA *testCGRA;
-	if (!args.use_json)
-	{
-		testCGRA = new CGRA(NULL, "coreCGRA", 1, ydim, xdim, &currDFG, PEType, numberOfDPs);
-	}
-	else
-	{
-		testCGRA = new CGRA(json_file_name, 1,xdim,ydim);
-	}
 
 	auto apply_spm_mode = [&](CGRA *target_cgra) -> bool
 	{
@@ -112,13 +140,19 @@ int main(int argn, char *argc[])
 		target_cgra->is_spm_modelled = has_spm_layout;
 		return true;
 	};
+	if (!args.use_json)
+	{
+		testCGRA = new CGRA(NULL, "coreCGRA", 1, ydim, xdim, &currDFG, PEType, numberOfDPs);
+	}
+	else
+	{
+		testCGRA = new CGRA(json_file_name, 1,xdim,ydim);
+	}
+
 	if (!apply_spm_mode(testCGRA))
 	{
 		return 1;
 	}
-
-	
-
 	TimeDistInfo tdi = testCGRA->analyzeTimeDist();
 	PathFinderMapper * mapper;
 	if (mapping_method == 0){
@@ -133,15 +167,27 @@ int main(int argn, char *argc[])
 	
 	mapper->setMaxIter(args.maxiter);
 	std::cout << "MAP begin... \n";
-	int resII = mapper->getMinimumII(testCGRA, &currDFG);
-	int recII  = mapper->getRecMinimumII(&currDFG);
+	int resII = 0;
+	int recII = 0;
+	if (!skip_ii_estimation)
+	{
+		resII = mapper->getMinimumII(testCGRA, &currDFG);
+		recII = mapper->getRecMinimumII(&currDFG);
+	}
 	// int recII = 0; // for SA initial mapping test.
 //	std::cout << "Res Minimum II = " << resII << ", ";
 //	std::cout << "Rec Minimum II = " << recII << ", ";
 //	std::cout << "Init User II = " << initUserII << "\n";
-	int II = std::max(recII, resII);
-
-	II = std::max(initUserII, II);
+	int II;
+	if (skip_ii_estimation)
+	{
+		II = std::max(1, initUserII);
+	}
+	else
+	{
+		II = std::max(recII, resII);
+		II = std::max(initUserII, II);
+	}
 
 	std::cout << "Initial target II = " << II << " (ResMin II = "<<resII<<" , RecMin II = "<<recII<<", UserGiven II = "<<initUserII<<" )\n";
 
@@ -160,18 +206,32 @@ int main(int argn, char *argc[])
 
 	bool mappingSuccess = false;
 	bool binaryEmissionFailedAtII = false;
+	bool seed_dfg_available = true;
 	auto try_map_at_current_ii = [&](bool strict_bookkeeping, bool emit_binary, const std::string &phase_label) -> bool
 	{
 		for (int restart = 0; restart < attempts_per_ii; ++restart)
 		{
-			DFG tempDFG;
-			tempDFG.parseXML(inputDFG_filename);
-			tempDFG.printDFG();
+			DFG tempDFGStorage;
+			DFG *activeDFG = nullptr;
+			if (seed_dfg_available)
+			{
+				activeDFG = &currDFG;
+				seed_dfg_available = false;
+			}
+			else
+			{
+				tempDFGStorage.parseXML(inputDFG_filename);
+				if (print_dfg)
+				{
+					tempDFGStorage.printDFG();
+				}
+				activeDFG = &tempDFGStorage;
+			}
 
 			CGRA *tempCGRA;
 			if (json_file_name.empty())
 			{
-				tempCGRA = new CGRA(NULL, "coreCGRA", II, ydim, xdim, &tempDFG, PEType, numberOfDPs, mapper->getcongestedPortsPtr());
+				tempCGRA = new CGRA(NULL, "coreCGRA", II, ydim, xdim, activeDFG, PEType, numberOfDPs, mapper->getcongestedPortsPtr());
 			}
 			else
 				{
@@ -195,15 +255,15 @@ int main(int argn, char *argc[])
 				std::string phaseFailureReason;
 				try
 				{
-					if (mapping_method == 0)
-					{
-						phaseSuccess = mapper->Map(tempCGRA, &tempDFG);
-					}
-					else if (mapping_method == 1)
-					{
-						SAMapper * sa_mapper = static_cast<SAMapper*>(mapper);
-						phaseSuccess = sa_mapper->SAMap(tempCGRA, &tempDFG);
-					}
+						if (mapping_method == 0)
+						{
+							phaseSuccess = mapper->Map(tempCGRA, activeDFG);
+						}
+						else if (mapping_method == 1)
+						{
+							SAMapper * sa_mapper = static_cast<SAMapper*>(mapper);
+							phaseSuccess = sa_mapper->SAMap(tempCGRA, activeDFG);
+						}
 				}
 				catch (const std::exception &e)
 				{

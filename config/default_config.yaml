@@ -14,5 +14,8 @@
  max_mapper_iter: 30
  max_II: 32
  ii_restarts: 0
+ skip_ii_estimation: true
+ print_dfg: false
+ enable_simulation: false
  spm_mode: 'off'
  llvm_debug_type: 'no'

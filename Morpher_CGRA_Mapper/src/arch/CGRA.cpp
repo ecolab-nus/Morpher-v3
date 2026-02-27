@@ -12,7 +12,6 @@
 #include <string>
 #include <sstream>
 #include <fstream>
-#include <chrono>
 #include <cstdlib>
 #include <unordered_map>
 //#include <nlohmann/json.hpp>
@@ -576,8 +575,6 @@ Module *CGRAXMLCompile::CGRA::ParseModule(const json &module_desc, Module *paren
 
 bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 {
-	using Clock = std::chrono::steady_clock;
-	auto phase_start = Clock::now();
 	this->t_max = II;
 
 	std::stringstream ss(fileName);
@@ -602,21 +599,10 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 		dump_verbose_json = (std::string(dump_verbose_env) != "0");
 	}
 
-	bool cache_hit = false;
-	auto parse_done = phase_start;
-	auto pattern_done = phase_start;
-	auto interconn_done = phase_start;
-	auto verbose_done = phase_start;
-
 	auto cache_it = g_preprocessed_arch_cache.find(fileName);
 	if (cache_it != g_preprocessed_arch_cache.end())
 	{
-		cache_hit = true;
 		top_desc = cache_it->second;
-		parse_done = Clock::now();
-		pattern_done = parse_done;
-		interconn_done = parse_done;
-		verbose_done = parse_done;
 	}
 	else
 	{
@@ -624,12 +610,9 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 		assert(json_file.is_open());
 		json parsed_json;
 		json_file >> parsed_json;
-		parse_done = Clock::now();
 
 		PreprocessPattern(parsed_json["ARCH"]["CGRA"]);
-		pattern_done = Clock::now();
 		PreprocessInterSubmodConns(parsed_json["ARCH"]);
-		interconn_done = Clock::now();
 
 		if (dump_verbose_json)
 		{
@@ -638,7 +621,6 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 			verbose_json_file << setw(4) << parsed_json << std::endl;
 			verbose_json_file.close();
 		}
-		verbose_done = Clock::now();
 
 		top_desc = std::make_shared<json>(std::move(parsed_json));
 		g_preprocessed_arch_cache[fileName] = top_desc;
@@ -653,21 +635,7 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 
 	//TODO : remove hardcoding of II=2
 	ParseCGRA((*top_desc)["ARCH"]["CGRA"], II);
-	auto construct_done = Clock::now();
 	LOG(JSONARCH)  << "Parsing JSON Success!!!\n";
-	auto to_ms = [](const Clock::time_point &start, const Clock::time_point &end) -> long long
-	{
-		return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-	};
-	std::cout << "Mapper startup timings (ms): "
-	          << "cache_hit=" << (cache_hit ? "yes" : "no")
-	          << ", "
-	          << "json_parse=" << to_ms(phase_start, parse_done)
-	          << ", preprocess_pattern=" << to_ms(parse_done, pattern_done)
-	          << ", preprocess_interconn=" << to_ms(pattern_done, interconn_done)
-	          << ", verbose_dump=" << to_ms(interconn_done, verbose_done)
-	          << ", cgra_construct=" << to_ms(verbose_done, construct_done)
-	          << "\n";
 
 
 	// exit(EXIT_SUCCESS);

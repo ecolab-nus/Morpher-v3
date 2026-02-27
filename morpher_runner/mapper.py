@@ -1,4 +1,5 @@
 import os
+import shlex
 import time
 
 from morpher_runner.exec import Command
@@ -45,6 +46,32 @@ def build_mapper_commands(context):
 
   template_arch = resolve_arch_template_path(context)
   mem_alloc = mem_alloc_path(context)
+  mapper_common_args = [
+    "-d",
+    "%s_PartPredDFG.xml" % kernel,
+    "-x",
+    str(config.xdim),
+    "-y",
+    str(config.ydim),
+    "-i",
+    str(config.init_II),
+    "-m",
+    str(config.mapping_method),
+    "-b",
+    str(config.backtrack_limit),
+    "-r",
+    str(config.max_mapper_iter),
+    "--max_II",
+    str(config.max_II),
+    "--ii_restarts",
+    str(config.ii_restarts),
+    "--skip_ii_estimation",
+    "1" if config.skip_ii_estimation else "0",
+    "--print_dfg",
+    "1" if config.print_dfg else "0",
+    "--spm_mode",
+    str(config.spm_mode),
+  ]
 
   commands = []
   mapper_arch = template_arch
@@ -68,31 +95,11 @@ def build_mapper_commands(context):
       Command(
         argv=[
           "%s/build/src/cgra_xml_mapper" % context.mapper_home,
-          "-d",
-          "%s_PartPredDFG.xml" % kernel,
-          "-x",
-          str(config.xdim),
-          "-y",
-          str(config.ydim),
           "-j",
           mapper_arch,
-          "-i",
-          str(config.init_II),
           "-t",
           "HyCUBE_4REG",
-          "-m",
-          str(config.mapping_method),
-          "-b",
-          str(config.backtrack_limit),
-          "-r",
-          str(config.max_mapper_iter),
-          "--max_II",
-          str(config.max_II),
-          "--ii_restarts",
-          str(config.ii_restarts),
-          "--spm_mode",
-          str(config.spm_mode),
-        ],
+        ] + mapper_common_args,
         cwd=context.mapper_kernel,
       )
     )
@@ -101,29 +108,11 @@ def build_mapper_commands(context):
       Command(
         argv=[
           "%s/build/src/cgra_xml_mapper" % context.mapper_home,
-          "-d",
-          "%s_PartPredDFG.xml" % kernel,
-          "-x",
-          str(config.xdim),
-          "-y",
-          str(config.ydim),
           "-j",
           mapper_arch,
-          "-i",
-          str(config.init_II),
-          "-m",
-          str(config.mapping_method),
-          "-b",
-          str(config.backtrack_limit),
-          "-r",
-          str(config.max_mapper_iter),
-          "--max_II",
-          str(config.max_II),
-          "--ii_restarts",
-          str(config.ii_restarts),
-          "--spm_mode",
-          str(config.spm_mode),
-        ],
+          "-t",
+          "HyCUBE_4REG",
+        ] + mapper_common_args,
         cwd=context.mapper_kernel,
       )
     )
@@ -133,6 +122,7 @@ def build_mapper_commands(context):
 
 def run_mapper(context):
   config = context.config
+  verbose_cmds = os.getenv("MORPHER_VERBOSE_CMDS", "").strip().lower() not in ("", "0", "false", "off", "no")
 
   print("\n-----Running Morpher_CGRA_Mapper-----\n")
   print("Memory mode: %s" % config.memory_mode)
@@ -143,11 +133,20 @@ def run_mapper(context):
   print("Arch used by mapper: %s\n" % mapper_arch)
   total = len(commands)
   for idx, cmd in enumerate(commands, start=1):
-    print("Running command [%d/%d]: %s" % (idx, total, " ".join(cmd.argv)))
+    if config.memory_mode == "auto" and total == 2:
+      step_label = "Update memory allocation" if idx == 1 else "Run mapper"
+    elif total == 1:
+      step_label = "Run mapper"
+    else:
+      step_label = "Run stage"
+
+    print("[%d/%d] %s" % (idx, total, step_label))
+    if verbose_cmds:
+      print("\n  $ %s" % shlex.join(cmd.argv))
     start = time.time()
     run_command(cmd)
     elapsed = time.time() - start
-    print("Command [%d/%d] completed in %.2f sec\n" % (idx, total, elapsed))
+    print("  done (%.2f sec)\n" % elapsed)
 
   remove_glob(context.simulator_kernel, "*.bin")
   copy_glob(context.mapper_kernel, "*.bin", context.simulator_kernel, required=True)

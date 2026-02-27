@@ -67,6 +67,9 @@ class RunnerConfig:
   max_mapper_iter: int
   max_II: int
   ii_restarts: int
+  skip_ii_estimation: bool
+  print_dfg: bool
+  enable_simulation: bool
   spm_mode: str
   llvm_debug_type: str
 
@@ -96,6 +99,9 @@ class RunnerConfig:
       max_mapper_iter=config_dict.get("max_mapper_iter", 30),
       max_II=config_dict.get("max_II", 32),
       ii_restarts=config_dict.get("ii_restarts", 1),
+      skip_ii_estimation=config_dict.get("skip_ii_estimation", True),
+      print_dfg=config_dict.get("print_dfg", False),
+      enable_simulation=config_dict.get("enable_simulation", True),
       spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],
     )

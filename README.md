@@ -67,6 +67,9 @@ Key config knobs in `config/default_config.yaml`:
     (the JSON must already contain any required memory wrapper/data-layout definitions)
 - `arch_template_json`: architecture template JSON (resolved from `Morpher_CGRA_Mapper/json_arch/` unless absolute path is provided)
 - `max_test_samples`: also used as trace-generation cap for instrumentation (`MORPHER_MAX_TRACES`) so trace generation and simulator sampling stay aligned
+- `skip_ii_estimation`: when `true`, mapper skips Res/Rec II bound analysis and starts directly from `init_II` (faster startup)
+- `print_dfg`: when `true`, mapper prints parsed DFG details (debug only; slows down startup)
+- `enable_simulation`: when `false`, skips DFG instrumentation/trace generation and skips the simulator stage
 
 Deprecated config keys still accepted (with warning):
 

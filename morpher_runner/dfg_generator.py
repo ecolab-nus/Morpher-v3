@@ -192,6 +192,11 @@ def run_dfg_generator(context):
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 
+  if not config.enable_simulation:
+    print("Simulation disabled (enable_simulation=false): skipping code instrumentation and trace generation.\n")
+    remove_glob(dfg_kernel, "*.ll")
+    return
+
   print("\nCode instrumentation..\n")
   run_commands(build_instrumentation_commands(context))
 
