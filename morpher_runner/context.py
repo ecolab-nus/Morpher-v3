@@ -69,6 +69,12 @@ class RunnerConfig:
   ii_restarts: int
   skip_ii_estimation: bool
   print_dfg: bool
+  sa_seed: int
+  sa_restarts: int
+  sa_moves_per_temp: int
+  sa_temp_max: float
+  sa_temp_min: float
+  sa_candidate_topk: int
   enable_simulation: bool
   spm_mode: str
   llvm_debug_type: str
@@ -101,6 +107,12 @@ class RunnerConfig:
       ii_restarts=config_dict.get("ii_restarts", 1),
       skip_ii_estimation=config_dict.get("skip_ii_estimation", True),
       print_dfg=config_dict.get("print_dfg", False),
+      sa_seed=config_dict.get("sa_seed", 0),
+      sa_restarts=config_dict.get("sa_restarts", 2),
+      sa_moves_per_temp=config_dict.get("sa_moves_per_temp", 100),
+      sa_temp_max=config_dict.get("sa_temp_max", 200.0),
+      sa_temp_min=config_dict.get("sa_temp_min", 10.0),
+      sa_candidate_topk=config_dict.get("sa_candidate_topk", 8),
       enable_simulation=config_dict.get("enable_simulation", True),
       spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],

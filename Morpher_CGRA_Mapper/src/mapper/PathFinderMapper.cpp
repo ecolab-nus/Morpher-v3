@@ -1321,6 +1321,7 @@ int CGRAXMLCompile::PathFinderMapper::calculateCost(LatPort src,
 
 bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 {
+	this->setAttemptOutcome(AttemptOutcome::FAIL_NORMAL);
 	std::stack<DFGNode *> mappedNodes;
 	std::stack<DFGNode *> unmappedNodes;
 	std::map<DFGNode *, std::priority_queue<dest_with_cost>> estimatedRouteInfo;
@@ -1468,6 +1469,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				mappingLog.close();
 				mappingLog2.close();
 				mappingLog4.close();
+				this->setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
 				return false;
 			}
 
@@ -1589,15 +1591,15 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 			}
 			else
 			{
-				if (mappedNodes.empty())
-				{
-					mappingLog << "Map Failed!.\n";
-					std::cout << "Map Failed!.\n";
-					mappingLog.close();
-					mappingLog2.close();
-					mappingLog4.close();
-					return false;
-				}
+					if (mappedNodes.empty())
+					{
+						mappingLog << "Map Failed!.\n";
+						std::cout << "Map Failed!.\n";
+						mappingLog.close();
+						mappingLog2.close();
+						mappingLog4.close();
+						return false;
+					}
 			}
 
 			if (!isRouteSucc)
@@ -1702,6 +1704,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		{
 			checkRegALUConflicts();
 		}
+		this->setAttemptOutcome(AttemptOutcome::SUCCESS);
 		return true;
 	}
 	else

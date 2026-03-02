@@ -246,6 +246,17 @@ struct InsFormat{
 class PathFinderMapper
 {
 public:
+	enum class AttemptOutcome
+	{
+		UNKNOWN = 0,
+		SUCCESS,
+		FAIL_NORMAL,
+		FAIL_ITERATION_GUARD,
+		FAIL_EXCEPTION,
+		FAIL_SANITY,
+		FAIL_BINARY_EMIT
+	};
+
 	PathFinderMapper(std::string fName)
 	{
 		fNameLog1 = fName;
@@ -321,6 +332,9 @@ public:
 	void printBinFile(const std::vector<InsFormat>& insFArr, std::string fName, CGRA* cgra);
 	void setRestartOffset(int offset){restartOffset = offset;}
 	void setStrictBookkeeping(bool enable){strictBookkeeping = enable;}
+	void setAttemptOutcome(AttemptOutcome outcome){lastAttemptOutcome = outcome;}
+	AttemptOutcome getAttemptOutcome() const { return lastAttemptOutcome; }
+	void resetAttemptOutcome(){lastAttemptOutcome = AttemptOutcome::UNKNOWN;}
 
 	int getIndexOfBin(int t, int y, int x){
 		return t * cgra->get_y_max() * cgra->get_x_max() + y * cgra->get_x_max() + x;
@@ -358,6 +372,7 @@ protected:
 	int maxIter = 30;
 	int restartOffset = 0;
 	bool strictBookkeeping = true;
+	AttemptOutcome lastAttemptOutcome = AttemptOutcome::UNKNOWN;
 
 	std::map<int, int> conflictedTimeStepMap;
 

@@ -50,6 +50,13 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "ii_restarts=" << args.ii_restarts << "\n";
 	std::cout << "skip_ii_estimation=" << args.skip_ii_estimation << "\n";
 	std::cout << "print_dfg=" << args.print_dfg << "\n";
+	std::cout << "emit_binary=" << args.emit_binary << "\n";
+	std::cout << "sa_seed=" << args.sa_seed << "\n";
+	std::cout << "sa_restarts=" << args.sa_restarts << "\n";
+	std::cout << "sa_moves_per_temp=" << args.sa_moves_per_temp << "\n";
+	std::cout << "sa_temp_max=" << args.sa_temp_max << "\n";
+	std::cout << "sa_temp_min=" << args.sa_temp_min << "\n";
+	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n";
 	std::cout << "spm_mode=" << args.spm_mode << "\n";
 	std::cout << "arch_name=" << args.arch_name << "\n\n";
 	std::cout << std::flush;
@@ -78,8 +85,11 @@ int main(int argn, char *argc[])
 	int max_II = args.max_II;
 	int ii_restarts = args.ii_restarts >= 0 ? args.ii_restarts : 0;
 	int attempts_per_ii = ii_restarts + 1;
+	int sa_restarts = args.sa_restarts >= 0 ? args.sa_restarts : 0;
+	int sa_attempts_per_ii = sa_restarts + 1;
 	bool skip_ii_estimation = (args.skip_ii_estimation != 0);
 	bool print_dfg = (args.print_dfg != 0);
+	bool emit_binary = (args.emit_binary != 0);
 	const char *print_dfg_env = std::getenv("MORPHER_PRINT_DFG");
 	if (print_dfg_env != nullptr && print_dfg_env[0] != '\0')
 	{
@@ -96,7 +106,6 @@ int main(int argn, char *argc[])
 		          << "'; defaulting to on\n";
 		spm_mode = "on";
 	}
-	bool use_relaxed_heuristic = mapping_method == 0;
 	std::string arch_name  = args.arch_name;
 
 	
@@ -154,18 +163,36 @@ int main(int argn, char *argc[])
 		return 1;
 	}
 	TimeDistInfo tdi = testCGRA->analyzeTimeDist();
-	PathFinderMapper * mapper;
-	if (mapping_method == 0){
-		mapper = new PathFinderMapper(inputDFG_filename);
-	}else if(mapping_method  == 1){
-		mapper = new SAMapper(inputDFG_filename);
-	}else{
-		std::cerr << "Error: invalid mapping method " << mapping_method << " (valid: 0=PathFinder, 1=SA)\n";
+	PathFinderMapper *pf_mapper = new PathFinderMapper(inputDFG_filename);
+	SAMapper *sa_mapper = new SAMapper(inputDFG_filename);
+	sa_mapper->configureSAParams(args.sa_seed,
+	                            args.sa_moves_per_temp,
+	                            args.sa_temp_max,
+	                            args.sa_temp_min,
+	                            args.sa_candidate_topk);
+
+	PathFinderMapper * mapper = nullptr;
+	if (mapping_method == 0)
+	{
+		mapper = pf_mapper;
+	}
+	else if (mapping_method == 1)
+	{
+		mapper = sa_mapper;
+	}
+	else if (mapping_method == 2)
+	{
+		mapper = pf_mapper;
+	}
+	else
+	{
+		std::cerr << "Error: invalid mapping method " << mapping_method << " (valid: 0=PathFinder, 1=SA, 2=Hybrid)\n";
 		return 1;
 	}
 
-	
-	mapper->setMaxIter(args.maxiter);
+		
+	pf_mapper->setMaxIter(args.maxiter);
+	sa_mapper->setMaxIter(args.maxiter);
 	std::cout << "MAP begin... \n";
 	int resII = 0;
 	int recII = 0;
@@ -191,13 +218,12 @@ int main(int argn, char *argc[])
 
 	std::cout << "Initial target II = " << II << " (ResMin II = "<<resII<<" , RecMin II = "<<recII<<", UserGiven II = "<<initUserII<<" )\n";
 
-	mapper->enableMutexPaths = true;
-	if (args.noMutexPaths)
-	{
-		mapper->enableMutexPaths = false;
-	}
-	mapper->enableBackTracking = true;
-	mapper->backTrackLimit = args.backtracklimit;
+	pf_mapper->enableMutexPaths = !args.noMutexPaths;
+	sa_mapper->enableMutexPaths = !args.noMutexPaths;
+	pf_mapper->enableBackTracking = true;
+	sa_mapper->enableBackTracking = true;
+	pf_mapper->backTrackLimit = args.backtracklimit;
+	sa_mapper->backTrackLimit = args.backtracklimit;
 
 	//cout << "json_file_name = " << json_file_name << "\n";
 	// exit(EXIT_SUCCESS);
@@ -206,91 +232,108 @@ int main(int argn, char *argc[])
 
 	bool mappingSuccess = false;
 	bool binaryEmissionFailedAtII = false;
-	bool seed_dfg_available = true;
-	auto try_map_at_current_ii = [&](bool strict_bookkeeping, bool emit_binary, const std::string &phase_label) -> bool
+	using AttemptOutcome = PathFinderMapper::AttemptOutcome;
+	struct AttemptResult
 	{
-		for (int restart = 0; restart < attempts_per_ii; ++restart)
+		bool success = false;
+		AttemptOutcome outcome = AttemptOutcome::FAIL_NORMAL;
+	};
+	auto try_map_at_current_ii = [&](PathFinderMapper *active_mapper,
+	                                 bool use_sa_map,
+	                                 bool strict_bookkeeping,
+	                                 bool emit_binary,
+	                                 const std::string &phase_label,
+	                                 int phase_attempts) -> AttemptResult
+	{
+		AttemptResult result;
+		phase_attempts = std::max(1, phase_attempts);
+		for (int restart = 0; restart < phase_attempts; ++restart)
 		{
 			DFG tempDFGStorage;
-			DFG *activeDFG = nullptr;
-			if (seed_dfg_available)
+			tempDFGStorage.parseXML(inputDFG_filename);
+			if (print_dfg)
 			{
-				activeDFG = &currDFG;
-				seed_dfg_available = false;
+				tempDFGStorage.printDFG();
 			}
-			else
-			{
-				tempDFGStorage.parseXML(inputDFG_filename);
-				if (print_dfg)
-				{
-					tempDFGStorage.printDFG();
-				}
-				activeDFG = &tempDFGStorage;
-			}
+			DFG *activeDFG = &tempDFGStorage;
 
 			CGRA *tempCGRA;
 			if (json_file_name.empty())
 			{
-				tempCGRA = new CGRA(NULL, "coreCGRA", II, ydim, xdim, activeDFG, PEType, numberOfDPs, mapper->getcongestedPortsPtr());
+				tempCGRA = new CGRA(NULL, "coreCGRA", II, ydim, xdim, activeDFG, PEType, numberOfDPs, active_mapper->getcongestedPortsPtr());
 			}
 			else
-				{
-					tempCGRA = new CGRA(json_file_name, II, xdim, ydim, mapper->getcongestedPortsPtr());
-				}
-				if (!apply_spm_mode(tempCGRA))
-				{
-					delete tempCGRA;
-					return false;
-				}
+			{
+				tempCGRA = new CGRA(json_file_name, II, xdim, ydim, active_mapper->getcongestedPortsPtr());
+			}
+			if (!apply_spm_mode(tempCGRA))
+			{
+				delete tempCGRA;
+				return result;
+			}
 
-				tempCGRA->max_hops = args.max_hops;
-
-			mapper->setRestartOffset(restart);
-			mapper->setStrictBookkeeping(strict_bookkeeping);
-			mapper->getcongestedPortsPtr()->clear();
-			mapper->getconflictedPortsPtr()->clear();
+			tempCGRA->max_hops = args.max_hops;
+			active_mapper->setRestartOffset(restart);
+			active_mapper->setStrictBookkeeping(strict_bookkeeping);
+			active_mapper->resetAttemptOutcome();
+			active_mapper->getcongestedPortsPtr()->clear();
+			active_mapper->getconflictedPortsPtr()->clear();
 			tempCGRA->analyzeTimeDist(tdi);
 
-				bool phaseSuccess = false;
-				std::string phaseFailureReason;
-				try
+			bool phaseSuccess = false;
+			std::string phaseFailureReason;
+			AttemptOutcome attemptOutcome = AttemptOutcome::FAIL_NORMAL;
+			try
+			{
+				if (use_sa_map)
 				{
-						if (mapping_method == 0)
-						{
-							phaseSuccess = mapper->Map(tempCGRA, activeDFG);
-						}
-						else if (mapping_method == 1)
-						{
-							SAMapper * sa_mapper = static_cast<SAMapper*>(mapper);
-							phaseSuccess = sa_mapper->SAMap(tempCGRA, activeDFG);
-						}
+					SAMapper *typed_mapper = static_cast<SAMapper *>(active_mapper);
+					phaseSuccess = typed_mapper->SAMap(tempCGRA, activeDFG);
 				}
-				catch (const std::exception &e)
+				else
 				{
-					phaseSuccess = false;
-					phaseFailureReason = e.what();
+					phaseSuccess = active_mapper->Map(tempCGRA, activeDFG);
 				}
-				catch (...)
-				{
-					phaseSuccess = false;
-					phaseFailureReason = "unknown non-standard exception";
-				}
+			}
+			catch (const std::exception &e)
+			{
+				phaseSuccess = false;
+				phaseFailureReason = e.what();
+				attemptOutcome = AttemptOutcome::FAIL_EXCEPTION;
+				active_mapper->setAttemptOutcome(attemptOutcome);
+			}
+			catch (...)
+			{
+				phaseSuccess = false;
+				phaseFailureReason = "unknown non-standard exception";
+				attemptOutcome = AttemptOutcome::FAIL_EXCEPTION;
+				active_mapper->setAttemptOutcome(attemptOutcome);
+			}
 
-				mapper->congestionInfoFile.close();
-
-				if (!phaseSuccess)
+			active_mapper->congestionInfoFile.close();
+			if (!phaseSuccess && attemptOutcome != AttemptOutcome::FAIL_EXCEPTION)
+			{
+				attemptOutcome = active_mapper->getAttemptOutcome();
+				if (attemptOutcome == AttemptOutcome::UNKNOWN)
 				{
-					if (!phaseFailureReason.empty())
-					{
-						std::cerr << "Warning: mapper attempt failed at II=" << II
-						          << " (" << phase_label << "): " << phaseFailureReason << "\n";
-					}
-					delete tempCGRA;
-						if (restart + 1 < attempts_per_ii)
-						{
-							std::cout << "Restarting same II = " << II
-							          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << attempts_per_ii << ")\n";
-					}
+					attemptOutcome = AttemptOutcome::FAIL_NORMAL;
+				}
+			}
+
+			if (!phaseSuccess)
+			{
+				result.outcome = attemptOutcome;
+				if (!phaseFailureReason.empty())
+				{
+					std::cerr << "Warning: mapper attempt failed at II=" << II
+					          << " (" << phase_label << "): " << phaseFailureReason << "\n";
+				}
+				delete tempCGRA;
+				if (restart + 1 < phase_attempts)
+				{
+					std::cout << "Restarting same II = " << II
+					          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << phase_attempts << ")\n";
+				}
 				continue;
 			}
 
@@ -298,29 +341,32 @@ int main(int argn, char *argc[])
 			if (phase_label != "strict")
 			{
 				std::cout << " [" << phase_label << "]";
-				}
-				std::cout << "\n";
-				try
+			}
+			std::cout << "\n";
+			try
+			{
+				active_mapper->sanityCheck();
+			}
+			catch (const std::exception &e)
+			{
+				std::cerr << "Warning: sanity check failed at II=" << II
+				          << " (" << phase_label << "): " << e.what() << "\n";
+				result.outcome = AttemptOutcome::FAIL_SANITY;
+				delete tempCGRA;
+				if (restart + 1 < phase_attempts)
 				{
-					mapper->sanityCheck();
+					std::cout << "Restarting same II = " << II
+					          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << phase_attempts << ")\n";
 				}
-				catch (const std::exception &e)
-				{
-					std::cerr << "Warning: sanity check failed at II=" << II
-					          << " (" << phase_label << "): " << e.what() << "\n";
-					delete tempCGRA;
-					if (restart + 1 < attempts_per_ii)
-					{
-						std::cout << "Restarting same II = " << II
-						          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << attempts_per_ii << ")\n";
-					}
-					continue;
-				}
+				continue;
+			}
 
 			if (!emit_binary)
 			{
+				result.success = true;
+				result.outcome = AttemptOutcome::SUCCESS;
 				delete tempCGRA;
-				return true;
+				return result;
 			}
 
 			if (PEType == "HyCUBE_4REG")
@@ -328,44 +374,105 @@ int main(int argn, char *argc[])
 				std::cout << "\nPrinting HyCUBE Binary...\n";
 				try
 				{
-					mapper->printHyCUBEBinary(tempCGRA);
+					active_mapper->printHyCUBEBinary(tempCGRA);
 				}
-					catch (const std::runtime_error &e)
+				catch (const std::runtime_error &e)
+				{
+					std::cerr << "Warning: binary generation failed at II=" << II
+					          << " (" << e.what() << "), retrying same II restart.\n";
+					binaryEmissionFailedAtII = true;
+					result.outcome = AttemptOutcome::FAIL_BINARY_EMIT;
+					delete tempCGRA;
+					if (restart + 1 < phase_attempts)
 					{
-						std::cerr << "Warning: binary generation failed at II=" << II
-						          << " (" << e.what() << "), retrying same II restart.\n";
-						binaryEmissionFailedAtII = true;
-						delete tempCGRA;
-						if (restart + 1 < attempts_per_ii)
-						{
-							std::cout << "Restarting same II = " << II
-							          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << attempts_per_ii << ")\n";
-						}
+						std::cout << "Restarting same II = " << II
+						          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << phase_attempts << ")\n";
+					}
 					continue;
 				}
 			}
+			result.success = true;
+			result.outcome = AttemptOutcome::SUCCESS;
 			delete tempCGRA;
-			return true;
+			return result;
 		}
-		return false;
+		return result;
 	};
 
 	while (!mappingSuccess)
 	{
 		binaryEmissionFailedAtII = false;
-		if (use_relaxed_heuristic && mapping_method == 0)
+		if (mapping_method == 0)
 		{
-			mappingSuccess = try_map_at_current_ii(false, true, "relaxed");
-			if (mappingSuccess)
+			AttemptResult relaxedResult = try_map_at_current_ii(pf_mapper, false, false, emit_binary, "relaxed", attempts_per_ii);
+			if (relaxedResult.success)
 			{
+				mappingSuccess = true;
 				break;
 			}
-			std::cout << "Relaxed mode failed at II = " << II
-			          << "; retrying same II with strict bookkeeping fallback.\n";
+			bool runStrict = (relaxedResult.outcome == AttemptOutcome::FAIL_EXCEPTION ||
+			                  relaxedResult.outcome == AttemptOutcome::FAIL_SANITY ||
+			                  relaxedResult.outcome == AttemptOutcome::FAIL_BINARY_EMIT);
+			if (relaxedResult.outcome == AttemptOutcome::FAIL_ITERATION_GUARD)
+			{
+				std::cout << "Relaxed PF hit iteration guard at II = " << II
+				          << "; skipping strict fallback.\n";
+			}
+			else if (runStrict)
+			{
+				std::cout << "Relaxed PF failed due to recoverable issue at II = " << II
+				          << "; retrying same II with strict bookkeeping fallback.\n";
+				AttemptResult strictResult = try_map_at_current_ii(pf_mapper, false, true, emit_binary, "strict-fallback", attempts_per_ii);
+				mappingSuccess = strictResult.success;
+			}
+			else
+			{
+				std::cout << "Mapping failed at II = " << II
+				          << " (relaxed PF); skipping strict fallback.\n";
+			}
+		}
+		else if (mapping_method == 1)
+		{
+			AttemptResult saResult = try_map_at_current_ii(sa_mapper, true, true, emit_binary, "sa", sa_attempts_per_ii);
+			mappingSuccess = saResult.success;
+		}
+		else if (mapping_method == 2)
+		{
+			AttemptResult relaxedResult = try_map_at_current_ii(pf_mapper, false, false, emit_binary, "hybrid-relaxed", attempts_per_ii);
+			if (relaxedResult.success)
+			{
+				mappingSuccess = true;
+				break;
+			}
+
+			bool runStrict = (relaxedResult.outcome == AttemptOutcome::FAIL_EXCEPTION ||
+			                  relaxedResult.outcome == AttemptOutcome::FAIL_SANITY ||
+			                  relaxedResult.outcome == AttemptOutcome::FAIL_BINARY_EMIT);
+			if (relaxedResult.outcome == AttemptOutcome::FAIL_ITERATION_GUARD)
+			{
+				std::cout << "Hybrid: relaxed PF hit iteration guard at II = " << II
+				          << "; skipping strict fallback and trying SA.\n";
+			}
+			else if (runStrict)
+			{
+				std::cout << "Hybrid: relaxed PF failed due to recoverable issue at II = " << II
+				          << "; trying strict PF before SA.\n";
+				AttemptResult strictResult = try_map_at_current_ii(pf_mapper, false, true, emit_binary, "hybrid-strict", attempts_per_ii);
+				if (strictResult.success)
+				{
+					mappingSuccess = true;
+					break;
+				}
+			}
+			else
+			{
+				std::cout << "Hybrid: mapping failed at II = " << II
+				          << " (relaxed PF); skipping strict and trying SA.\n";
+			}
+			AttemptResult saResult = try_map_at_current_ii(sa_mapper, true, true, emit_binary, "hybrid-sa", sa_attempts_per_ii);
+			mappingSuccess = saResult.success;
 		}
 
-		// Strict fallback path if relaxed fails (or for non-PathFinder mappers).
-		mappingSuccess = try_map_at_current_ii(true, true, "strict-fallback");
 		if (mappingSuccess)
 		{
 			break;
@@ -384,10 +491,12 @@ int main(int argn, char *argc[])
 			break;
 		}
 
-		if (!binaryEmissionFailedAtII && II > mapper->upperboundII)
+		PathFinderMapper *upperboundMapper = (mapping_method == 1) ? static_cast<PathFinderMapper *>(sa_mapper) : pf_mapper;
+		if (!binaryEmissionFailedAtII && II > upperboundMapper->upperboundII)
 		{
-			std::cout << "upperbound II reached : " << mapper->upperboundII << "\n";
-			std::cout << "Please use the mapping with II = " << mapper->upperboundFoundBy << ",with Iter = " << mapper->upperboundIter << "\n";
+			std::cout << "upperbound II reached : " << upperboundMapper->upperboundII << "\n";
+			std::cout << "Please use the mapping with II = " << upperboundMapper->upperboundFoundBy
+			          << ",with Iter = " << upperboundMapper->upperboundIter << "\n";
 			break;
 		}
 
@@ -403,10 +512,11 @@ int main(int argn, char *argc[])
 
 	auto end = chrono::steady_clock::now();
 	std::cout << "Elapsed time in seconds: " << chrono::duration_cast<chrono::seconds>(end - start).count() << " sec\n";
+	const std::string method_name = (mapping_method == 2) ? "Hybrid" : mapper->getMappingMethodName();
 	std::ofstream result_file;
 	result_file.open ("result.txt", std::ios_base::app); 
 	result_file<< arch_name <<" "<<inputDFG_filename
-		<<" method:"<<mapper->getMappingMethodName()<<" "<<II<<" "
+		<<" method:"<<method_name<<" "<<II<<" "
 		<<" status:" << (mappingSuccess ? "success" : "failed") << " "
 		<<chrono::duration_cast<chrono::seconds>(end - start).count()<<"\n";
 	result_file.close();

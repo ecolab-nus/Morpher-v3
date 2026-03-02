@@ -18,9 +18,32 @@
 #include <unordered_map>
 #include <memory>
 #include <bitset>
+#include <cstdint>
 
 namespace CGRAXMLCompile
 {
+
+void SAMapper::prepareRandomForAttempt()
+{
+	if (!rng_base_seed_initialized)
+	{
+		if (sa_seed != 0)
+		{
+			rng_base_seed = static_cast<unsigned long long>(sa_seed);
+		}
+		else
+		{
+			rng_base_seed = static_cast<unsigned long long>(
+				std::chrono::high_resolution_clock::now().time_since_epoch().count());
+		}
+		rng_base_seed_initialized = true;
+	}
+
+	const int restart = std::max(0, restartOffset);
+	active_rng_seed = rng_base_seed + static_cast<unsigned long long>(restart) * 9973ULL;
+	rng_engine.seed(static_cast<uint32_t>(active_rng_seed & 0xffffffffULL));
+	LOG(SA_) << "SA restart offset = " << restartOffset << ", seed = " << active_rng_seed << "\n";
+}
 
 } /* namespace CGRAXMLCompile */
 
@@ -39,6 +62,7 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 
 	this->cgra = cgra;
 	this->dfg = dfg;
+	prepareRandomForAttempt();
 
 	Check_DFG_CGRA_Compatibility();
 
@@ -88,9 +112,58 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	}
 
 	LOG(SA_) << "*******************************************************SA MAP begin***************************\n";
+	LOG(SA_) << "SA II = " << this->cgra->get_t_max() << ", seed = " << active_rng_seed
+	         << ", moves_per_temp = " << movement_in_each_temp
+	         << ", temp_max = " << maximum_temp
+	         << ", temp_min = " << minimim_temp
+	         << ", topk = " << sa_candidate_topk << "\n";
+	std::cout << "SA begin: II = " << this->cgra->get_t_max()
+	          << ", seed = " << active_rng_seed
+	          << ", moves/temp = " << movement_in_each_temp
+	          << ", temp range = [" << minimim_temp << ", " << maximum_temp << "]"
+	          << ", topk = " << sa_candidate_topk << "\n";
 
 	data_routing_path.clear();
 	dfg_node_placement.clear();
+	std::map<DFGNode *, std::pair<DataPath *, int>> best_dfg_node_placement;
+	std::map<dfg_data, std::vector<LatPort>> best_data_routing_path;
+	int best_cost = std::numeric_limits<int>::max();
+	auto capture_best_state = [&]()
+	{
+		const int candidate_cost = getCost();
+		if (candidate_cost < best_cost)
+		{
+			best_cost = candidate_cost;
+			best_dfg_node_placement = dfg_node_placement;
+			best_data_routing_path = data_routing_path;
+		}
+	};
+	auto restore_best_state = [&]()
+	{
+		for (DFGNode *node : sortedNodeList)
+		{
+			node->SAClear(this->dfg);
+		}
+		dfg_node_placement.clear();
+		data_routing_path.clear();
+
+		for (const auto &placement_entry : best_dfg_node_placement)
+		{
+			DFGNode *node = placement_entry.first;
+			DataPath *dp = placement_entry.second.first;
+			int lat = placement_entry.second.second;
+			dp->assignNode(node, lat, this->dfg);
+			node->rootDP = dp;
+			dfg_node_placement[node] = placement_entry.second;
+		}
+		for (const auto &route_entry : best_data_routing_path)
+		{
+			assignPath(route_entry.first.first, route_entry.first.second, route_entry.second);
+			data_routing_path[route_entry.first] = route_entry.second;
+		}
+		curr_cost = (best_cost == std::numeric_limits<int>::max()) ? getCost() : best_cost;
+	};
+
 	//initial mapping
 	if (!initMap())
 	{
@@ -103,7 +176,12 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	int unmapped_node_numer = getNumberOfUnmappedNodes();
 	int overuse_number = getCongestionNumber(congestion_detail);
 	int conflict_number =  getConflictNumber(congestion_detail);
+	capture_best_state();
 	LOG(SA_) << "Initial mapping done. unmapped node:" << unmapped_node_numer << " overuse:" << overuse_number<< " conflict:" << conflict_number<<" cost:"<<getCost() << " \n";
+	std::cout << "SA init mapping: unmapped = " << unmapped_node_numer
+	          << ", congestion = " << overuse_number
+	          << ", conflict = " << conflict_number
+	          << ", cost = " << getCost() << "\n";
 	LOG(SA_)<<"unmapped node: \n";
 	for (auto node : sortedNodeList)
 	{
@@ -117,7 +195,7 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 
 
 	
-	if (unmapped_node_numer == 0 && overuse_number == 0)
+	if (unmapped_node_numer == 0 && overuse_number == 0 && conflict_number == 0)
 	{
 		LOG(SA_) << "find a valid initial mapping, exit....II =" << this->cgra->get_t_max() << "\n";
 		return true;
@@ -134,11 +212,20 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	while (curr_temp > minimim_temp)
 	{
 		LOG(SA_) << "*******************************current temperature:" << curr_temp << "\n";
+		std::cout << "SA temp step: II = " << this->cgra->get_t_max()
+		          << ", temp = " << curr_temp
+		          << ", cost = " << curr_cost
+		          << ", unmapped = " << getNumberOfUnmappedNodes() << "\n";
 		float accept_rate = inner_map();
 
 		congestion_detail.clear();
 		LOG(SA_) << "accept_rate:" << accept_rate << " # of overuse:" << getCongestionNumber(congestion_detail)<< " # of conflict:" << getConflictNumber(congestion_detail)
 			<< " unmapped nodes:" << getNumberOfUnmappedNodes()<<" cost:"<<curr_cost << "\n";
+		std::cout << "SA temp done: accept_rate = " << accept_rate
+		          << ", congestion = " << getCongestionNumber()
+		          << ", conflict = " << getConflictNumber()
+		          << ", unmapped = " << getNumberOfUnmappedNodes()
+		          << ", cost = " << curr_cost << "\n";
 		LOG(SA_)<<"unmapped node: \n";
 		for (auto node : sortedNodeList)
 		{
@@ -149,6 +236,7 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 		}
 		LOG(ROUTE)<<congestion_detail.str();
 		LOG(SA_)<<"###############current mapping: \n"<<dumpMappingToStr();
+		capture_best_state();
 
 		curr_temp = updateTemperature(curr_temp, accept_rate);
 
@@ -159,7 +247,24 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 		}
 	}
 
-	return isCurrMappingValid();
+	const bool valid_mapping = isCurrMappingValid();
+	if (!valid_mapping && !best_dfg_node_placement.empty())
+	{
+		LOG(SA_) << "SA did not reach legal mapping; restoring best cost state = " << best_cost << "\n";
+		restore_best_state();
+	}
+	std::cout << "SA end: legal = " << (valid_mapping ? "true" : "false")
+	          << ", best_cost = " << best_cost
+	          << ", final_cost = " << getCost()
+	          << ", unmapped = " << getNumberOfUnmappedNodes() << "\n";
+	LOG(SA_) << "SA summary: II = " << this->cgra->get_t_max()
+	         << ", legal = " << (valid_mapping ? "true" : "false")
+	         << ", best_cost = " << best_cost
+	         << ", final_cost = " << getCost()
+	         << ", unmapped = " << getNumberOfUnmappedNodes()
+	         << ", congestion = " << getCongestionNumber()
+	         << ", conflict = " << getConflictNumber() << "\n";
+	return valid_mapping;
 }
 
 bool CGRAXMLCompile::SAMapper::initMap()
@@ -266,9 +371,16 @@ bool CGRAXMLCompile::SAMapper::initMap()
 float CGRAXMLCompile::SAMapper::inner_map()
 {
 	int accepted_number = 0;
+	const int progressEvery = std::max(20, movement_in_each_temp / 5);
 
 	for (int i = 0; i < movement_in_each_temp; i++)
 	{
+		if (i % progressEvery == 0)
+		{
+			std::cout << "SA move progress: step " << i << "/" << movement_in_each_temp
+			          << ", cost = " << curr_cost
+			          << ", unmapped = " << getNumberOfUnmappedNodes() << "\n";
+		}
 		std::stringstream congestion_detail;
 		LOG(SA) << "************ NO." << i << " movement, unmapped nodes:" << getNumberOfUnmappedNodes() << ", congestion:" << getCongestionNumber(congestion_detail) 
 			<< ", congestion:" << getConflictNumber(congestion_detail);
@@ -418,34 +530,57 @@ float CGRAXMLCompile::SAMapper::inner_map()
 
 CGRAXMLCompile::DFGNode *CGRAXMLCompile::SAMapper::selectDFGNodeToUnmap()
 {
-
-	std::random_device r;
-	std::default_random_engine e1(r());
-	std::uniform_int_distribution<int> uniform_dist(0, sortedNodeList.size() - 1);
-	return sortedNodeList[std::abs(std::round(uniform_dist(e1)))];
-
-	// select random node;
-
-	std::vector<DFGNode *> unmapped_node;
-	for (auto node : sortedNodeList)
+	assert(!sortedNodeList.empty());
+	std::uniform_real_distribution<float> exploreDist(0.0f, 1.0f);
+	if (exploreDist(rng_engine) < 0.15f)
 	{
+		std::uniform_int_distribution<size_t> uniformDist(0, sortedNodeList.size() - 1);
+		return sortedNodeList[uniformDist(rng_engine)];
+	}
+
+	std::vector<double> weights;
+	weights.reserve(sortedNodeList.size());
+	for (DFGNode *node : sortedNodeList)
+	{
+		double weight = 1.0;
 		if (dfg_node_placement.find(node) == dfg_node_placement.end())
 		{
-			unmapped_node.push_back(node);
+			weight += 8.0;
 		}
-	}
-	
 
-	if (unmapped_node.size() == 0)
-	{
-		std::uniform_int_distribution<int> uniform_dist(0, sortedNodeList.size() - 1);
-		return sortedNodeList[std::abs(std::round(uniform_dist(e1)))];
+		bool is_hot = false;
+		for (const auto &pair : congestedPorts)
+		{
+			if (pair.second.size() <= 1)
+			{
+				continue;
+			}
+			if (pair.second.find(node) != pair.second.end())
+			{
+				is_hot = true;
+				break;
+			}
+		}
+		if (!is_hot)
+		{
+			for (const auto &pair : conflictedPorts)
+			{
+				if (pair.second.find(node) != pair.second.end())
+				{
+					is_hot = true;
+					break;
+				}
+			}
+		}
+		if (is_hot)
+		{
+			weight += 4.0;
+		}
+		weights.push_back(weight);
 	}
-	else
-	{
-		std::uniform_int_distribution<int> uniform_dist(0, unmapped_node.size() - 1);
-		return unmapped_node[std::abs(std::round(uniform_dist(e1)))];
-	}
+
+	std::discrete_distribution<size_t> weightedDist(weights.begin(), weights.end());
+	return sortedNodeList[weightedDist(rng_engine)];
 }
 
 CGRAXMLCompile::DFGNode *CGRAXMLCompile::SAMapper::selectAParentForDFGNode(DFGNode *target_node)
@@ -463,10 +598,8 @@ CGRAXMLCompile::DFGNode *CGRAXMLCompile::SAMapper::selectAParentForDFGNode(DFGNo
 		}
 	}
 	assert(candidates.size() > 0);
-	std::random_device r;
-	std::default_random_engine e1(r());
-	std::uniform_int_distribution<int> uniform_dist(0, candidates.size() - 1);
-	return candidates[std::abs(std::round(uniform_dist(e1)))];
+	std::uniform_int_distribution<size_t> uniformDist(0, candidates.size() - 1);
+	return candidates[uniformDist(rng_engine)];
 }
 
 bool CGRAXMLCompile::SAMapper::clearNodeMapping(DFGNode *node)
@@ -903,11 +1036,32 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::SAMapper::getRandomDPCan
 		}
 	}
 
-	unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+	if (candidateDests.empty())
+	{
+		return candidateDests;
+	}
 
-	shuffle(candidateDests.begin(), candidateDests.end(), std::default_random_engine(seed));
+	std::sort(candidateDests.begin(), candidateDests.end(),
+	          [&](DataPath *lhs, DataPath *rhs)
+	          {
+		          const int lhsPenalty = dpPenaltyMap[lhs];
+		          const int rhsPenalty = dpPenaltyMap[rhs];
+		          if (lhsPenalty != rhsPenalty)
+		          {
+			          return lhsPenalty < rhsPenalty;
+		          }
+		          return lhs->getFullName() < rhs->getFullName();
+	          });
 
-	return candidateDests;
+	const size_t topk = std::min(static_cast<size_t>(std::max(1, sa_candidate_topk)), candidateDests.size());
+	std::vector<DataPath *> prioritized(candidateDests.begin(), candidateDests.begin() + topk);
+	std::vector<DataPath *> tail(candidateDests.begin() + topk, candidateDests.end());
+
+	std::shuffle(prioritized.begin(), prioritized.end(), rng_engine);
+	std::shuffle(tail.begin(), tail.end(), rng_engine);
+
+	prioritized.insert(prioritized.end(), tail.begin(), tail.end());
+	return prioritized;
 }
 
 // compared to the PathFinderMapper one, add some additional information for SA.

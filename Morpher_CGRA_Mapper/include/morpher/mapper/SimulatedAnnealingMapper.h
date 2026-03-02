@@ -11,6 +11,7 @@
 #include <random>
 #include <algorithm> 
 #include <chrono>
+#include <limits>
 #include <sys/time.h>
 #ifndef SAMAPPER_H_
 #define SAMAPPER_H_
@@ -25,13 +26,21 @@ using dfg_data = std::pair<DFGNode*,DFGNode*>; // <src, des>
 class SAMapper : public PathFinderMapper
 {
 public:
-	SAMapper(std::string fName) : PathFinderMapper(fName){
-		mapping_method_name  = "SA";
-	};
+		SAMapper(std::string fName) : PathFinderMapper(fName){
+			mapping_method_name  = "SA";
+		};
 
-	bool SAMap(CGRA *cgra, DFG *dfg);
+		bool SAMap(CGRA *cgra, DFG *dfg);
+		void configureSAParams(int seed, int moves_per_temp, float temp_max, float temp_min, int candidate_topk){
+			sa_seed = seed;
+			movement_in_each_temp = std::max(1, moves_per_temp);
+			maximum_temp = std::max(1.0f, temp_max);
+			minimim_temp = std::max(0.001f, std::min(temp_min, maximum_temp));
+			sa_candidate_topk = std::max(1, candidate_topk);
+		}
+		void prepareRandomForAttempt();
 
-	bool initMap();
+		bool initMap();
 	bool Route(DFGNode *node, std::priority_queue<dest_with_cost> &estimatedRoutes, DFGNode **failedNode);
 
 	float inner_map();
@@ -101,15 +110,15 @@ public:
 			return t.tv_sec + t.tv_usec * 0.000001;
 	}
 
-	bool whetherAcceptNewMapping(float new_cost, float old_cost, float temperature)
-	{
-			if (new_cost < old_cost)
-					return true;
+		bool whetherAcceptNewMapping(float new_cost, float old_cost, float temperature)
+		{
+				if (new_cost < old_cost)
+						return true;
 
-			float probability = exp(-(new_cost - old_cost) / temperature);
-
-			return probability > ((float)rand() / (float)RAND_MAX);
-	}
+				float probability = exp(-(new_cost - old_cost) / temperature);
+				std::uniform_real_distribution<float> probDist(0.0f, 1.0f);
+				return probability > probDist(rng_engine);
+		}
 	//	bool LeastCostPathAstar(Port* start, Port* end, DataPath* endDP, std::vector<Port*>& path, int& cost, DFGNode* node, std::map<Port*,std::set<DFGNode*>>& mutexPaths, DFGNode* currNode);
 
 
@@ -128,9 +137,15 @@ protected:
 	std::map<dfg_data, std::vector<LatPort>> data_routing_path;
 	int maximum_routing_iteration = 3;
 
-	int curr_cost;
+		int curr_cost;
+		int sa_seed = 0;
+		int sa_candidate_topk = 8;
+		unsigned long long rng_base_seed = 0;
+		unsigned long long active_rng_seed = 0;
+		bool rng_base_seed_initialized = false;
+		std::mt19937 rng_engine;
 
-	int backtrack_credit = 3; // this is different from the PathFinder one.
+		int backtrack_credit = 3; // this is different from the PathFinder one.
 
 
 

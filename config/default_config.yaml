@@ -3,19 +3,25 @@
  arch_template_json: "hycube_original_updatemem.json"
  mapper_subfolder: 'hycube'
  dfg_type: 'PartPred'
- init_II: 4
+ init_II: 3
  ydim: 4
  xdim: 4
  numberofbanks: 2
  banksize: 2048
  max_test_samples: 5
- mapping_method: 0
+ mapping_method: 1
  backtrack_limit: 4
  max_mapper_iter: 30
  max_II: 32
  ii_restarts: 0
  skip_ii_estimation: true
  print_dfg: false
+ sa_seed: 0
+ sa_restarts: 2
+ sa_moves_per_temp: 20
+ sa_temp_max: 200.0
+ sa_temp_min: 10.0
+ sa_candidate_topk: 8
  enable_simulation: false
  spm_mode: 'off'
  llvm_debug_type: 'no'

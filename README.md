@@ -88,6 +88,35 @@ Example:
 python3 -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add
 ```
 
+### Run Mapper Directly from an Existing DFG XML
+
+If the first argument is an `.xml` file, `run_morpher.py` skips DFG generation and stages that XML directly for mapper.
+
+```bash
+python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]
+```
+
+- XML mode defaults:
+  - `function`: derived from XML filename
+  - `config_path`: `config/default_config.yaml`
+  - `runmode`: `mapper_only`
+- XML mode supports run modes: `mapper_only`, `runall`
+- If `memory_mode: auto`, mapper also needs `<kernel>_mem_alloc.txt`
+  - place it next to the XML, or pass `--mem-alloc <path>`
+  - or use `config/xml_mapper_static.yaml` (static mode, uses `hycube_original.json`)
+
+Example with the XML in repo root:
+
+```bash
+python3 -u run_morpher.py 2gemm_systolic.xml
+```
+
+Example with static XML-only config (no mem-alloc file needed):
+
+```bash
+python3 -u run_morpher.py 2gemm_systolic.xml 2gemm_systolic config/xml_mapper_static.yaml
+```
+
 ### Run All Benchmarks
 
 ```bash

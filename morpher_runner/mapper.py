@@ -69,6 +69,20 @@ def build_mapper_commands(context):
     "1" if config.skip_ii_estimation else "0",
     "--print_dfg",
     "1" if config.print_dfg else "0",
+    "--emit_binary",
+    "1" if config.enable_simulation else "0",
+    "--sa_seed",
+    str(config.sa_seed),
+    "--sa_restarts",
+    str(config.sa_restarts),
+    "--sa_moves_per_temp",
+    str(config.sa_moves_per_temp),
+    "--sa_temp_max",
+    str(config.sa_temp_max),
+    "--sa_temp_min",
+    str(config.sa_temp_min),
+    "--sa_candidate_topk",
+    str(config.sa_candidate_topk),
     "--spm_mode",
     str(config.spm_mode),
   ]
@@ -148,5 +162,6 @@ def run_mapper(context):
     elapsed = time.time() - start
     print("  done (%.2f sec)\n" % elapsed)
 
-  remove_glob(context.simulator_kernel, "*.bin")
-  copy_glob(context.mapper_kernel, "*.bin", context.simulator_kernel, required=True)
+  if config.enable_simulation:
+    remove_glob(context.simulator_kernel, "*.bin")
+    copy_glob(context.mapper_kernel, "*.bin", context.simulator_kernel, required=True)
