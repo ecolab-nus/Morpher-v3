@@ -10122,6 +10122,73 @@ void DFG::removeDisconnectedNodes()
 	}
 }
 
+void DFG::removeAGINodes()
+{
+	// Step 1: Seed AGI set with GEP and synthetic helper nodes
+	std::unordered_set<dfgNode *> agiSet;
+	for (dfgNode *node : NodeList)
+	{
+		if (node->isGEP() ||
+			node->getNameType() == "GEPLEFTSHIFT" ||
+			node->getNameType() == "GEPSCALE" ||
+			node->getNameType() == "GEPADD")
+		{
+			agiSet.insert(node);
+		}
+	}
+	// Step 2: Propagate upward — if ALL data children of a node are AGI, it's AGI too
+	bool changed = true;
+	while (changed)
+	{
+		changed = false;
+		for (dfgNode *node : NodeList)
+		{
+			if (agiSet.count(node))
+				continue;
+			const auto children = node->getChildren();
+			if (children.empty())
+				continue;
+			bool allAGI = true;
+			for (dfgNode *child : children)
+			{
+				if (!agiSet.count(child))
+				{
+					allAGI = false;
+					break;
+				}
+			}
+			if (allAGI)
+			{
+				agiSet.insert(node);
+				changed = true;
+			}
+		}
+	}
+	// Step 3: Disconnect AGI nodes from remaining non-AGI nodes
+	for (dfgNode *agi : agiSet)
+	{
+		for (dfgNode *parent : agi->getAncestors())
+		{
+			if (!agiSet.count(parent))
+				parent->removeChild(agi);
+		}
+		for (dfgNode *child : agi->getChildren())
+		{
+			if (!agiSet.count(child))
+				child->removeAncestor(agi);
+		}
+	}
+	// Step 4: Remove from NodeList
+	NodeList.erase(std::remove_if(NodeList.begin(), NodeList.end(),
+								  [&agiSet](dfgNode *n)
+								  { return agiSet.count(n) > 0; }),
+				   NodeList.end());
+	// Step 5: Re-index
+	for (size_t i = 0; i < NodeList.size(); i++)
+		NodeList[i]->setIdx((int)i);
+	llvm::outs() << "[removeAGINodes] Remaining nodes after AGI removal: " << NodeList.size() << "\n";
+}
+
 std::unordered_set<dfgNode *> DFG::getLineage(dfgNode *n)
 {
 

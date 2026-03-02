@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import compare_v2_v3_benchmarks as common
+import yaml
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,9 @@ class RunResult:
     elapsed_sec: float
     log_file: Path
     achieved_ii: int | None
+    ii_source: str | None
+    mapping_file: Path | None
+    result_file: Path | None
     matches: int | None
     mismatches: int | None
 
@@ -54,6 +57,130 @@ class RunResult:
         if self.return_code == 0:
             return "ok"
         return "failed"
+
+
+def read_mapper_subfolder(repo_root: Path, config_rel: str) -> str:
+    config_path = repo_root / config_rel
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with config_path.open("r", encoding="utf-8") as stream:
+        config_dict = yaml.safe_load(stream)
+    if not isinstance(config_dict, dict):
+        raise ValueError(f"Config {config_path} must contain a top-level mapping.")
+    mapper_subfolder = config_dict.get("mapper_subfolder")
+    if not isinstance(mapper_subfolder, str) or not mapper_subfolder.strip():
+        raise ValueError(
+            f"Config {config_path} must define non-empty string key 'mapper_subfolder'."
+        )
+    return mapper_subfolder.strip()
+
+
+_SIM_RESULT_RE = re.compile(
+    r"Simulation Result:\s*Matches::\s*(\d+)\s*,\s*Mismatches::\s*(\d+)"
+)
+_MAP_SUCCESS_II_RE = re.compile(r"Map Success with II =\s*(\d+)")
+_II_IN_FILENAME_RE = re.compile(r"_II=(\d+)")
+
+
+def parse_matches_mismatches(log_text: str) -> tuple[int | None, int | None]:
+    last_match = None
+    for match in _SIM_RESULT_RE.finditer(log_text):
+        last_match = match
+    if not last_match:
+        return None, None
+    return int(last_match.group(1)), int(last_match.group(2))
+
+
+def parse_ii_from_log(log_text: str) -> int | None:
+    last_match = None
+    for match in _MAP_SUCCESS_II_RE.finditer(log_text):
+        last_match = match
+    if not last_match:
+        return None
+    return int(last_match.group(1))
+
+
+def newest_ii_from_bins(bin_files: list[Path], start_time: float) -> int | None:
+    newest_mtime = -1.0
+    newest_ii = None
+    for bin_file in bin_files:
+        name_match = _II_IN_FILENAME_RE.search(bin_file.name)
+        if not name_match:
+            continue
+        try:
+            mtime = bin_file.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < start_time:
+            continue
+        if mtime > newest_mtime:
+            newest_mtime = mtime
+            newest_ii = int(name_match.group(1))
+    return newest_ii
+
+
+def newest_ii_from_files(files: list[Path], start_time: float) -> tuple[int | None, Path | None]:
+    newest_mtime = -1.0
+    newest_ii = None
+    newest_file = None
+    for file_path in files:
+        name_match = _II_IN_FILENAME_RE.search(file_path.name)
+        if not name_match:
+            continue
+        try:
+            mtime = file_path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < start_time:
+            continue
+        if mtime > newest_mtime:
+            newest_mtime = mtime
+            newest_ii = int(name_match.group(1))
+            newest_file = file_path
+    return newest_ii, newest_file
+
+
+def newest_file_for_ii(files: list[Path], start_time: float, ii: int) -> Path | None:
+    newest_mtime = -1.0
+    newest_file = None
+    for file_path in files:
+        name_match = _II_IN_FILENAME_RE.search(file_path.name)
+        if not name_match:
+            continue
+        if int(name_match.group(1)) != ii:
+            continue
+        try:
+            mtime = file_path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < start_time:
+            continue
+        if mtime > newest_mtime:
+            newest_mtime = mtime
+            newest_file = file_path
+    return newest_file
+
+
+_RESULT_LINE_II_RE = re.compile(r"method:\S+\s+(\d+)\s+status:(?:success|failed)\s+\d+\s*$")
+
+
+def ii_from_result_txt(result_file: Path, start_time: float) -> int | None:
+    if not result_file.exists():
+        return None
+    try:
+        if result_file.stat().st_mtime < start_time:
+            return None
+        text = result_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    match = _RESULT_LINE_II_RE.search(lines[-1])
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def parse_args() -> argparse.Namespace:
@@ -251,10 +378,41 @@ def run_one(
                 log.write(str(exc.stderr))
 
     log_text = log_file.read_text(encoding="utf-8", errors="ignore")
-    matches, mismatches, _ = common.parse_matches_mismatches(log_text)
+    matches, mismatches = parse_matches_mismatches(log_text)
     mapper_bins = list(mapper_kernel_dir.glob("*.bin")) if mapper_kernel_dir.exists() else []
     sim_bins = list(sim_kernel_dir.glob("*.bin")) if sim_kernel_dir.exists() else []
-    achieved_ii = common.newest_ii_from_bins(mapper_bins + sim_bins, start)
+    mapping_files = (
+        list(mapper_kernel_dir.glob("*.mappingwithlatency.txt"))
+        if mapper_kernel_dir.exists()
+        else []
+    )
+    result_file = mapper_kernel_dir / "result.txt"
+
+    achieved_ii = None
+    ii_source = None
+    mapping_file = None
+
+    res_ii = ii_from_result_txt(result_file, start)
+    if res_ii is not None:
+        achieved_ii = res_ii
+        ii_source = "result_txt"
+        mapping_file = newest_file_for_ii(mapping_files, start, achieved_ii)
+    else:
+        map_ii, map_file = newest_ii_from_files(mapping_files, start)
+        if map_ii is not None:
+            achieved_ii = map_ii
+            ii_source = "mapping_txt"
+            mapping_file = map_file
+        else:
+            bin_ii = newest_ii_from_bins(mapper_bins + sim_bins, start)
+            if bin_ii is not None:
+                achieved_ii = bin_ii
+                ii_source = "bin_file"
+            else:
+                log_ii = parse_ii_from_log(log_text)
+                if log_ii is not None:
+                    achieved_ii = log_ii
+                    ii_source = "mapper_log"
 
     elapsed = round(time.time() - start, 2)
     return RunResult(
@@ -267,6 +425,9 @@ def run_one(
         elapsed_sec=elapsed,
         log_file=log_file,
         achieved_ii=achieved_ii,
+        ii_source=ii_source,
+        mapping_file=mapping_file,
+        result_file=(result_file if result_file.exists() else None),
         matches=matches,
         mismatches=mismatches,
     )
@@ -280,11 +441,14 @@ def write_csv(results: list[RunResult], out_csv: Path) -> None:
         "status",
         "return_code",
         "achieved_ii",
+        "ii_source",
         "matches",
         "mismatches",
         "timeout",
         "elapsed_sec",
         "log_file",
+        "mapping_file",
+        "result_file",
     ]
     with out_csv.open("w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fields)
@@ -297,11 +461,14 @@ def write_csv(results: list[RunResult], out_csv: Path) -> None:
                     "status": r.status,
                     "return_code": r.return_code,
                     "achieved_ii": r.achieved_ii,
+                    "ii_source": r.ii_source,
                     "matches": r.matches,
                     "mismatches": r.mismatches,
                     "timeout": r.timeout,
                     "elapsed_sec": r.elapsed_sec,
                     "log_file": str(r.log_file),
+                    "mapping_file": (str(r.mapping_file) if r.mapping_file else ""),
+                    "result_file": (str(r.result_file) if r.result_file else ""),
                 }
             )
 
@@ -314,7 +481,7 @@ def main() -> int:
     repo_root = args.repo_root.resolve()
     if not (repo_root / "run_morpher.py").exists():
         raise FileNotFoundError(f"run_morpher.py not found under {repo_root}")
-    mapper_subfolder = common.read_mapper_subfolder(repo_root, args.config)
+    mapper_subfolder = read_mapper_subfolder(repo_root, args.config)
 
     discovered = discover_all_benchmarks(repo_root)
     selected = select_benchmarks(discovered, args)
@@ -357,10 +524,12 @@ def main() -> int:
         for future in concurrent.futures.as_completed(futures):
             idx = futures[future]
             result = future.result()
+            mapping_name = result.mapping_file.name if result.mapping_file else "-"
             print(
                 f"[{result.idx}/{result.total}] {result.rel_source} :: "
                 f"{result.status} rc={result.return_code} "
-                f"ii={result.achieved_ii} mismatches={result.mismatches} "
+                f"ii={result.achieved_ii} ii_src={result.ii_source} "
+                f"mismatches={result.mismatches} map={mapping_name} "
                 f"elapsed={result.elapsed_sec}s"
             )
             indexed_results.append((idx, result))

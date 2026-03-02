@@ -62,6 +62,7 @@ public :
 	void addLoopExitStoreHyCUBE(std::set<exitNode>& exitNodes);
 
 	void PrintOuts(){
+		if (this->removeAGI) removeAGINodes();
 		printDOT(this->kernelname + "_PartPredDFG.dot");
 		printDOTsimple(this->kernelname + "_PartPredDFG_simple.dot");
 		printNewDFGXML();

@@ -105,6 +105,10 @@ static cl::opt<unsigned> banks_number ("nobanks", cl::init(2), cl::desc("number 
 static cl::opt<unsigned> bank_size ("banksize", cl::init(2048), cl::desc("number of bytes in a bank"));
 static cl::opt<unsigned> dp_policy ("dppolicy", cl::init(0), cl::desc("data placement policy"));
 
+static cl::opt<bool> RemoveAGI(
+    "remove-agi", cl::init(false),
+    cl::desc("Remove address generation instructions (GEPs and helpers) from DFG"));
+
 STATISTIC(LoopsAnalyzed, "Number of loops analyzed for vectorization");
 
 static std::map<std::string, int> sizeArrMap;
@@ -2756,6 +2760,7 @@ struct dfggenPass : public FunctionPass
 		//-----------------------------------
 		{
 			DFGPartPred *LoopDFG = new DFGPartPred(F.getName().str() + "_" + munitName, &loopNames, mappingUnitMap[munitName].lp);
+			LoopDFG->removeAGI = RemoveAGI;
 			LoopDFG->setKernelName(F.getName().str());
 			LoopDFG->SE = SE;
 			LoopDFG->DT = DT;

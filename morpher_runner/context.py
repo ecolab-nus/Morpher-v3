@@ -78,6 +78,7 @@ class RunnerConfig:
   enable_simulation: bool
   spm_mode: str
   llvm_debug_type: str
+  remove_agi: bool
 
   @classmethod
   def from_yaml(cls, config_path):
@@ -116,6 +117,7 @@ class RunnerConfig:
       enable_simulation=config_dict.get("enable_simulation", True),
       spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],
+      remove_agi=config_dict.get("remove_agi", False),
     )
 
 

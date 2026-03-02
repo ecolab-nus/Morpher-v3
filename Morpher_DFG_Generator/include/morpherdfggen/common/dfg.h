@@ -507,6 +507,8 @@ class DFG{
 			virtual void PrintOuts(){assert(false);}
 
 			void removeDisconnectedNodes();
+			void removeAGINodes();
+			bool removeAGI = false;
 			std::unordered_set<dfgNode*> getLineage(dfgNode* n);
 
 

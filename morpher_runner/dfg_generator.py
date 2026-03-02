@@ -59,7 +59,7 @@ def build_ir_generation_commands(context):
 def build_dfg_pass_command(context):
   config = context.config
   kernel = context.kernel
-  return [
+  cmd = [
     "opt",
     "-load",
     "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
@@ -75,6 +75,9 @@ def build_dfg_pass_command(context):
     "-o",
     "%s_opt_instrument.ll" % kernel,
   ]
+  if config.remove_agi:
+    cmd.append("-remove-agi")
+  return cmd
 
 
 def validate_dfg_outputs(context):
