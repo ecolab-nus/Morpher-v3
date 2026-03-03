@@ -32,6 +32,7 @@ public:
 	bool npb=false;
 	bool type_i1i2 = false; //  true if i1 and i2 both get the data from same source (to support x*x)
 	bool negated=false;
+	bool isCompound = false; // true if this node is a fused LOAD_*_STORE compound op
 	std::string op;
 	std::string base_pointer_name;
 	int gep_offset = -1;
@@ -57,6 +58,7 @@ public:
 	// the difference is, for overuse, SA stores multiple values in one port, but pathfinder only stores the last value
 	std::string getOPtype(DFGNode *child);
 	bool isMemOp();
+	bool isCompoundOp();
 
 	bool operator==(const DFGNode &rhs)
 	{

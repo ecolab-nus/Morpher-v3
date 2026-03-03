@@ -1,12 +1,12 @@
 ---
- memory_mode: "auto"
- arch_template_json: "hycube_original_updatemem.json"
+ memory_mode: "static"
+ arch_template_json: "hycube_8x8.cgra"
  mapper_subfolder: 'hycube'
  dfg_type: 'PartPred'
  init_II: 1
- ydim: 4
- xdim: 4
- numberofbanks: 2
+ ydim: 8
+ xdim: 8
+ numberofbanks: 8
  banksize: 2048
  max_test_samples: 5
  mapping_method: 2

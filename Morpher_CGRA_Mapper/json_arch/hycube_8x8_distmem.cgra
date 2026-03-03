@@ -1,0 +1,56 @@
+# 8x8 fully distributed-memory CGRA
+
+module MDP_LOCAL:
+    in I1, I2, P
+    internal T_INT
+    out T
+    sockets MEMPORT_LOAD, MEMPORT_STORE
+    connect T_INT -> T
+
+module SPM:
+    sockets PORT0, PORT1
+    mem size=1024
+
+module FU_MEM_LOCAL:
+    in DP0_I1, DP0_I2, DP0_P
+    out DP0_T
+    isockets MEMPORT_LOAD, MEMPORT_STORE
+    sub MDP_LOCAL as DP0
+    ops latency=2: NOP, ADD, SUB, MUL, SEXT, DIV, LS, RS, ARS, AND, OR, XOR, SELECT, CMERGE, CMP, CLT, BR, CGT, MOVCL, LOADCL, LOAD, LOADH, LOADB, STORE, STOREH, STOREB, OLOADCL, OLOAD, OLOADH, OLOADB, OSTORE, OSTOREH, OSTOREB, JUMPL, MOVC
+    ops latency=1: LOAD_ADD_STORE, LOAD_SUB_STORE, LOAD_MUL_STORE, LOAD_AND_STORE, LOAD_OR_STORE, LOAD_XOR_STORE
+    connect DP0_I1 -> DP0.I1
+    connect DP0_I2 -> DP0.I2
+    connect DP0_P -> DP0.P
+    connect DP0.T -> DP0_T
+    connect DP0.MEMPORT_LOAD -> MEMPORT_LOAD
+    connect DP0.MEMPORT_STORE -> MEMPORT_STORE
+
+module PE_MEM_LOCAL:
+    in NORTH_I, WEST_I, EAST_I, SOUTH_I
+    out NORTH_O, WEST_O, EAST_O, SOUTH_O
+    internal NORTH_XBARI, EAST_XBARI, WEST_XBARI, SOUTH_XBARI
+    isockets MEMPORT_LOAD, MEMPORT_STORE
+    sub FU_MEM_LOCAL as FU0
+    reg NR, ER, WR, SR, TREG
+    connect NORTH_I -> NR, NORTH_XBARI
+    connect NR -> NORTH_XBARI
+    connect EAST_I -> ER, EAST_XBARI
+    connect ER -> EAST_XBARI
+    connect WEST_I -> WR, WEST_XBARI
+    connect WR -> WEST_XBARI
+    connect SOUTH_I -> SR, SOUTH_XBARI
+    connect SR -> SOUTH_XBARI
+    for d in [NORTH, EAST, WEST, SOUTH]:
+        connect {d}_XBARI -> FU0.DP0_I1, FU0.DP0_I2, FU0.DP0_P, NORTH_O, WEST_O, EAST_O, SOUTH_O
+    connect FU0.DP0_T -> NORTH_O, EAST_O, WEST_O, SOUTH_O, TREG
+    connect TREG -> FU0.DP0_I1, FU0.DP0_I2, FU0.DP0_P, NORTH_O, EAST_O, WEST_O, SOUTH_O
+    connect FU0.MEMPORT_LOAD -> MEMPORT_LOAD
+    connect FU0.MEMPORT_STORE -> MEMPORT_STORE
+
+grid 8x8:
+    pe PE_MEM_LOCAL as PE
+    routing mesh4
+    for y in [0..8), x in [0..8):
+        mem SPM as SPM[x][y]:
+            connect PE[x][y].MEMPORT_LOAD -> SPM[x][y].PORT0
+            connect PE[x][y].MEMPORT_STORE -> SPM[x][y].PORT1

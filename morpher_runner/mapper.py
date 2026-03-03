@@ -38,6 +38,33 @@ def mem_alloc_path(context):
   return os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % context.kernel)
 
 
+def maybe_compile_arch_template(context, template_arch):
+  commands = []
+  compiled_arch = template_arch
+  if template_arch.lower().endswith(".cgra"):
+    compiler = os.path.join(context.mapper_home, "json_arch", "arch_compiler.py")
+    if not os.path.isfile(compiler):
+      raise RuntimeError(
+        "arch_template_json points to .cgra, but compiler was not found: %s" % compiler
+      )
+    compiled_arch = os.path.join(
+      context.mapper_kernel, "%s_arch_template_compiled.json" % context.kernel
+    )
+    commands.append(
+      Command(
+        argv=[
+          sys.executable,
+          compiler,
+          template_arch,
+          "-o",
+          compiled_arch,
+        ],
+        cwd=context.morpher_home,
+      )
+    )
+  return commands, compiled_arch
+
+
 def build_mapper_commands(context):
   config = context.config
   kernel = context.kernel
@@ -46,6 +73,7 @@ def build_mapper_commands(context):
     raise RuntimeError("Unsupported memory mode: %s" % mode)
 
   template_arch = resolve_arch_template_path(context)
+  pre_commands, template_arch = maybe_compile_arch_template(context, template_arch)
   mem_alloc = mem_alloc_path(context)
   mapper_common_args = [
     "-d",
@@ -94,7 +122,7 @@ def build_mapper_commands(context):
   if node_pin:
     mapper_common_args += ["--node_pin", str(node_pin)]
 
-  commands = []
+  commands = list(pre_commands)
   mapper_arch = template_arch
   if mode == "auto":
     mapper_arch = runtime_arch_path(context)
@@ -154,9 +182,11 @@ def run_mapper(context):
   print("Arch used by mapper: %s\n" % mapper_arch)
   total = len(commands)
   for idx, cmd in enumerate(commands, start=1):
-    if config.memory_mode == "auto" and total == 2:
-      step_label = "Update memory allocation" if idx == 1 else "Run mapper"
-    elif total == 1:
+    if any("arch_compiler.py" in part for part in cmd.argv):
+      step_label = "Compile .cgra template"
+    elif any("update_mem_alloc.py" in part for part in cmd.argv):
+      step_label = "Update memory allocation"
+    elif any("cgra_xml_mapper" in part for part in cmd.argv):
       step_label = "Run mapper"
     else:
       step_label = "Run stage"

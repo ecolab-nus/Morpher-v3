@@ -28,6 +28,7 @@ public:
 
 	bool parseXML(std::string fileName);
 	void printDFG();
+	void fuseCompoundOps();
 	DFGNode *findNode(int idx);
 	DFGNode *getNodePtr(int it);
 	std::map<std::string, std::set<std::string>> mutexBBs;

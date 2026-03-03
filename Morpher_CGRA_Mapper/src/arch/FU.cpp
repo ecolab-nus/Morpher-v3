@@ -189,6 +189,12 @@ bool CGRAXMLCompile::FU::isMEMFU()
 	{
 		return true;
 	}
+	// Compound ops (LOAD_*_STORE) also indicate a memory-capable FU
+	for (auto &kv : supportedOPs)
+	{
+		if (kv.first.find("LOAD_") == 0)
+			return true;
+	}
 	return false;
 }
 

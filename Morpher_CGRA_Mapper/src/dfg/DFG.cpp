@@ -711,4 +711,126 @@ bool DFG::getAncestoryASAPUntil(DFGNode *beParent, DFGNode *beChild,
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// fuseCompoundOps — detect LOAD → COMPUTE → STORE triples and fuse them into
+// a single compound DFGNode (e.g., op="LOAD_ADD_STORE", isCompound=true).
+//
+// Fusion is conservative: only applied when
+//   • L has exactly one consumer C,
+//   • C is not itself a memory op,
+//   • C depends ONLY on L (no other parents),
+//   • S depends ONLY on C (no other parents).
+// ---------------------------------------------------------------------------
+void DFG::fuseCompoundOps()
+{
+	std::vector<DFGNode *> toRemove;
+	std::vector<DFGNode>   newNodes;
+
+	// Collect candidate LOAD nodes (snapshot before we mutate nodeList)
+	std::vector<DFGNode *> loadCandidates;
+	for (DFGNode &n : nodeList)
+	{
+		if (n.op == "LOAD" || n.op == "LOADH" || n.op == "LOADB")
+			loadCandidates.push_back(&n);
+	}
+
+	for (DFGNode *L : loadCandidates)
+	{
+		// L must have exactly one consumer
+		if (L->children.size() != 1)
+			continue;
+
+		DFGNode *C = L->children[0];
+
+		// C must be a pure compute op (not a memory op)
+		if (C->isMemOp())
+			continue;
+
+		// C must depend ONLY on L
+		if (C->parents.size() != 1)
+			continue;
+
+		// Look for a STORE child of C that depends only on C
+		DFGNode *S = nullptr;
+		for (DFGNode *ch : C->children)
+		{
+			if ((ch->op == "STORE" || ch->op == "STOREH" || ch->op == "STOREB") &&
+			    ch->parents.size() == 1)
+			{
+				S = ch;
+				break;
+			}
+		}
+		if (!S)
+			continue;
+
+		// Build compound op name: LOAD_<COMPUTE>_STORE
+		std::string compoundOp = "LOAD_" + C->op + "_STORE";
+
+		// Build the fused node
+		DFGNode fused;
+		fused.idx        = L->idx;
+		fused.op         = compoundOp;
+		fused.isCompound = true;
+		fused.BB         = L->BB;
+		fused.ASAP       = L->ASAP;
+		fused.ALAP       = S->ALAP;
+		fused.parents    = L->parents;
+		fused.children   = S->children;
+
+		newNodes.push_back(fused);
+		toRemove.push_back(L);
+		toRemove.push_back(C);
+		toRemove.push_back(S);
+	}
+
+	if (newNodes.empty())
+		return;
+
+	// Append new compound nodes first (so their addresses are stable)
+	for (DFGNode &fn : newNodes)
+		nodeList.push_back(fn);
+
+	// Build a map from removed-node pointer → fused-node pointer
+	// (relies on newNodes being pushed in the same order as toRemove triples)
+	std::map<DFGNode *, DFGNode *> fusedMap; // removed L/C/S → fused node
+	for (size_t i = 0; i < newNodes.size(); ++i)
+	{
+		DFGNode *L = toRemove[i * 3 + 0];
+		DFGNode *C = toRemove[i * 3 + 1];
+		DFGNode *S = toRemove[i * 3 + 2];
+		DFGNode *fn = &nodeList[nodeList.size() - newNodes.size() + i];
+		fusedMap[L] = fn;
+		fusedMap[C] = fn;
+		fusedMap[S] = fn;
+	}
+
+	// Rewrite all parent/child pointers that reference removed nodes
+	for (DFGNode &n : nodeList)
+	{
+		for (DFGNode *&p : n.parents)
+		{
+			auto it = fusedMap.find(p);
+			if (it != fusedMap.end()) p = it->second;
+		}
+		for (DFGNode *&c : n.children)
+		{
+			auto it = fusedMap.find(c);
+			if (it != fusedMap.end()) c = it->second;
+		}
+	}
+
+	// Remove the original L, C, S nodes
+	std::set<DFGNode *> removeSet(toRemove.begin(), toRemove.end());
+	nodeList.erase(
+		std::remove_if(nodeList.begin(), nodeList.end(),
+			[&](const DFGNode &n) {
+				return removeSet.count(const_cast<DFGNode *>(&n)) > 0;
+			}),
+		nodeList.end());
+
+	std::cout << "[fuseCompoundOps] fused " << newNodes.size()
+	          << " LOAD-COMPUTE-STORE triple(s) into compound ops\n";
+}
+
 } /* namespace CGRAXMLCompile */

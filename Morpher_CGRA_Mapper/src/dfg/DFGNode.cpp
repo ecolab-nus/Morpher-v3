@@ -378,8 +378,19 @@ bool CGRAXMLCompile::DFGNode::isMemOp()
 	{
 		return true;
 	}
+	// Compound fused ops (LOAD_*_STORE) also count as memory operations
+	else if (this->op.find("LOAD_") == 0 &&
+	         this->op.find("_STORE") != std::string::npos)
+	{
+		return true;
+	}
 	else
 	{
 		return false;
 	}
+}
+
+bool CGRAXMLCompile::DFGNode::isCompoundOp()
+{
+	return this->isCompound;
 }
