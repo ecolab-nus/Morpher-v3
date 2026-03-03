@@ -57,12 +57,27 @@ If your distro exposes versioned binaries (for example `clang-10`), ensure unver
 
 ## Setup
 
+Fresh clone:
+
 ```bash
-git clone --recurse-submodules https://github.com/ecolab-nus/Morpher.git
-cd Morpher
-git submodule update --init --recursive
+git clone https://github.com/pruhnuhv/Dataflow-arch-mapper.git
+cd Dataflow-arch-mapper
+```
+
+Install Python requirements and build all components:
+
+```bash
+python3 -m pip install --upgrade pip
 python3 -m pip install -r python_requirements.txt
 bash build_all.sh
+```
+
+Optional build sanity check:
+
+```bash
+ls Morpher_DFG_Generator/build/src/libdfggenPass.so
+ls Morpher_CGRA_Mapper/build/src/cgra_xml_mapper
+ls hycube_simulator/src/build/hycube_simulator
 ```
 
 ## Quick Start
