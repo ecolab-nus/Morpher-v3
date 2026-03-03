@@ -17,6 +17,7 @@
 //#include <nlohmann/json.hpp>
 #include <iomanip>
 #include <regex>
+#include <queue>
 
 using json = nlohmann::json;
 using namespace CGRAXMLCompile;
@@ -34,6 +35,96 @@ namespace CGRAXMLCompile
 namespace
 {
 	std::unordered_map<std::string, std::shared_ptr<const json>> g_preprocessed_arch_cache;
+
+	struct TimeDistSearchResult
+	{
+		std::unordered_map<std::string, int> peTimeDist;
+		int closestMemTimeDist = INT32_MAX;
+	};
+
+	struct PortDistEntry
+	{
+		int dist;
+		Port *port;
+	};
+
+	struct PortDistGreater
+	{
+		bool operator()(const PortDistEntry &lhs, const PortDistEntry &rhs) const
+		{
+			return lhs.dist > rhs.dist;
+		}
+	};
+
+	TimeDistSearchResult computeTimeDistFromSourcePE(CGRA *cgra, PE *srcPE,
+	                                                 const std::vector<PE *> &zerothSpatialPEs)
+	{
+		TimeDistSearchResult result;
+		for (PE *destPE : zerothSpatialPEs)
+		{
+			result.peTimeDist[destPE->getName()] = INT32_MAX;
+		}
+
+		std::unordered_map<Port *, int> bestDistToPort;
+		std::priority_queue<PortDistEntry, std::vector<PortDistEntry>, PortDistGreater> worklist;
+		for (Port *op : srcPE->outputPorts)
+		{
+			bestDistToPort[op] = 0;
+			worklist.push({0, op});
+		}
+
+		while (!worklist.empty())
+		{
+			PortDistEntry curr = worklist.top();
+			worklist.pop();
+			auto it = bestDistToPort.find(curr.port);
+			if (it == bestDistToPort.end() || it->second != curr.dist)
+			{
+				continue;
+			}
+
+			Module *currMod = curr.port->getMod();
+			assert(currMod);
+			PE *currPE = currMod->getPE();
+			FU *currFU = currMod->getFU();
+			if (currFU != NULL && currPE != NULL)
+			{
+				auto peIt = result.peTimeDist.find(currPE->getName());
+				if (peIt != result.peTimeDist.end() && curr.dist < peIt->second)
+				{
+					peIt->second = curr.dist;
+				}
+				if (currFU->isMEMFU() && curr.dist < result.closestMemTimeDist)
+				{
+					result.closestMemTimeDist = curr.dist;
+				}
+			}
+
+			std::vector<Port *> nextPorts = currMod->getNextPorts(curr.port);
+			for (Port *nextPort : nextPorts)
+			{
+				int timeDelta = 0;
+				if (nextPort->getMod()->get_t() != currMod->get_t())
+				{
+					timeDelta = 1;
+				}
+				if (curr.port->getType() == REGO && nextPort->getType() == REGI)
+				{
+					timeDelta = 1;
+				}
+
+				const int nextDist = curr.dist + timeDelta;
+				auto nextIt = bestDistToPort.find(nextPort);
+				if (nextIt == bestDistToPort.end() || nextDist < nextIt->second)
+				{
+					bestDistToPort[nextPort] = nextDist;
+					worklist.push({nextDist, nextPort});
+				}
+			}
+		}
+
+		return result;
+	}
 }
 
 void CGRAXMLCompile::CGRA::createGenericCGRA(int x_max, int y_max, int t_max, std::string peType, int numberofDPs)
@@ -58,14 +149,10 @@ void CGRAXMLCompile::CGRA::createGenericCGRA(int x_max, int y_max, int t_max, st
 				PE *newPE;
 				std::string PE_name = "PE_" + std::to_string(t) + "," + std::to_string(y) + "," + std::to_string(x);
 
-				if (x == 0)
-				{
-					newPE = new PE(this, PE_name, x, y, t, peType, true, numberofDPs);
-				}
-				else
-				{
-					newPE = new PE(this, PE_name, x, y, t, peType, false, numberofDPs);
-				}
+				// For distributed-memory architectures every PE is a memory PE.
+				// The isMEMpe flag controls whether a PE gets FU_MEM capability.
+				bool isMEMpe = true;
+				newPE = new PE(this, PE_name, x, y, t, peType, isMEMpe, numberofDPs);
 				subModules.push_back(newPE);
 				PEArr[t][y][x] = newPE;
 			}
@@ -970,34 +1057,32 @@ TimeDistInfo CGRAXMLCompile::CGRA::analyzeTimeDist()
 {
 	std::stringstream output_ss;
 	output_ss<<"initial time analayze start\n";
+	std::vector<PE *> zerothSpatialPEs;
 	for (Module *m1 : subModArr[0])
 	{
-		output_ss << "m1 name = " << m1->getName() << ",";
-		if (!dynamic_cast<PE *>(m1))
+		if (PE *pe = dynamic_cast<PE *>(m1))
 		{
-			output_ss << "\t not a PE skipping...\n";
-			continue;
+			zerothSpatialPEs.push_back(pe);
 		}
-		PE *pe1 = static_cast<PE *>(m1);
-		TimeDistBetweenClosestMEMPEMap[pe1->getName()] = INT32_MAX;
-		for (Module *m2 : subModArr[0])
-		{
-			output_ss << "m2 name = " << m2->getName() ;
-			if (!dynamic_cast<PE *>(m2))
-			{
-				output_ss << "\t not a PE skipping...\n";
-				continue;
-			}
-			PE *pe2 = static_cast<PE *>(m2);
-			// if (pe1 == pe2)
-			// continue;
-			int dist = getTimeDistBetweenPEs(pe1, pe2);
-			output_ss<<"  dist:"<<dist <<"\n";
-			TimeDistBetweenPEMap[pe1->getName()][pe2->getName()] =dist;
-		}
-		LOG(ROUTE)<<output_ss.str();
-		output_ss.str("");
 	}
+
+	for (PE *srcPE : zerothSpatialPEs)
+	{
+		TimeDistSearchResult srcResult = computeTimeDistFromSourcePE(this, srcPE, zerothSpatialPEs);
+		TimeDistBetweenClosestMEMPEMap[srcPE->getName()] = srcResult.closestMemTimeDist;
+		for (PE *destPE : zerothSpatialPEs)
+		{
+			int dist = srcResult.peTimeDist[destPE->getName()];
+			if (dist == INT32_MAX)
+			{
+				// Fallback to legacy per-pair traversal only when the graph search misses a route.
+				dist = getTimeDistBetweenPEs(srcPE, destPE);
+			}
+			TimeDistBetweenPEMap[srcPE->getName()][destPE->getName()] = dist;
+			output_ss << srcPE->getName() << " -> " << destPE->getName() << " dist:" << dist << "\n";
+		}
+	}
+	LOG(ROUTE)<<output_ss.str();
 	if (get_t_max() == 1)
 	{
 		for (Module *m1 : subModArr[0])
