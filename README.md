@@ -22,6 +22,13 @@ It takes a C kernel, generates a DFG, maps it onto a configurable CGRA architect
 For a full plain-language code and feature walkthrough, see:
 
 - [`docs/FEATURES_AND_CODE_GUIDE.md`](docs/FEATURES_AND_CODE_GUIDE.md)
+- [`docs/DIRECTORY_LOGIC_GUIDE.md`](docs/DIRECTORY_LOGIC_GUIDE.md) (directory-by-directory logic)
+- Component docs:
+  - [`docs/components/RUNNER_PIPELINE.md`](docs/components/RUNNER_PIPELINE.md)
+  - [`docs/components/DFG_GENERATOR.md`](docs/components/DFG_GENERATOR.md)
+  - [`docs/components/MAPPER.md`](docs/components/MAPPER.md)
+  - [`docs/components/SIMULATOR.md`](docs/components/SIMULATOR.md)
+  - [`docs/components/SCRIPTS_CONFIG.md`](docs/components/SCRIPTS_CONFIG.md)
 
 ## Repository Layout
 
