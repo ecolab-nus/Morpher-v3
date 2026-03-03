@@ -15,7 +15,7 @@ RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only"}
 
 def _derive_kernel_from_xml(xml_path):
   stem = os.path.splitext(os.path.basename(xml_path))[0]
-  for suffix in ("_PartPredDFG", "_FullPredDFG", "_DFG"):
+  for suffix in ("_PartPred_DFG", "_FullPred_DFG", "_PartPredDFG", "_FullPredDFG", "_DFG"):
     if stem.endswith(suffix):
       stem = stem[:-len(suffix)]
       break

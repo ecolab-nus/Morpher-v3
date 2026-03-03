@@ -1,5 +1,6 @@
 import os
 import shlex
+import sys
 import time
 
 from morpher_runner.exec import Command
@@ -94,7 +95,7 @@ def build_mapper_commands(context):
     commands.append(
       Command(
         argv=[
-          "python",
+          sys.executable,
           "%s/update_mem_alloc.py" % context.mapper_home,
           template_arch,
           mem_alloc,

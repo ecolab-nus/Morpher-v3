@@ -13,9 +13,10 @@ from morpher_runner.exec import run_command
 
 def collect_trace_files(context):
   kernel = context.kernel
+  pattern = re.compile(r"^%s_trace_[0-9]+\.txt$" % re.escape(kernel))
   return [
     f for f in listdir(context.mem_trace)
-    if isfile(join(context.mem_trace, f)) and re.match(kernel + "_trace_[0-9]*\\.txt", f)
+    if isfile(join(context.mem_trace, f)) and pattern.match(f)
   ]
 
 
@@ -61,6 +62,13 @@ def run_simulator(context):
   print("\n-----Running hycube_simulator-----\n")
 
   files = collect_trace_files(context)
+  if not files:
+    raise RuntimeError(
+      "No trace files found in %s for kernel '%s'. "
+      "Generate traces first (runall/dfg_gen_only with enable_simulation=true) "
+      "or disable simulation."
+      % (context.mem_trace, context.kernel)
+    )
   samplefiles = select_trace_samples(files, context.config.max_test_samples)
   print("Trace samples: %d\n" % len(samplefiles))
 
