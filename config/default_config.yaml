@@ -1,6 +1,6 @@
 ---
  memory_mode: "auto"
- arch_template_json: "hycube_original_updatemem.json"
+ arch_template_json: "hycube_original_updatemem2.json"
  mapper_subfolder: 'hycube'
  dfg_type: 'PartPred'
  init_II: 1
@@ -26,3 +26,11 @@
  spm_mode: 'off'
  llvm_debug_type: 'no'
  remove_agi: true
+
+# II=1 partition mode settings (used when runmode=ii1_partition)
+ ii1_partition_target_size: 11    # initial target nodes per partition (before store/load additions)
+ ii1_partition_min_size: 5        # minimum partition size for recursive sub-partitioning
+ ii1_partition_balance_tolerance: 0.35
+ ii1_partition_hard_fail: true
+ ii1_partition_max_loads_per_chunk: "auto"
+ ii1_partition_max_stores_per_chunk: "auto"

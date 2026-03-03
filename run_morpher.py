@@ -6,11 +6,12 @@ import sys
 
 from morpher_runner.context import build_context
 from morpher_runner.dfg_generator import run_dfg_generator
+from morpher_runner.ii1_mapper import run_ii1_partition_mapper
 from morpher_runner.mapper import run_mapper
 from morpher_runner.simulator import run_simulator
 
 DEFAULT_CONFIG_PATH = "config/default_config.yaml"
-RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only"}
+RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only", "ii1_partition"}
 
 
 def _derive_kernel_from_xml(xml_path):
@@ -29,7 +30,7 @@ def _usage():
     "Usage:\n"
     "  python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runmode]\n"
     "  python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]\n\n"
-    "Run modes: runall, dfg_gen_only, mapper_only, sim_only\n"
+    "Run modes: runall, dfg_gen_only, mapper_only, sim_only, ii1_partition\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
   )
@@ -68,9 +69,9 @@ def _parse_cli(argv):
     config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
     runmode = positional[3] if len(positional) >= 4 else "mapper_only"
 
-    if runmode not in ("mapper_only", "runall"):
+    if runmode not in ("mapper_only", "runall", "ii1_partition"):
       raise RuntimeError(
-        "XML mode supports runmode 'mapper_only' or 'runall' (got: %s)." % runmode
+        "XML mode supports runmode 'mapper_only', 'runall', or 'ii1_partition' (got: %s)." % runmode
       )
 
     csource = "xml_inputs/%s/%s.c" % (function, function)
@@ -143,12 +144,12 @@ def main(
   mem_alloc_path=None,
 ):
   print(r"""
-    __  ___                 __                 ________________  ___       ____            _                ______                                             __  
+    __  ___                 __                 ________________  ___       ____            _                ______                                             __
    /  |/  /___  _________  / /_  ___  _____   / ____/ ____/ __ \/   |     / __ \___  _____(_)___ _____     / ____/________ _____ ___  ___ _      ______  _____/ /__
   / /|_/ / __ \/ ___/ __ \/ __ \/ _ \/ ___/  / /   / / __/ /_/ / /| |    / / / / _ \/ ___/ / __ `/ __ \   / /_  / ___/ __ `/ __ `__ \/ _ \ | /| / / __ \/ ___/ //_/
- / /  / / /_/ / /  / /_/ / / / /  __/ /     / /___/ /_/ / _, _/ ___ |   / /_/ /  __(__  ) / /_/ / / / /  / __/ / /  / /_/ / / / / / /  __/ |/ |/ / /_/ / /  / ,<   
-/_/  /_/\____/_/  / .___/_/ /_/\___/_/      \____/\____/_/ |_/_/  |_|  /_____/\___/____/_/\__, /_/ /_/  /_/   /_/   \__,_/_/ /_/ /_/\___/|__/|__/\____/_/  /_/|_|  
-                 /_/                                                                     /____/                                                                    
+ / /  / / /_/ / /  / /_/ / / / /  __/ /     / /___/ /_/ / _, _/ ___ |   / /_/ /  __(__  ) / /_/ / / / /  / __/ / /  / /_/ / / / / / /  __/ |/ |/ / /_/ / ,<
+/_/  /_/\____/_/  / .___/_/ /_/\___/_/      \____/\____/_/ |_/_/  |_|  /_____/\___/____/_/\__, /_/ /_/  /_/   /_/   \__,_/_/ /_/ /_/\___/|__/|__/\____/_/  /_/|_|
+                 /_/                                                                     /____/
     """)
 
   context = build_context(csource, function, config, runmode)
@@ -174,8 +175,13 @@ def main(
     _stage_mapper_inputs_from_xml(context, dfg_xml_path, mem_alloc_path)
     print("Skipping DFG generation stage (XML input mode).\n")
 
-  if (runmode == "runall" or runmode == "dfg_gen_only") and not dfg_xml_path:
+  needs_dfg = runmode in ("runall", "dfg_gen_only", "ii1_partition")
+  if needs_dfg and not dfg_xml_path:
     run_dfg_generator(context)
+
+  if runmode == "ii1_partition":
+    run_ii1_partition_mapper(context)
+    return
 
   if runmode == "runall" or runmode == "mapper_only":
     run_mapper(context)

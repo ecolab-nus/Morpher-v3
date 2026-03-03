@@ -79,6 +79,12 @@ class RunnerConfig:
   spm_mode: str
   llvm_debug_type: str
   remove_agi: bool
+  ii1_partition_target_size: int
+  ii1_partition_min_size: int
+  ii1_partition_balance_tolerance: float
+  ii1_partition_hard_fail: bool
+  ii1_partition_max_loads_per_chunk: str
+  ii1_partition_max_stores_per_chunk: str
 
   @classmethod
   def from_yaml(cls, config_path):
@@ -118,6 +124,12 @@ class RunnerConfig:
       spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],
       remove_agi=config_dict.get("remove_agi", False),
+      ii1_partition_target_size=config_dict.get("ii1_partition_target_size", 10),
+      ii1_partition_min_size=config_dict.get("ii1_partition_min_size", 5),
+      ii1_partition_balance_tolerance=config_dict.get("ii1_partition_balance_tolerance", 0.35),
+      ii1_partition_hard_fail=config_dict.get("ii1_partition_hard_fail", True),
+      ii1_partition_max_loads_per_chunk=str(config_dict.get("ii1_partition_max_loads_per_chunk", "auto")),
+      ii1_partition_max_stores_per_chunk=str(config_dict.get("ii1_partition_max_stores_per_chunk", "auto")),
     )
 
 

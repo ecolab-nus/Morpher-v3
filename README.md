@@ -56,7 +56,7 @@ python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runm
 ```
 
 - `config_path` default: `config/default_config.yaml`
-- `runmode`: `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`
+- `runmode`: `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`, `ii1_partition`
 
 Key config knobs in `config/default_config.yaml`:
 
@@ -70,6 +70,12 @@ Key config knobs in `config/default_config.yaml`:
 - `skip_ii_estimation`: when `true`, mapper skips Res/Rec II bound analysis and starts directly from `init_II` (faster startup)
 - `print_dfg`: when `true`, mapper prints parsed DFG details (debug only; slows down startup)
 - `enable_simulation`: when `false`, skips DFG instrumentation/trace generation and skips the simulator stage
+- `ii1_partition_*`: settings for `ii1_partition` run mode
+  - `ii1_partition_target_size`, `ii1_partition_min_size`: initial chunking target and minimum chunk size
+  - `ii1_partition_balance_tolerance`: allowable deviation while keeping chunks roughly equal
+  - `ii1_partition_max_loads_per_chunk`, `ii1_partition_max_stores_per_chunk`: hard LS budgets (`auto` derives from arch resources)
+  - `ii1_partition_hard_fail`: fail run if any chunk is not mapped at II=1
+  - partitioner also applies a conservative fanout-reduction heuristic (selective pure-op duplication) when it reduces inter-partition IPC pairs
 
 Deprecated config keys still accepted (with warning):
 
@@ -100,7 +106,7 @@ python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-al
   - `function`: derived from XML filename
   - `config_path`: `config/default_config.yaml`
   - `runmode`: `mapper_only`
-- XML mode supports run modes: `mapper_only`, `runall`
+- XML mode supports run modes: `mapper_only`, `runall`, `ii1_partition`
 - If `memory_mode: auto`, mapper also needs `<kernel>_mem_alloc.txt`
   - place it next to the XML, or pass `--mem-alloc <path>`
   - or use `config/xml_mapper_static.yaml` (static mode, uses `hycube_original.json`)
