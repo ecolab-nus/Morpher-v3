@@ -41,6 +41,8 @@ void Port::increaseUse(PathFinderMapper *hm)
 				continue;
 			if (pfm->dfg->isMutexNodes(last_mapped_node, node, this))
 				continue;
+			if (pfm->dfg->isMutexRouting(last_mapped_node, node))
+				continue;
 			number_signals++;
 			//			break;
 		}
@@ -50,6 +52,8 @@ void Port::increaseUse(PathFinderMapper *hm)
 			if (last_mapped_node == node)
 				continue;
 			if (pfm->dfg->isMutexNodes(last_mapped_node, node, this))
+				continue;
+			if (pfm->dfg->isMutexRouting(last_mapped_node, node))
 				continue;
 			number_signals++;
 			break;
@@ -78,6 +82,8 @@ void Port::decreaseUse(DFGNode *extnode, PathFinderMapper *hm)
 				if (extnode == con_node)
 					continue;
 				if (pfm->dfg->isMutexNodes(extnode, con_node, this))
+					continue;
+				if (pfm->dfg->isMutexRouting(extnode, con_node))
 					continue;
 				number_signals--;
 				break;

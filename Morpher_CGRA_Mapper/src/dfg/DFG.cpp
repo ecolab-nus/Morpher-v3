@@ -380,6 +380,19 @@ bool DFG::isMutexNodes(DFGNode *a, DFGNode *b, Port *p)
 	return false;
 }
 
+bool DFG::isMutexRouting(DFGNode *a, DFGNode *b)
+{
+	if (mutexBBs.find(a->BB) == mutexBBs.end())
+		return false;
+	if (mutexBBs.find(b->BB) == mutexBBs.end())
+		return false;
+	if (mutexBBs[a->BB].find(b->BB) != mutexBBs[a->BB].end())
+		return true;
+	if (mutexBBs[b->BB].find(a->BB) != mutexBBs[b->BB].end())
+		return true;
+	return false;
+}
+
 std::vector<DFGNode *> removeDuplicates(std::vector<DFGNode *> vec_in)
 {
 	std::vector<DFGNode *> res;

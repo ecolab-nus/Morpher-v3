@@ -37,6 +37,7 @@ public:
 	std::set<DFGNode *> unmappedMemOpSet;
 
 	bool isMutexNodes(DFGNode *a, DFGNode *b, Port *p);
+	bool isMutexRouting(DFGNode *a, DFGNode *b);
 	bool getAncestoryASAPUntil(DFGNode *beParent, DFGNode *beChild, std::set<DFGNode *> &result);
 	std::vector<DFGNode *> getAncestoryASAP(const DFGNode *node);
 	std::vector<DFGNode *> getAncestoryALAP(const DFGNode *node);
