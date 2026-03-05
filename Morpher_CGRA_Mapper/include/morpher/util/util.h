@@ -47,6 +47,8 @@ struct arguments
 	int sa_candidate_topk = 8;
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
+	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
+	std::string node_pin = ""; // pin a DFG node to a PE: "node_idx:X:Y"
 };
 
 inline arguments parse_arguments(int argn, char *argc[]){
@@ -83,6 +85,8 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<int>("", "--sa_candidate_topk", "SA top-K candidate DPs sampled stochastically", 8)
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
+				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
+				.add_option<std::string>("", "--node_pin", "pin a DFG node: 'node_idx:X:Y'", "")
 			        .parse(argn, argc);
 
 	ret.dfg_filename = args.get_option<std::string>("--dfg");
@@ -111,6 +115,8 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.spm_mode = args.get_option<std::string>("--spm_mode");
 	ret.use_json = true;
 	ret.arch_name = args.get_option<std::string>("--arch_name");
+	ret.proximity_sort = args.get_option<int>("--proximity_sort") != 0;
+	ret.node_pin = args.get_option<std::string>("--node_pin");
 	assert(ret.dfg_filename!= "");
 	assert(ret.json_file_name!= "");
 

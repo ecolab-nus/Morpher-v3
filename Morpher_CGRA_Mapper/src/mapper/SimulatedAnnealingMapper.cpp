@@ -1041,6 +1041,19 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::SAMapper::getRandomDPCan
 		return candidateDests;
 	}
 
+	// Compute parent centroid for proximity sort
+	int prox_cx = 0, prox_cy = 0, prox_n = 0;
+	if (proximitySort) {
+		for (DFGNode *par : node->parents) {
+			if (par->rootDP) {
+				prox_cx += par->rootDP->getPE()->X;
+				prox_cy += par->rootDP->getPE()->Y;
+				prox_n++;
+			}
+		}
+		if (prox_n > 0) { prox_cx /= prox_n; prox_cy /= prox_n; }
+	}
+
 	std::sort(candidateDests.begin(), candidateDests.end(),
 	          [&](DataPath *lhs, DataPath *rhs)
 	          {
@@ -1049,6 +1062,11 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::SAMapper::getRandomDPCan
 		          if (lhsPenalty != rhsPenalty)
 		          {
 			          return lhsPenalty < rhsPenalty;
+		          }
+		          if (proximitySort && prox_n > 0) {
+			          int dl = std::abs(lhs->getPE()->X - prox_cx) + std::abs(lhs->getPE()->Y - prox_cy);
+			          int dr = std::abs(rhs->getPE()->X - prox_cx) + std::abs(rhs->getPE()->Y - prox_cy);
+			          if (dl != dr) return dl < dr;
 		          }
 		          return lhs->getFullName() < rhs->getFullName();
 	          });

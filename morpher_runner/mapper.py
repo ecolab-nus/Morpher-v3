@@ -86,7 +86,13 @@ def build_mapper_commands(context):
     str(config.sa_candidate_topk),
     "--spm_mode",
     str(config.spm_mode),
+    "--proximity_sort",
+    "1" if getattr(config, "proximity_sort", True) else "0",
   ]
+
+  node_pin = getattr(config, "node_pin", "")
+  if node_pin:
+    mapper_common_args += ["--node_pin", str(node_pin)]
 
   commands = []
   mapper_arch = template_arch

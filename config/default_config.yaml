@@ -26,3 +26,5 @@
  spm_mode: 'off'
  llvm_debug_type: 'no'
  remove_agi: true
+ proximity_sort: true
+ node_pin: ""

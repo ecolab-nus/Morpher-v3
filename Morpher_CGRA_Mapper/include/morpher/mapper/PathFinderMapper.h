@@ -279,6 +279,7 @@ public:
 	bool enableBackTracking = true;
 	bool enableMutexPaths = false;
 	int backTrackLimit = 4;
+	bool proximitySort = true;
 
 	int upperboundII = 1000000;
 	int upperboundIter = -1;

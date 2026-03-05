@@ -8,6 +8,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <sstream>
 #include <stdexcept>
 
 #include <assert.h>
@@ -224,6 +225,8 @@ int main(int argn, char *argc[])
 	sa_mapper->enableBackTracking = true;
 	pf_mapper->backTrackLimit = args.backtracklimit;
 	sa_mapper->backTrackLimit = args.backtracklimit;
+	pf_mapper->proximitySort = args.proximity_sort;
+	sa_mapper->proximitySort = args.proximity_sort;
 
 	//cout << "json_file_name = " << json_file_name << "\n";
 	// exit(EXIT_SUCCESS);
@@ -279,6 +282,33 @@ int main(int argn, char *argc[])
 			active_mapper->getcongestedPortsPtr()->clear();
 			active_mapper->getconflictedPortsPtr()->clear();
 			tempCGRA->analyzeTimeDist(tdi);
+
+			// Apply node_pin: blacklist all DPs except those at the pinned PE
+			if (!args.node_pin.empty()) {
+				std::istringstream ss(args.node_pin);
+				int pin_idx, pin_x, pin_y;
+				char colon;
+				if (ss >> pin_idx >> colon >> pin_x >> colon >> pin_y) {
+					for (DFGNode &dfgNodeRef : activeDFG->nodeList) {
+						DFGNode *dfgNode = &dfgNodeRef;
+						if (dfgNode->idx == pin_idx) {
+							for (PE *pe : tempCGRA->getAllPEList()) {
+								if (pe->X == pin_x && pe->Y == pin_y)
+									continue;
+								for (Module *submod : pe->subModules) {
+									if (FU *fu = dynamic_cast<FU *>(submod)) {
+										for (Module *submod2 : fu->subModules) {
+											if (DataPath *dp = dynamic_cast<DataPath *>(submod2))
+												dfgNode->blacklistDest.insert(dp);
+										}
+									}
+								}
+							}
+							break;
+						}
+					}
+				}
+			}
 
 			bool phaseSuccess = false;
 			std::string phaseFailureReason;

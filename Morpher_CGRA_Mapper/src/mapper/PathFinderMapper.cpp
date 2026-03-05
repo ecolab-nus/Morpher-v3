@@ -700,6 +700,29 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	LOG(ROUTE)<< "Candidate Dests = " << candidateDests.size() << "\n";
 	if (candidateDests.empty())
 		return false;
+
+	// Sort candidates by Manhattan distance to centroid of already-placed parents
+	if (proximitySort) {
+		int cx = 0, cy = 0, n = 0;
+		for (auto &kv : possibleStarts) {
+			DFGNode *par = kv.first;
+			if (par->rootDP) {
+				cx += par->rootDP->getPE()->X;
+				cy += par->rootDP->getPE()->Y;
+				n++;
+			}
+		}
+		if (n > 0) {
+			cx /= n; cy /= n;
+			std::sort(candidateDests.begin(), candidateDests.end(),
+				[&](DataPath *a, DataPath *b) {
+					int da = std::abs(a->getPE()->X - cx) + std::abs(a->getPE()->Y - cy);
+					int db = std::abs(b->getPE()->X - cx) + std::abs(b->getPE()->Y - cy);
+					return da < db;
+				});
+		}
+	}
+
 	//	assert(candidateDests.size()!=0);
 	//	node->blacklistDest.clear();
 
