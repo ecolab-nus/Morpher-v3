@@ -13,11 +13,11 @@ int syr2k() {
 
     int sum = 0;
     for (k = 1; k< n-1; k++) {
-               #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
-       C[i][j] += alpha * A[i][k] * B[j][k];
-	  C[i][j] += alpha * B[i][k] * A[j][k];
+        #endif
+        C[i][j] += alpha * A[i][k] * B[j][k];
+	    C[i][j] += alpha * B[i][k] * A[j][k];
     }
 
     return sum;

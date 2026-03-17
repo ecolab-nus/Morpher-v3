@@ -17,9 +17,9 @@ int gemver() {
 
     int sum = 0;
     for (j = 1; j < n-1; j++) {
-               #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
         A[i][j] = A[i][j] + u1[i] * v1[j] + u2[i] * v2[j];
 
     }

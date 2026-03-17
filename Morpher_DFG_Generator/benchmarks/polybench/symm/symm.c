@@ -13,10 +13,10 @@ int symm() {
 
     int sum = 0;
     for (k = 1; k < n-1; k++) {
-               #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
-         C[k][j] += alpha * A[k][i] * B[i][j];
+        #endif
+        C[k][j] += alpha * A[k][i] * B[i][j];
 	    acc += B[k][j] * A[k][i];
     }
 

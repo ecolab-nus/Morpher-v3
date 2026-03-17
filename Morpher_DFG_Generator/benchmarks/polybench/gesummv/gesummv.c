@@ -15,11 +15,11 @@ int gesummv() {
 
     int sum = 0;
     for (j = 1; j < n-1; j++) {
-               #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
         tmp[i] = A[i][j] * x[j] + tmp[i];
-	  y[i] = B[i][j] * x[j] + y[i];
+	    y[i] = B[i][j] * x[j] + y[i];
     }
 
     return sum;

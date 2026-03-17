@@ -16,16 +16,17 @@ int gemm_unroll() {
     int tmp;
 
     int sum = 0;
-    for (k = 1; k < n-1; k++) {
-                #ifdef CGRA_COMPILER
+    for (k = 1; k+1 < n-1; k+=2) {
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
-     tmp = alpha * A[i][k];
-     tmp = tmp * B[k][j];
-         C[i][j] += tmp ;
-             tmp = alpha * A[i][k+1];
-     tmp = tmp * B[k+1][j];
-         C[i][j] += tmp ;
+        #endif
+        tmp = alpha * A[i][k];
+        tmp = tmp * B[k][j];
+        C[i][j] += tmp ;
+
+        tmp = alpha * A[i][k+1];
+        tmp = tmp * B[k+1][j];
+        C[i][j] += tmp ;
     }
 
      /* C := alpha*A*B + beta*C */

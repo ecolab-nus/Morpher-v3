@@ -14,9 +14,9 @@ int trmm() {
 
     int sum = 0;
     for (i = 1; i < n-1; i++) {
-               #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
         B[i][j] += alpha * A[i][k] * B[j][k];
     }
 

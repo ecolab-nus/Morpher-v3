@@ -24,11 +24,11 @@ int bicg() {
     for (i = 0; i < n; i++) {
         int qi = 0;
         for (j = 0; j < m; j++) {
-                   #ifdef CGRA_COMPILER
-               please_map_me();
-               #endif
+            #ifdef CGRA_COMPILER
+                please_map_me();
+            #endif
             s[j] = s[j] + r[i] * A[i][j];
-	      qi = qi + A[i][j] * p[j];
+	        qi = qi + A[i][j] * p[j];
         }
         q[i] = qi;
     }

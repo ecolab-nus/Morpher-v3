@@ -17,10 +17,10 @@ int doitgen_unroll() {
     int _PB_NR, _PB_NQ, _PB_NP;
 
     // int sum = 0;
-    for (s = 1; s < n-1; s++) {
-               #ifdef CGRA_COMPILER
+    for (s = 1; s+1 < n-1; s+=2) {
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
          sum[r][q][p] = sum[r][q][p] + A[r][q][s] * C4[s][p];
 
          sum[r][q][p] = sum[r][q][p] + A[r][q][s+1] * C4[s+1][p];

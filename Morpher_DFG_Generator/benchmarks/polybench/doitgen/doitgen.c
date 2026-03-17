@@ -18,9 +18,9 @@ int doitgen() {
 
     // int sum = 0;
     for (s = 1; s < n-1; s++) {
-               #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
          sum[r][q][p] = sum[r][q][p] + A[r][q][s] * C4[s][p];
     }
 
