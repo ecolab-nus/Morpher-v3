@@ -163,11 +163,20 @@ def _auto_unroll_score(ii, factor):
 def _run_auto_unroll(context):
   config = context.config
   factors = sorted(config.auto_unroll_factors, reverse=True)
+  if config.simd_enabled:
+    factors = [factor for factor in factors if factor >= config.simd_lanes]
+    if not factors:
+      factors = [config.simd_lanes]
   best = None
   successful_lower_probe_degraded = False
 
   print("\n-----Running Morpher auto-unroll search-----\n")
   print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
+  if config.simd_enabled:
+    print(
+      "SIMD mode packs each candidate into groups of simd.lanes=%d."
+      % config.simd_lanes
+    )
   print("Remainder policy: %s" % config.auto_unroll_remainder_policy)
   print(
     "Score: II / unroll_factor. Lower is better; this approximates II * loop_iters / unroll_factor.\n"

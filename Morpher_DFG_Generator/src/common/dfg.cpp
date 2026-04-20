@@ -10948,7 +10948,10 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 
 	// Insertion of reporting functions at entry and exit basicblocks
 	for(auto it = mem_accesses.begin(); it != mem_accesses.end(); it++){
-		IRBuilder<> builder(NodeList[0]->getNode());
+		Instruction *BuilderInsertPoint = NodeList[0]->getNode();
+		if (!BuilderInsertPoint)
+			BuilderInsertPoint = &F.getEntryBlock().front();
+		IRBuilder<> builder(BuilderInsertPoint);
 
 		Value* ptr = it->first;
 		LLVM_DEBUG(dbgs() << "\n---ptr_name = " << ptr->getName() << "\n");
@@ -11044,6 +11047,13 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			}
 			else{
 				LLVM_DEBUG(dbgs() << "type = "); LLVM_DEBUG(ptr->getType()->dump());
+				if (Instruction *PtrIns = dyn_cast<Instruction>(it->first)) {
+					if (DT && !DT->dominates(PtrIns, entryBB->getTerminator())) {
+						LLVM_DEBUG(dbgs() << "Skipping non-dominating intermediate live-in value: "
+						                  << ptr->getName() << "\n");
+						continue;
+					}
+				}
 				/* For integer OLOADs used as dimension indices in multi-dim inner-loop GEPs,
 				 * precompute  spm_base + idx * dim_stride  so the DFG ADD can combine it
 				 * with the inner-loop shifted index without needing a 3-operand ADD. */
@@ -11128,6 +11138,8 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 							LLVM_DEBUG(I.dump());
 							Value *val = dyn_cast<Value>(&I);
 							LLVM_DEBUG(val->dump());
+							if (I.getNumOperands() == 0)
+								continue;
 							if(I.getOperand(0)==ptr){
 								LLVM_DEBUG(dbgs() << "lcssa use\n");
 //								ptr_name_val = builder.CreateGlobalStringPtr(val->getName());
@@ -11148,6 +11160,13 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 				}else{
 					LLVM_DEBUG(dbgs() << "Adding live_out_report_intermediatevariable() call\n");
 
+					if (Instruction *PtrIns = dyn_cast<Instruction>(it->first)) {
+						if (DT && !DT->dominates(PtrIns, exitBB->getTerminator())) {
+							LLVM_DEBUG(dbgs() << "Skipping non-dominating intermediate live-out value: "
+							                  << ptr->getName() << "\n");
+							continue;
+						}
+					}
 					Value* bitcastedptr = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx),true);
 					builder.CreateCall(live_out_report_intvar_FN,{ptr_name_val,bitcastedptr});
 				}

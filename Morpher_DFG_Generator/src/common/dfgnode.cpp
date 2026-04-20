@@ -2,10 +2,33 @@
 
 #include <morpherdfggen/common/dfg.h>
 
+static int readIntMetadata(Instruction *ins, const char *name, int defaultValue)
+{
+	if (!ins)
+	{
+		return defaultValue;
+	}
+	MDNode *md = ins->getMetadata(name);
+	if (!md || md->getNumOperands() == 0)
+	{
+		return defaultValue;
+	}
+	if (auto *cam = dyn_cast<ConstantAsMetadata>(md->getOperand(0)))
+	{
+		if (auto *ci = dyn_cast<ConstantInt>(cam->getValue()))
+		{
+			return ci->getSExtValue();
+		}
+	}
+	return defaultValue;
+}
+
 dfgNode::dfgNode(Instruction *ins, DFG* parent){
 	this->Node = ins;
 	this->BB = ins->getParent();
 	this->Parent = parent;
+	this->simdGroup = readIntMetadata(ins, "morpher.simd.group", -1);
+	this->simdLanes = readIntMetadata(ins, "morpher.simd.lanes", 1);
 
 	for (int i = 0; i < ins->getNumOperands(); ++i) {
 		if(ConstantInt *CI = dyn_cast<ConstantInt>(ins->getOperand(i))){

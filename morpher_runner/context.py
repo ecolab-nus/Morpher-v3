@@ -83,6 +83,32 @@ class RunnerConfig:
   auto_unroll_factors: list
   auto_unroll_remainder_policy: str
   auto_unroll_stop_on_degradation: bool
+  simd_enabled: bool
+  simd_lanes: int
+  simd_pack_load_store: bool
+
+  @staticmethod
+  def _parse_simd(config_dict):
+    simd_cfg = config_dict.get("simd", {})
+    if simd_cfg is None:
+      simd_cfg = {}
+    if isinstance(simd_cfg, bool):
+      simd_cfg = {"enabled": simd_cfg}
+    if not isinstance(simd_cfg, dict):
+      raise RuntimeError("Config key 'simd' must be a mapping or boolean.")
+
+    enabled = bool(simd_cfg.get("enabled", False))
+    try:
+      lanes = int(simd_cfg.get("lanes", 1))
+    except (TypeError, ValueError):
+      raise RuntimeError("simd.lanes must be an integer.")
+    if lanes < 1:
+      raise RuntimeError("simd.lanes must be >= 1.")
+    if enabled and lanes <= 1:
+      raise RuntimeError("simd.lanes must be > 1 when simd.enabled=true.")
+
+    pack_load_store = bool(simd_cfg.get("pack_load_store", True))
+    return enabled, lanes, pack_load_store
 
   @staticmethod
   def _parse_auto_unroll(config_dict):
@@ -128,6 +154,7 @@ class RunnerConfig:
 
     memory_mode = _resolve_memory_mode(config_dict)
     arch_template_json = _resolve_arch_template_json(config_dict, memory_mode)
+    simd_enabled, simd_lanes, simd_pack_load_store = cls._parse_simd(config_dict)
     (
       auto_unroll_enabled,
       auto_unroll_factors,
@@ -167,6 +194,9 @@ class RunnerConfig:
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_remainder_policy=auto_unroll_remainder_policy,
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
+      simd_enabled=simd_enabled,
+      simd_lanes=simd_lanes,
+      simd_pack_load_store=simd_pack_load_store,
     )
 
 

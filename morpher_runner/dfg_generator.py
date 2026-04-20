@@ -8,6 +8,7 @@ from morpher_runner.exec import run_command
 from morpher_runner.exec import run_commands
 from morpher_runner.fs_ops import copy_file
 from morpher_runner.fs_ops import remove_glob
+from morpher_runner.simd_packer import pack_simd_xml
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
 
@@ -186,8 +187,15 @@ def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
   config = context.config
   kernel = context.kernel
   dfg_kernel = context.dfg_gen_kernel
+  if config.simd_enabled and unroll_factor <= 1:
+    unroll_factor = config.simd_lanes
 
   print("-----Running Morpher_DFG_Generator-----\n")
+  if config.simd_enabled:
+    print(
+      "SIMD packing enabled: lanes=%d, pack_load_store=%s\n"
+      % (config.simd_lanes, "true" if config.simd_pack_load_store else "false")
+    )
   if unroll_factor > 1:
     print(
       "Requested Morpher scalar loop unroll: factor=%d, remainder_policy=%s\n"
@@ -227,7 +235,38 @@ def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
     argv=["dot", "-Tpdf", "%s_PartPredDFG.dot" % kernel, "-o", "%s_PartPredDFG.pdf" % kernel],
     cwd=dfg_kernel,
   ))
-  copy_file("%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel), context.mapper_kernel)
+  dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
+  mapper_xml = dfg_xml
+  if config.simd_enabled:
+    simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
+      dfg_kernel.rstrip("/"),
+      kernel,
+      config.simd_lanes,
+    )
+    report = pack_simd_xml(
+      dfg_xml,
+      simd_xml,
+      lanes=config.simd_lanes,
+      pack_load_store=config.simd_pack_load_store,
+    )
+    mapper_xml = simd_xml
+    print(
+      "SIMD pack: input_nodes=%d, output_nodes=%d, packed_groups=%d, "
+      "removed_nodes=%d, pack_ratio=%.3f\n"
+      % (
+        report.input_nodes,
+        report.output_nodes,
+        report.packed_groups,
+        report.packed_nodes_removed,
+        report.pack_ratio,
+      )
+    )
+  copy_file(mapper_xml, context.mapper_kernel)
+  if mapper_xml != dfg_xml:
+    staged_xml = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel)
+    packed_name = os.path.join(context.mapper_kernel, os.path.basename(mapper_xml))
+    if packed_name != staged_xml:
+      os.replace(packed_name, staged_xml)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 

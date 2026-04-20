@@ -31,3 +31,7 @@
    factors: [1, 2, 4, 8]
    remainder_policy: preserve
    stop_on_degradation: true
+ simd:
+   enabled: false
+   lanes: 4
+   pack_load_store: true

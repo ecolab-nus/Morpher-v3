@@ -1616,6 +1616,10 @@ void DFGPartPred::printNewDFGXML() {
 		if(node->hasConstantVal()){
 			xmlFile << "CONST=\"" << node->getConstantVal() << "\"";
 		}
+		if(node->getSimdGroup() >= 0 && node->getSimdLanes() > 1){
+			xmlFile << " simd_group=\"" << node->getSimdGroup() << "\"";
+			xmlFile << " simd_lanes=\"" << node->getSimdLanes() << "\"";
+		}
 		xmlFile << ">\n";
 
 		xmlFile << "<OP>";
@@ -1962,6 +1966,10 @@ int DFGPartPred::classifyParents() {
 							node->parentClassification[1]=parent;
 						}
 						else if(parent->getNameType().compare("CTRLBrOR") == 0){
+							assert(node->parentClassification.find(0) == node->parentClassification.end());
+							node->parentClassification[0]=parent;
+						}
+						else if(parent->getNameType().compare("LOOPSTART") == 0){
 							assert(node->parentClassification.find(0) == node->parentClassification.end());
 							node->parentClassification[0]=parent;
 						}
@@ -3529,12 +3537,21 @@ void DFGPartPred::getLoopExitConditionNodes(std::set<exitNode> &exitNodes)
 
 		if (BRI->isConditional())
 		{
-			dfgNode *ctrlNode = findNode(cast<Instruction>(BRI->getCondition()));
-			assert(ctrlNode);
+			dfgNode *ctrlNode = NULL;
+			ConstantInt *ConstCond = dyn_cast<ConstantInt>(BRI->getCondition());
+			if (!ConstCond)
+			{
+				ctrlNode = findNode(cast<Instruction>(BRI->getCondition()));
+				assert(ctrlNode);
+			}
 			for (int j = 0; j < BRI->getNumSuccessors(); ++j)
 			{
 				if (dest == BRI->getSuccessor(j))
 				{
+					if (ConstCond && ConstCond->isZero() != (j == 1))
+					{
+						continue;
+					}
 					if (j == 0)
 					{
 						LLVM_DEBUG(dbgs() << "true path\n");
@@ -3554,12 +3571,25 @@ void DFGPartPred::getLoopExitConditionNodes(std::set<exitNode> &exitNodes)
 			LLVM_DEBUG(dbgs() << "BRI BasicBlock = " << BRI->getParent()->getName() << "\n");
 
 			auto ThisBasicBlockDTNode = DT->getNode(BRI->getParent());
-			auto IDOM_DTNode = ThisBasicBlockDTNode->getIDom();
-			BasicBlock *IDOM = IDOM_DTNode->getBlock();
+			auto IDOM_DTNode = ThisBasicBlockDTNode ? ThisBasicBlockDTNode->getIDom() : nullptr;
+			BranchInst *IDOM_BRI = NULL;
+			while (IDOM_DTNode)
+			{
+				BasicBlock *IDOM = IDOM_DTNode->getBlock();
+				IDOM_BRI = dyn_cast<BranchInst>(IDOM->getTerminator());
+				if (IDOM_BRI && IDOM_BRI->isConditional())
+					break;
+				IDOM_DTNode = IDOM_DTNode->getIDom();
+			}
 
-			BranchInst *IDOM_BRI = static_cast<BranchInst *>(IDOM->getTerminator());
+			if (!IDOM_BRI || !IDOM_BRI->isConditional())
+			{
+				exitNodes.insert(exitNode(NULL, true, BRI->getParent(), dest));
+				is_ctrl_node_null = true;
+				continue;
+			}
+
 			LLVM_DEBUG(dbgs() << "IDOM BRI BasicBlock = " << IDOM_BRI->getParent()->getName() << "\n");
-			assert(IDOM_BRI->isConditional());
 
 			bool isTruePath = true;
 			for (int j = 0; j < IDOM_BRI->getNumSuccessors(); ++j)
@@ -3580,7 +3610,12 @@ void DFGPartPred::getLoopExitConditionNodes(std::set<exitNode> &exitNodes)
 				}
 			}
 
-			dfgNode *ctrlNode = findNode(cast<Instruction>(IDOM_BRI->getCondition()));
+			dfgNode *ctrlNode = NULL;
+			ConstantInt *ConstCond = dyn_cast<ConstantInt>(IDOM_BRI->getCondition());
+			if (!ConstCond)
+				ctrlNode = findNode(cast<Instruction>(IDOM_BRI->getCondition()));
+			else if (ConstCond->isZero() == isTruePath)
+				continue;
 
 			//ctrlNode could be null that means it is always executed
 			exitNodes.insert(exitNode(ctrlNode, isTruePath, BRI->getParent(), dest));

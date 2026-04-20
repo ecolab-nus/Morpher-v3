@@ -5,6 +5,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -42,6 +43,26 @@ Function *getCalledFunctionThroughBitcast(CallInst *CI) {
 bool isPleaseMapMe(CallInst *CI) {
   Function *CalledFn = getCalledFunctionThroughBitcast(CI);
   return CalledFn && CalledFn->getName() == "please_map_me";
+}
+
+void setIntMetadata(Instruction &I, StringRef Name, unsigned Value) {
+  LLVMContext &Ctx = I.getContext();
+  Metadata *MD = ConstantAsMetadata::get(
+      ConstantInt::get(Type::getInt32Ty(Ctx), Value));
+  I.setMetadata(Name, MDNode::get(Ctx, MD));
+}
+
+void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
+  unsigned Group = 0;
+  for (BasicBlock *BB : TargetLoop->blocks()) {
+    for (Instruction &I : *BB) {
+      if (auto *CI = dyn_cast<CallInst>(&I))
+        if (isPleaseMapMe(CI))
+          continue;
+      setIntMetadata(I, "morpher.simd.group", Group++);
+      setIntMetadata(I, "morpher.simd.lanes", Lanes);
+    }
+  }
 }
 
 CallInst *findAnnotatedLoopMarker(Function &F, LoopInfo &LI, Loop *&TargetLoop) {
@@ -131,6 +152,20 @@ struct MorpherLoopUnrollPass : public FunctionPass {
 
     Loop *TargetLoop = nullptr;
     findAnnotatedLoopMarker(F, LI, TargetLoop);
+
+    unsigned TripCount = SE.getSmallConstantTripCount(TargetLoop);
+    if (TripCount != 0 && MorpherUnrollFactor >= TripCount) {
+      report_fatal_error(
+          "Morpher unroll factor must be smaller than the known loop trip count");
+    }
+
+    unsigned MaxTripCount = SE.getSmallConstantMaxTripCount(TargetLoop);
+    if (MaxTripCount != 0 && MorpherUnrollFactor >= MaxTripCount) {
+      report_fatal_error(
+          "Morpher unroll factor must be smaller than the known max loop trip count");
+    }
+
+    annotateLoopInstructionsForSIMD(TargetLoop, MorpherUnrollFactor);
 
     UnrollLoopOptions ULO;
     ULO.Count = MorpherUnrollFactor;
