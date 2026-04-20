@@ -56,9 +56,34 @@ def build_ir_generation_commands(context):
   ]
 
 
-def build_dfg_pass_command(context):
+def build_unroll_command(context, unroll_factor, remainder_policy):
+  kernel = context.kernel
+  return Command(
+    argv=[
+      "opt",
+      "-load",
+      "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
+      "-morpher-loop-unroll",
+      "-morpher-unroll-fn",
+      kernel,
+      "-morpher-unroll-factor",
+      str(unroll_factor),
+      "-morpher-remainder-policy",
+      remainder_policy,
+      "%s_opt.ll" % kernel,
+      "-S",
+      "-o",
+      "%s_uf%d_opt.ll" % (kernel, unroll_factor),
+    ],
+    cwd=context.dfg_gen_kernel,
+  )
+
+
+def build_dfg_pass_command(context, skeleton_ir=None):
   config = context.config
   kernel = context.kernel
+  if skeleton_ir is None:
+    skeleton_ir = "%s_opt.ll" % kernel
   cmd = [
     "opt",
     "-load",
@@ -70,7 +95,7 @@ def build_dfg_pass_command(context):
     "-banksize",
     str(config.banksize),
     "-skeleton",
-    "%s_opt.ll" % kernel,
+    skeleton_ir,
     "-S",
     "-o",
     "%s_opt_instrument.ll" % kernel,
@@ -157,12 +182,17 @@ def build_instrumentation_commands(context):
   return commands
 
 
-def run_dfg_generator(context):
+def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
   config = context.config
   kernel = context.kernel
   dfg_kernel = context.dfg_gen_kernel
 
   print("-----Running Morpher_DFG_Generator-----\n")
+  if unroll_factor > 1:
+    print(
+      "Requested Morpher scalar loop unroll: factor=%d, remainder_policy=%s\n"
+      % (unroll_factor, remainder_policy)
+    )
 
   remove_glob(dfg_kernel, "memtraces/*")
   remove_glob(dfg_kernel, "*.xml")
@@ -176,9 +206,15 @@ def run_dfg_generator(context):
   print("Optimizing IR..\n")
   run_command(ir_commands[1])
 
+  skeleton_ir = "%s_opt.ll" % kernel
+  if unroll_factor > 1:
+    print("Unrolling annotated loop for DFG candidate..\n")
+    run_command(build_unroll_command(context, unroll_factor, remainder_policy))
+    skeleton_ir = "%s_uf%d_opt.ll" % (kernel, unroll_factor)
+
   print("Generating DFG (%s_PartPredDFG.xml/dot) and data layout (%s_mem_alloc.txt)..\n" % (kernel, kernel))
   run_dfg_opt_with_diagnostics(
-    build_dfg_pass_command(context),
+    build_dfg_pass_command(context, skeleton_ir=skeleton_ir),
     kernel,
     config.banksize,
     config.numberofbanks,

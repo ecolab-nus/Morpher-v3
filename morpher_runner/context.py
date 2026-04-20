@@ -79,6 +79,45 @@ class RunnerConfig:
   spm_mode: str
   llvm_debug_type: str
   remove_agi: bool
+  auto_unroll_enabled: bool
+  auto_unroll_factors: list
+  auto_unroll_remainder_policy: str
+  auto_unroll_stop_on_degradation: bool
+
+  @staticmethod
+  def _parse_auto_unroll(config_dict):
+    auto_cfg = config_dict.get("auto_unroll", {})
+    if auto_cfg is None:
+      auto_cfg = {}
+    if isinstance(auto_cfg, bool):
+      auto_cfg = {"enabled": auto_cfg}
+    if not isinstance(auto_cfg, dict):
+      raise RuntimeError("Config key 'auto_unroll' must be a mapping or boolean.")
+
+    enabled = bool(auto_cfg.get("enabled", False))
+    raw_factors = auto_cfg.get("factors", [1, 2, 4, 8])
+    if not isinstance(raw_factors, list) or not raw_factors:
+      raise RuntimeError("auto_unroll.factors must be a non-empty list.")
+
+    factors = []
+    for factor in raw_factors:
+      try:
+        parsed = int(factor)
+      except (TypeError, ValueError):
+        raise RuntimeError("auto_unroll.factors entries must be integers.")
+      if parsed < 1:
+        raise RuntimeError("auto_unroll.factors entries must be >= 1.")
+      if parsed not in factors:
+        factors.append(parsed)
+
+    remainder_policy = str(auto_cfg.get("remainder_policy", "preserve")).strip().lower()
+    if remainder_policy not in ("preserve", "assume-multiple"):
+      raise RuntimeError(
+        "auto_unroll.remainder_policy must be one of: preserve, assume-multiple."
+      )
+
+    stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", True))
+    return enabled, factors, remainder_policy, stop_on_degradation
 
   @classmethod
   def from_yaml(cls, config_path):
@@ -89,6 +128,12 @@ class RunnerConfig:
 
     memory_mode = _resolve_memory_mode(config_dict)
     arch_template_json = _resolve_arch_template_json(config_dict, memory_mode)
+    (
+      auto_unroll_enabled,
+      auto_unroll_factors,
+      auto_unroll_remainder_policy,
+      auto_unroll_stop_on_degradation,
+    ) = cls._parse_auto_unroll(config_dict)
     _print_deprecation_warning(config_dict)
 
     return cls(
@@ -118,6 +163,10 @@ class RunnerConfig:
       spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],
       remove_agi=config_dict.get("remove_agi", False),
+      auto_unroll_enabled=auto_unroll_enabled,
+      auto_unroll_factors=auto_unroll_factors,
+      auto_unroll_remainder_policy=auto_unroll_remainder_policy,
+      auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
     )
 
 

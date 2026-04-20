@@ -1,6 +1,7 @@
 add_library(dfggenPass MODULE
     # List your source files here.
     dfggenPass.cpp
+    morpherLoopUnrollPass.cpp
     ../include/morpherdfggen/arch/CGRANode.h
     arch/CGRANode.cpp
     ../include/morpherdfggen/arch/CGRA.h

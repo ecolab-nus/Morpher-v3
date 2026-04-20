@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 
 from morpher_runner.context import build_context
 from morpher_runner.dfg_generator import run_dfg_generator
@@ -11,6 +13,7 @@ from morpher_runner.simulator import run_simulator
 
 DEFAULT_CONFIG_PATH = "config/default_config.yaml"
 RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only"}
+_RESULT_LINE_II_RE = re.compile(r"method:\S+\s+(\d+)\s+status:(success|failed)\s+\d+\s*$")
 
 
 def _derive_kernel_from_xml(xml_path):
@@ -134,6 +137,111 @@ def _stage_mapper_inputs_from_xml(context, xml_path, mem_alloc_path=None):
   print("Staged mapper mem-alloc: %s" % mem_dst)
 
 
+def _latest_mapper_result(context, start_time):
+  result_path = os.path.join(context.mapper_kernel, "result.txt")
+  if not os.path.isfile(result_path):
+    return None, None
+  if os.path.getmtime(result_path) < start_time:
+    return None, None
+
+  with open(result_path, "r", encoding="utf-8", errors="ignore") as result_file:
+    lines = [line.strip() for line in result_file if line.strip()]
+  if not lines:
+    return None, None
+
+  match = _RESULT_LINE_II_RE.search(lines[-1])
+  if not match:
+    return None, None
+
+  return int(match.group(1)), match.group(2)
+
+
+def _auto_unroll_score(ii, factor):
+  return float(ii) / float(factor)
+
+
+def _run_auto_unroll(context):
+  config = context.config
+  factors = sorted(config.auto_unroll_factors, reverse=True)
+  best = None
+  successful_lower_probe_degraded = False
+
+  print("\n-----Running Morpher auto-unroll search-----\n")
+  print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
+  print("Remainder policy: %s" % config.auto_unroll_remainder_policy)
+  print(
+    "Score: II / unroll_factor. Lower is better; this approximates II * loop_iters / unroll_factor.\n"
+  )
+
+  for factor in factors:
+    print("== Auto-unroll candidate factor %d ==\n" % factor)
+    start_time = time.time()
+    try:
+      run_dfg_generator(
+        context,
+        unroll_factor=factor,
+        remainder_policy=config.auto_unroll_remainder_policy,
+      )
+      run_mapper(context)
+    except subprocess.CalledProcessError as exc:
+      print(
+        "Candidate factor %d failed with exit code %d; trying the next lower factor.\n"
+        % (factor, exc.returncode)
+      )
+      continue
+
+    ii, status = _latest_mapper_result(context, start_time)
+    if status != "success" or ii is None:
+      print(
+        "Candidate factor %d did not produce a successful mapper result; trying the next lower factor.\n"
+        % factor
+      )
+      continue
+
+    score = _auto_unroll_score(ii, factor)
+    print("Candidate factor %d: II=%d, score=%.4f\n" % (factor, ii, score))
+
+    candidate = {"factor": factor, "ii": ii, "score": score}
+    if best is None or score < best["score"] or (
+      score == best["score"] and factor > best["factor"]
+    ):
+      best = candidate
+      continue
+
+    if config.auto_unroll_stop_on_degradation:
+      print(
+        "Factor %d is worse than best factor %d; stopping lower-factor search.\n"
+        % (factor, best["factor"])
+      )
+      successful_lower_probe_degraded = True
+      break
+
+  if best is None:
+    raise RuntimeError("auto_unroll failed: no candidate factor mapped successfully.")
+
+  print(
+    "Selected auto-unroll factor %d (II=%d, score=%.4f).\n"
+    % (best["factor"], best["ii"], best["score"])
+  )
+
+  # Rerun the selected candidate so normal output directories contain the chosen
+  # DFG, mapping, and optional simulation inputs even if the search ended on a
+  # lower failed or degraded candidate.
+  if successful_lower_probe_degraded or best["factor"] != factors[-1]:
+    print("Rerunning selected factor %d to leave final artifacts in place.\n" % best["factor"])
+    run_dfg_generator(
+      context,
+      unroll_factor=best["factor"],
+      remainder_policy=config.auto_unroll_remainder_policy,
+    )
+    run_mapper(context)
+
+  if context.config.enable_simulation:
+    run_simulator(context)
+  else:
+    print("\nSimulation disabled by config (enable_simulation=false); skipping hycube_simulator.\n")
+
+
 def main(
   csource,
   function,
@@ -173,6 +281,14 @@ def main(
   if dfg_xml_path:
     _stage_mapper_inputs_from_xml(context, dfg_xml_path, mem_alloc_path)
     print("Skipping DFG generation stage (XML input mode).\n")
+
+  if (
+    context.config.auto_unroll_enabled
+    and runmode == "runall"
+    and not dfg_xml_path
+  ):
+    _run_auto_unroll(context)
+    return
 
   if (runmode == "runall" or runmode == "dfg_gen_only") and not dfg_xml_path:
     run_dfg_generator(context)
