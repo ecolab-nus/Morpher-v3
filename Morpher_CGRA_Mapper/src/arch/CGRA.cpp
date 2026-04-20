@@ -14,10 +14,10 @@
 #include <fstream>
 #include <cstdlib>
 #include <unordered_map>
+#include <queue>
 //#include <nlohmann/json.hpp>
 #include <iomanip>
 #include <regex>
-#include <queue>
 
 using json = nlohmann::json;
 using namespace CGRAXMLCompile;
@@ -56,14 +56,14 @@ namespace
 		}
 	};
 
-	TimeDistSearchResult computeTimeDistFromSourcePE(CGRA *cgra, PE *srcPE,
+	// Single-source Dijkstra over the MRRG port graph. Finds distances from
+	// srcPE to all zerothSpatialPEs in one pass: O(E log V) instead of O(N * E).
+	TimeDistSearchResult computeTimeDistFromSourcePE(PE *srcPE,
 	                                                 const std::vector<PE *> &zerothSpatialPEs)
 	{
 		TimeDistSearchResult result;
 		for (PE *destPE : zerothSpatialPEs)
-		{
 			result.peTimeDist[destPE->getName()] = INT32_MAX;
-		}
 
 		std::unordered_map<Port *, int> bestDistToPort;
 		std::priority_queue<PortDistEntry, std::vector<PortDistEntry>, PortDistGreater> worklist;
@@ -79,9 +79,7 @@ namespace
 			worklist.pop();
 			auto it = bestDistToPort.find(curr.port);
 			if (it == bestDistToPort.end() || it->second != curr.dist)
-			{
 				continue;
-			}
 
 			Module *currMod = curr.port->getMod();
 			assert(currMod);
@@ -91,13 +89,9 @@ namespace
 			{
 				auto peIt = result.peTimeDist.find(currPE->getName());
 				if (peIt != result.peTimeDist.end() && curr.dist < peIt->second)
-				{
 					peIt->second = curr.dist;
-				}
 				if (currFU->isMEMFU() && curr.dist < result.closestMemTimeDist)
-				{
 					result.closestMemTimeDist = curr.dist;
-				}
 			}
 
 			std::vector<Port *> nextPorts = currMod->getNextPorts(curr.port);
@@ -105,13 +99,9 @@ namespace
 			{
 				int timeDelta = 0;
 				if (nextPort->getMod()->get_t() != currMod->get_t())
-				{
 					timeDelta = 1;
-				}
 				if (curr.port->getType() == REGO && nextPort->getType() == REGI)
-				{
 					timeDelta = 1;
-				}
 
 				const int nextDist = curr.dist + timeDelta;
 				auto nextIt = bestDistToPort.find(nextPort);
@@ -1057,18 +1047,17 @@ TimeDistInfo CGRAXMLCompile::CGRA::analyzeTimeDist()
 {
 	std::stringstream output_ss;
 	output_ss<<"initial time analayze start\n";
+
 	std::vector<PE *> zerothSpatialPEs;
 	for (Module *m1 : subModArr[0])
 	{
 		if (PE *pe = dynamic_cast<PE *>(m1))
-		{
 			zerothSpatialPEs.push_back(pe);
-		}
 	}
 
 	for (PE *srcPE : zerothSpatialPEs)
 	{
-		TimeDistSearchResult srcResult = computeTimeDistFromSourcePE(this, srcPE, zerothSpatialPEs);
+		TimeDistSearchResult srcResult = computeTimeDistFromSourcePE(srcPE, zerothSpatialPEs);
 		TimeDistBetweenClosestMEMPEMap[srcPE->getName()] = srcResult.closestMemTimeDist;
 		for (PE *destPE : zerothSpatialPEs)
 		{
