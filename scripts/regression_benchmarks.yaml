@@ -1,0 +1,40 @@
+suites:
+  ci_4x4:
+    description: Small diverse 4x4 mapper regression suite for CI and pre-commit checks.
+    config: config/default_config.yaml
+    runmode: runall
+    jobs: 8
+    timeout_sec: 360
+    benchmarks:
+      # Microbench convolution: compact local dataflow and routing pressure.
+      - benchmark: cgrame_microbench/conv2/conv2.c
+        function: conv2
+        max_ii: 4
+      # Conditional/control benchmark: exercises mutex basic-block handling.
+      - benchmark: morpher_benchmarks/array_cond/array_cond.c
+        function: array_cond
+        max_ii: 4
+      # Streaming/OpenCGRA benchmark: catches common memory/routing regressions.
+      - benchmark: opencgra_benchmarks/fir/fir.c
+        function: fir
+        max_ii: 4
+      # Unrolled PolyBench kernel: non-trivial dependency/routing pattern.
+      - benchmark: polybench/bicg_unroll/bicg_unroll.c
+        function: bicg_unroll
+        max_ii: 5
+
+  ci_8x8:
+    description: Minimal 8x8 mapper regression suite; kept small because 8x8 runs are slower.
+    config: config/regression_8x8.yaml
+    runmode: runall
+    jobs: 8
+    timeout_sec: 600
+    benchmarks:
+      # Microbench convolution on the larger fabric.
+      - benchmark: cgrame_microbench/conv2/conv2.c
+        function: conv2
+        max_ii: 4
+      # Streaming benchmark on the larger fabric.
+      - benchmark: opencgra_benchmarks/fir/fir.c
+        function: fir
+        max_ii: 4

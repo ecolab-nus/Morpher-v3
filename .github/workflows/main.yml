@@ -55,8 +55,5 @@ jobs:
       - name: Build all components
         run: bash build_all.sh
 
-      - name: Smoke test array_add
-        run: python3 -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add
-
-      - name: Smoke test fir
-        run: python3 -u run_morpher.py opencgra_benchmarks/fir/fir.c fir
+      - name: Mapper regression suite 4x4
+        run: python3 -u scripts/run_regression_benchmarks.py --suite ci_4x4

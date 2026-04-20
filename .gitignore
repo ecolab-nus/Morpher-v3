@@ -14,3 +14,4 @@ bot.md
 /benchmark_cs*.csv
 /result.txt
 /.codex
+/regression_artifacts/

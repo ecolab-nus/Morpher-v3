@@ -178,6 +178,26 @@ python3 scripts/run_all_benchmarks.py --filter '^polybench/' --jobs 8
 python3 scripts/run_all_benchmarks.py --max-benches 10
 ```
 
+## Mapper Regression Suites
+
+Run the fixed 4x4 regression set with 8 workers and fail if any benchmark
+regresses past its expected achieved II:
+
+```bash
+python3 scripts/run_regression_benchmarks.py --suite ci_4x4
+```
+
+Run the smaller 8x8 regression set manually when you need coverage on the
+larger fabric. It is intentionally not part of default CI because 8x8 mapping
+is much slower:
+
+```bash
+python3 scripts/run_regression_benchmarks.py --suite ci_8x8
+```
+
+Suites and expected max IIs live in `scripts/regression_benchmarks.yaml`. The
+8x8 suite uses `config/regression_8x8.yaml`.
+
 Discovery rule:
 
 ```text
