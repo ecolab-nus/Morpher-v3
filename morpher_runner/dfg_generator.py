@@ -71,6 +71,7 @@ def build_unroll_command(context, unroll_factor, remainder_policy):
       str(unroll_factor),
       "-morpher-remainder-policy",
       remainder_policy,
+      "-simplifycfg",
       "%s_opt.ll" % kernel,
       "-S",
       "-o",

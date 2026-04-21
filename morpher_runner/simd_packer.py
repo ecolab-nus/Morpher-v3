@@ -165,19 +165,22 @@ def _candidate_groups(
     key = _group_key(node)
     if key is None:
       continue
-    if key[1] != lanes:
+    if key[1] < lanes:
       continue
     groups.setdefault(key, []).append(node)
 
   candidates = {}
   for key, group_nodes in groups.items():
-    if len(group_nodes) != lanes:
+    sorted_nodes = sorted(group_nodes, key=_node_idx)
+    if not _is_packable_op(_child_text(sorted_nodes[0], "OP"), pack_load_store):
       continue
-    if not _is_packable_op(_child_text(group_nodes[0], "OP"), pack_load_store):
-      continue
-    if not _compatible_node_metadata(group_nodes):
-      continue
-    candidates[key] = sorted(group_nodes, key=_node_idx)
+    for chunk_idx, start in enumerate(range(0, len(sorted_nodes), lanes)):
+      chunk = sorted_nodes[start : start + lanes]
+      if len(chunk) != lanes:
+        continue
+      if not _compatible_node_metadata(chunk):
+        continue
+      candidates[(key[0], chunk_idx)] = chunk
   return candidates
 
 
@@ -224,6 +227,7 @@ def _prune_packable_groups(
 
 def _rewrite_refs(
   node: ET.Element,
+  old_node_idx: int,
   container_name: str,
   ref_name: str,
   replacement: dict[int, int],
@@ -241,7 +245,7 @@ def _rewrite_refs(
   for ref in original_refs:
     raw_idx = _ref_idx(ref)
     mapped_idx = replacement.get(raw_idx, raw_idx)
-    if mapped_idx == _node_idx(node):
+    if mapped_idx == old_node_idx:
       continue
     if mapped_idx not in reindex:
       continue
@@ -293,9 +297,9 @@ def pack_simd_xml(
     if old_idx in rep_ids:
       node.set("simd_packed", "true")
       node.set("simd_lanes", str(lanes))
-    _rewrite_refs(node, "Inputs", "Input", replacement, reindex)
-    _rewrite_refs(node, "Outputs", "Output", replacement, reindex)
-    _rewrite_refs(node, "RecParents", "RecParent", replacement, reindex)
+    _rewrite_refs(node, old_idx, "Inputs", "Input", replacement, reindex)
+    _rewrite_refs(node, old_idx, "Outputs", "Output", replacement, reindex)
+    _rewrite_refs(node, old_idx, "RecParents", "RecParent", replacement, reindex)
     dfg.append(node)
 
   dfg.set("count", str(len(remaining_nodes)))
