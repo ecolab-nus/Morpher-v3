@@ -59,6 +59,7 @@ def build_ir_generation_commands(context):
 
 def build_unroll_command(context, unroll_factor, remainder_policy):
   kernel = context.kernel
+  reduction_lanes = context.config.simd_lanes if context.config.simd_enabled else 1
   return Command(
     argv=[
       "opt",
@@ -71,6 +72,8 @@ def build_unroll_command(context, unroll_factor, remainder_policy):
       str(unroll_factor),
       "-morpher-remainder-policy",
       remainder_policy,
+      "-morpher-reduction-lanes",
+      str(reduction_lanes),
       "-simplifycfg",
       "-loop-simplify",
       "-lcssa",

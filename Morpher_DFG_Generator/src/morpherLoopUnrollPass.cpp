@@ -4,6 +4,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Pass.h"
@@ -27,6 +28,10 @@ static cl::opt<unsigned> MorpherUnrollFactor(
 static cl::opt<std::string> MorpherRemainderPolicy(
     "morpher-remainder-policy", cl::init("preserve"),
     cl::desc("Remainder policy: preserve or assume-multiple"));
+
+static cl::opt<unsigned> MorpherReductionLanes(
+    "morpher-reduction-lanes", cl::init(1),
+    cl::desc("SIMD width for scalar reduction expansion after unroll"));
 
 Function *getCalledFunctionThroughBitcast(CallInst *CI) {
   Function *CalledFn = CI->getCalledFunction();
@@ -127,6 +132,236 @@ bool normalizePleaseMapMeMarkers(Function &F, LoopInfo &LI, Loop *TargetLoop) {
   return Changed;
 }
 
+bool isSupportedReductionOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::Mul:
+  case Instruction::And:
+  case Instruction::Or:
+  case Instruction::Xor:
+    return true;
+  default:
+    return false;
+  }
+}
+
+Value *identityForReduction(unsigned Opcode, Type *Ty) {
+  switch (Opcode) {
+  case Instruction::Add:
+  case Instruction::Sub:
+    if (Ty->isIntegerTy())
+      return ConstantInt::get(Ty, 0);
+    break;
+  case Instruction::Mul:
+    if (Ty->isIntegerTy())
+      return ConstantInt::get(Ty, 1);
+    break;
+  case Instruction::And:
+    if (Ty->isIntegerTy())
+      return ConstantInt::getAllOnesValue(Ty);
+    break;
+  case Instruction::Or:
+  case Instruction::Xor:
+    if (Ty->isIntegerTy())
+      return ConstantInt::get(Ty, 0);
+    break;
+  default:
+    break;
+  }
+  return nullptr;
+}
+
+unsigned termCombineOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case Instruction::Sub:
+    return Instruction::Add;
+  default:
+    return Opcode;
+  }
+}
+
+unsigned finalCombineOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case Instruction::Sub:
+    return Instruction::Add;
+  default:
+    return Opcode;
+  }
+}
+
+Value *createReductionOp(IRBuilder<> &Builder, unsigned Opcode, Value *LHS,
+                         Value *RHS, const Twine &Name = "") {
+  switch (Opcode) {
+  case Instruction::Add:
+    return Builder.CreateAdd(LHS, RHS, Name);
+  case Instruction::Sub:
+    return Builder.CreateSub(LHS, RHS, Name);
+  case Instruction::Mul:
+    return Builder.CreateMul(LHS, RHS, Name);
+  case Instruction::And:
+    return Builder.CreateAnd(LHS, RHS, Name);
+  case Instruction::Or:
+    return Builder.CreateOr(LHS, RHS, Name);
+  case Instruction::Xor:
+    return Builder.CreateXor(LHS, RHS, Name);
+  default:
+    llvm_unreachable("unsupported reduction opcode");
+  }
+}
+
+bool collectReductionAddChain(
+    PHINode *Phi,
+    Value *BackedgeValue,
+    unsigned &ReductionOpcode,
+    SmallVectorImpl<BinaryOperator *> &Chain,
+    SmallVectorImpl<Value *> &Terms) {
+  Value *Current = BackedgeValue;
+  SmallVector<BinaryOperator *, 32> ReverseChain;
+  SmallVector<Value *, 32> ReverseTerms;
+  ReductionOpcode = 0;
+
+  while (Current != Phi) {
+    auto *BO = dyn_cast<BinaryOperator>(Current);
+    if (!BO || !isSupportedReductionOpcode(BO->getOpcode()))
+      return false;
+    if (ReductionOpcode == 0)
+      ReductionOpcode = BO->getOpcode();
+    if (BO->getOpcode() != ReductionOpcode)
+      return false;
+
+    Value *LHS = BO->getOperand(0);
+    Value *RHS = BO->getOperand(1);
+    Value *Prev = nullptr;
+    Value *Term = nullptr;
+
+    if (ReductionOpcode == Instruction::Sub) {
+      if (LHS == Phi || isa<BinaryOperator>(LHS)) {
+        Prev = LHS;
+        Term = RHS;
+      } else {
+        return false;
+      }
+    } else if (LHS == Phi || isa<BinaryOperator>(LHS)) {
+      Prev = LHS;
+      Term = RHS;
+    } else if (RHS == Phi || isa<BinaryOperator>(RHS)) {
+      Prev = RHS;
+      Term = LHS;
+    } else {
+      return false;
+    }
+
+    if (BO != BackedgeValue && !BO->hasOneUse())
+      return false;
+
+    ReverseChain.push_back(BO);
+    ReverseTerms.push_back(Term);
+    Current = Prev;
+  }
+
+  for (auto It = ReverseChain.rbegin(); It != ReverseChain.rend(); ++It)
+    Chain.push_back(*It);
+  for (auto It = ReverseTerms.rbegin(); It != ReverseTerms.rend(); ++It)
+    Terms.push_back(*It);
+  return !Chain.empty();
+}
+
+bool expandIntegerAddReduction(PHINode *Phi, Loop *L, unsigned Lanes) {
+  if (Lanes <= 1)
+    return false;
+
+  BasicBlock *Preheader = L->getLoopPreheader();
+  BasicBlock *Latch = L->getLoopLatch();
+  if (!Preheader || !Latch)
+    return false;
+
+  int PreheaderIdx = Phi->getBasicBlockIndex(Preheader);
+  int LatchIdx = Phi->getBasicBlockIndex(Latch);
+  if (PreheaderIdx < 0 || LatchIdx < 0)
+    return false;
+
+  Value *Init = Phi->getIncomingValue(PreheaderIdx);
+  Value *BackedgeValue = Phi->getIncomingValue(LatchIdx);
+  if (!Phi->getType()->isIntegerTy())
+    return false;
+  if (!Phi->hasOneUse())
+    return false;
+
+  SmallVector<BinaryOperator *, 32> Chain;
+  SmallVector<Value *, 32> Terms;
+  unsigned ReductionOpcode = 0;
+  if (!collectReductionAddChain(Phi, BackedgeValue, ReductionOpcode, Chain, Terms))
+    return false;
+
+  bool HasNonConstantTerm = false;
+  for (Value *Term : Terms)
+    if (!isa<ConstantInt>(Term)) {
+      HasNonConstantTerm = true;
+      break;
+    }
+  if (!HasNonConstantTerm)
+    return false;
+
+  if (Terms.size() < Lanes || Terms.size() % Lanes != 0)
+    return false;
+
+  unsigned PartialCount = Terms.size() / Lanes;
+  Value *Identity = identityForReduction(ReductionOpcode, Phi->getType());
+  if (!Identity)
+    return false;
+
+  IRBuilder<> PhiBuilder(&*Phi->getParent()->getFirstInsertionPt());
+  SmallVector<PHINode *, 16> Partials;
+  for (unsigned I = 0; I < PartialCount; ++I) {
+    PHINode *Partial = PhiBuilder.CreatePHI(Phi->getType(), 2,
+                                            Phi->getName() + ".morpher.red");
+    Partial->addIncoming(I == 0 ? Init : Identity, Preheader);
+    Partials.push_back(Partial);
+  }
+
+  IRBuilder<> BodyBuilder(Chain.back());
+  SmallVector<Value *, 16> Updates;
+  for (unsigned P = 0; P < PartialCount; ++P) {
+    unsigned Start = P * Lanes;
+    Value *Local = Terms[Start];
+    for (unsigned I = 1; I < Lanes; ++I) {
+      Local = createReductionOp(BodyBuilder, termCombineOpcode(ReductionOpcode), Local,
+                                Terms[Start + I], "morpher.red.local");
+    }
+    Value *Update = createReductionOp(BodyBuilder, ReductionOpcode, Partials[P],
+                                      Local, "morpher.red.update");
+    Updates.push_back(Update);
+    Partials[P]->addIncoming(Update, Latch);
+  }
+
+  Value *Combined = Updates[0];
+  for (unsigned I = 1; I < Updates.size(); ++I)
+    Combined = createReductionOp(BodyBuilder, finalCombineOpcode(ReductionOpcode), Combined,
+                                 Updates[I], "morpher.red.combine");
+
+  BackedgeValue->replaceAllUsesWith(Combined);
+  errs() << "Morpher reduction expansion: phi=" << Phi->getName()
+         << " lanes=" << Lanes
+         << " terms=" << Terms.size()
+         << " partials=" << PartialCount << "\n";
+  return true;
+}
+
+bool expandReductionsForSIMD(Loop *L, unsigned Lanes) {
+  if (Lanes <= 1)
+    return false;
+
+  SmallVector<PHINode *, 8> Phis;
+  for (PHINode &Phi : L->getHeader()->phis())
+    Phis.push_back(&Phi);
+
+  bool Changed = false;
+  for (PHINode *Phi : Phis)
+    Changed |= expandIntegerAddReduction(Phi, L, Lanes);
+  return Changed;
+}
+
 struct MorpherLoopUnrollPass : public FunctionPass {
   static char ID;
 
@@ -189,11 +424,13 @@ struct MorpherLoopUnrollPass : public FunctionPass {
     if (Result == LoopUnrollResult::FullyUnrolled)
       report_fatal_error("Morpher annotated loop was fully unrolled away");
 
+    expandReductionsForSIMD(TargetLoop, MorpherReductionLanes);
     normalizePleaseMapMeMarkers(F, LI, TargetLoop);
 
     errs() << "Morpher loop unroll: function=" << F.getName()
            << " factor=" << MorpherUnrollFactor
-           << " remainder_policy=" << MorpherRemainderPolicy << "\n";
+           << " remainder_policy=" << MorpherRemainderPolicy
+           << " reduction_lanes=" << MorpherReductionLanes << "\n";
     return true;
   }
 
