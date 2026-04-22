@@ -49,6 +49,9 @@ void LiveOutReport(const char* varname, uint8_t* value, uint32_t size);
 void LiveInReportIntermediateVar(const char* varname, uint32_t value);
 void LiveOutReportIntermediateVar(const char* varname, uint32_t value);
 void LiveInReportPtrTypeUsage(const char* varname, const char* varbaseaddr, uint8_t* actual_ptr, uint8_t* array_base, uint32_t size);
+void MemAccessReport(const char* loopName, uint32_t nodeIdx, const char* baseName,
+		const char* varbaseaddr, uint8_t* actual_ptr, uint8_t* array_base,
+		uint32_t size, uint8_t isStore);
 
 
 #ifdef __cplusplus

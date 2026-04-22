@@ -235,17 +235,27 @@ bool collectReductionAddChain(
     Value *Prev = nullptr;
     Value *Term = nullptr;
 
+    // A chain link is the PHI itself or another op with the same reduction
+    // opcode. Using isa<BinaryOperator> alone would incorrectly match e.g.
+    // a MUL on the non-chain operand (MUL is also a BinaryOperator).
+    auto isChainLink = [&](Value *V) -> bool {
+      if (V == Phi) return true;
+      if (auto *VBO = dyn_cast<BinaryOperator>(V))
+        return VBO->getOpcode() == ReductionOpcode;
+      return false;
+    };
+
     if (ReductionOpcode == Instruction::Sub) {
-      if (LHS == Phi || isa<BinaryOperator>(LHS)) {
+      if (isChainLink(LHS)) {
         Prev = LHS;
         Term = RHS;
       } else {
         return false;
       }
-    } else if (LHS == Phi || isa<BinaryOperator>(LHS)) {
+    } else if (isChainLink(LHS)) {
       Prev = LHS;
       Term = RHS;
-    } else if (RHS == Phi || isa<BinaryOperator>(RHS)) {
+    } else if (isChainLink(RHS)) {
       Prev = RHS;
       Term = LHS;
     } else {
@@ -324,13 +334,20 @@ bool expandIntegerAddReduction(PHINode *Phi, Loop *L, unsigned Lanes) {
   SmallVector<Value *, 16> Updates;
   for (unsigned P = 0; P < PartialCount; ++P) {
     unsigned Start = P * Lanes;
-    Value *Local = Terms[Start];
-    for (unsigned I = 1; I < Lanes; ++I) {
-      Local = createReductionOp(BodyBuilder, termCombineOpcode(ReductionOpcode), Local,
-                                Terms[Start + I], "morpher.red.local");
+    // Binary tree reduction: pair up terms level by level.
+    // Depth = ceil(log2(Lanes)), vs. Lanes-1 for a linear chain.
+    SmallVector<Value *, 16> Level(Terms.begin() + Start, Terms.begin() + Start + Lanes);
+    while (Level.size() > 1) {
+      SmallVector<Value *, 16> Next;
+      for (unsigned I = 0; I + 1 < Level.size(); I += 2)
+        Next.push_back(createReductionOp(BodyBuilder, termCombineOpcode(ReductionOpcode),
+                                         Level[I], Level[I + 1], "morpher.red.tree"));
+      if (Level.size() & 1)
+        Next.push_back(Level.back());
+      Level = std::move(Next);
     }
     Value *Update = createReductionOp(BodyBuilder, ReductionOpcode, Partials[P],
-                                      Local, "morpher.red.update");
+                                      Level[0], "morpher.red.update");
     Updates.push_back(Update);
     Partials[P]->addIncoming(Update, Latch);
   }
@@ -341,10 +358,15 @@ bool expandIntegerAddReduction(PHINode *Phi, Loop *L, unsigned Lanes) {
                                  Updates[I], "morpher.red.combine");
 
   BackedgeValue->replaceAllUsesWith(Combined);
-  errs() << "Morpher reduction expansion: phi=" << Phi->getName()
+
+  unsigned TreeDepth = 0;
+  for (unsigned N = Lanes; N > 1; N = (N + 1) / 2)
+    ++TreeDepth;
+  errs() << "Morpher reduction expansion (tree): phi=" << Phi->getName()
          << " lanes=" << Lanes
          << " terms=" << Terms.size()
-         << " partials=" << PartialCount << "\n";
+         << " partials=" << PartialCount
+         << " depth=" << TreeDepth << "\n";
   return true;
 }
 

@@ -54,6 +54,13 @@ class SimdPackReport:
     return float(self.output_nodes) / float(self.input_nodes)
 
 
+@dataclass(frozen=True)
+class SimdMapping:
+  """Index remapping produced by SIMD packing, needed to fix addr traces."""
+  reindex: dict  # pre_idx -> post_idx for all surviving nodes
+  simd_groups: dict  # post_idx -> [pre_idx_lane0, ..., pre_idx_laneL-1]
+
+
 def _read_wrapped_xml(path: Path) -> ET.Element:
   text = path.read_text(encoding="utf-8")
   text = re.sub(r'(")([A-Za-z_][A-Za-z0-9_:-]*=)', r'\1 \2', text)
@@ -105,6 +112,7 @@ def _refs_signature(
   ref_name: str,
   replacement: dict[int, int],
   self_group: set[int],
+  skip_external: bool = False,
 ) -> tuple:
   container = node.find(container_name)
   if container is None:
@@ -116,6 +124,8 @@ def _refs_signature(
     raw_idx = _ref_idx(ref)
     if raw_idx in self_group:
       return (("__intra_group__", raw_idx),)
+    if skip_external and raw_idx not in replacement:
+      continue
     refs.append(_ref_signature(ref, replacement))
   return tuple(sorted(refs))
 
@@ -287,6 +297,13 @@ def pack_simd_xml(
   remaining_nodes = [node for node in nodes if _node_idx(node) not in removed]
   reindex = {_node_idx(node): idx for idx, node in enumerate(remaining_nodes)}
 
+  # Capture pre-packing indices before mutating node elements below.
+  simd_groups = {}
+  for group_nodes in packable.values():
+    rep_pre_idx = _node_idx(group_nodes[0])
+    rep_post_idx = reindex[rep_pre_idx]
+    simd_groups[rep_post_idx] = [_node_idx(n) for n in group_nodes]
+
   for node in nodes:
     dfg.remove(node)
 
@@ -304,9 +321,65 @@ def pack_simd_xml(
 
   dfg.set("count", str(len(remaining_nodes)))
   _write_unwrapped_xml(root, output_path)
-  return SimdPackReport(
+
+  report = SimdPackReport(
     input_nodes=input_nodes,
     output_nodes=len(remaining_nodes),
     packed_groups=len(packable),
     packed_nodes_removed=len(removed),
   )
+  return report, SimdMapping(reindex=dict(reindex), simd_groups=simd_groups)
+
+
+def remap_addr_trace(
+  input_path: "str | Path",
+  output_path: "str | Path",
+  mapping: SimdMapping,
+) -> None:
+  """Rewrite an addr_trace file to use post-SIMD-packing node indices.
+
+  The instrumented binary records one address per pre-packing DFG node.
+  After SIMD packing, node indices change and L nodes are collapsed into
+  one packed node.  This rebuilds the trace so each packed node has L
+  consecutive addresses per loop iteration (one per lane), as the
+  artifact simulator expects.
+  """
+  entries_by_pre_idx: dict = {}
+  with open(input_path, encoding="utf-8") as f:
+    for line in f:
+      line = line.rstrip("\n")
+      if not line or line.startswith("node_idx"):
+        continue
+      parts = line.split(",")
+      if len(parts) < 6:
+        continue
+      pre_idx = int(parts[0])
+      # store (addr, size, is_store, base, ...)
+      entries_by_pre_idx.setdefault(pre_idx, []).append(tuple(parts[2:]))
+
+  entries_by_post_idx: dict = {}
+  all_simd_pre: set = set()
+
+  for post_idx, pre_indices in mapping.simd_groups.items():
+    all_simd_pre.update(pre_indices)
+    lane_entries = [entries_by_pre_idx.get(p, []) for p in pre_indices]
+    n_iters = max((len(e) for e in lane_entries), default=0)
+    interleaved = []
+    for i in range(n_iters):
+      for lane_e in lane_entries:
+        if i < len(lane_e):
+          interleaved.append(lane_e[i])
+    entries_by_post_idx[post_idx] = interleaved
+
+  for pre_idx, post_idx in mapping.reindex.items():
+    if pre_idx not in all_simd_pre:
+      entries_by_post_idx[post_idx] = entries_by_pre_idx.get(pre_idx, [])
+
+  lines = ["node_idx,access_idx,addr,size,is_store,base\n"]
+  access_idx = 0
+  for post_idx in sorted(entries_by_post_idx.keys()):
+    for entry in entries_by_post_idx[post_idx]:
+      lines.append("%d,%d,%s\n" % (post_idx, access_idx, ",".join(entry)))
+      access_idx += 1
+
+  Path(output_path).write_text("".join(lines), encoding="utf-8")

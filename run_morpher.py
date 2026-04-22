@@ -7,12 +7,13 @@ import sys
 import time
 
 from morpher_runner.context import build_context
+from morpher_runner.artifact_simulator import run_artifact_simulator
 from morpher_runner.dfg_generator import run_dfg_generator
 from morpher_runner.mapper import run_mapper
 from morpher_runner.simulator import run_simulator
 
 DEFAULT_CONFIG_PATH = "config/default_config.yaml"
-RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only"}
+RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"}
 _RESULT_LINE_II_RE = re.compile(r"method:\S+\s+(\d+)\s+status:(success|failed)\s+\d+\s*$")
 
 
@@ -32,7 +33,10 @@ def _usage():
     "Usage:\n"
     "  python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runmode]\n"
     "  python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]\n\n"
-    "Run modes: runall, dfg_gen_only, mapper_only, sim_only\n"
+    "Options:\n"
+    "  --run-tag <tag>    Write DFG/mapper/simulator artifacts under tagged output directories.\n"
+    "  --mem-alloc <path> Mem-alloc file for XML input mode.\n\n"
+    "Run modes: runall, dfg_gen_only, mapper_only, sim_only, artifact_sim_only, runall_artifact_sim\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
   )
@@ -41,10 +45,17 @@ def _usage():
 def _parse_cli(argv):
   positional = []
   mem_alloc_path = None
+  run_tag = None
 
   i = 0
   while i < len(argv):
     token = argv[i]
+    if token == "--run-tag":
+      if i + 1 >= len(argv):
+        raise RuntimeError("Missing value for --run-tag.\n\n%s" % _usage())
+      run_tag = argv[i + 1]
+      i += 2
+      continue
     if token == "--mem-alloc":
       if i + 1 >= len(argv):
         raise RuntimeError("Missing value for --mem-alloc.\n\n%s" % _usage())
@@ -71,13 +82,13 @@ def _parse_cli(argv):
     config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
     runmode = positional[3] if len(positional) >= 4 else "mapper_only"
 
-    if runmode not in ("mapper_only", "runall"):
+    if runmode not in ("mapper_only", "runall", "artifact_sim_only"):
       raise RuntimeError(
-        "XML mode supports runmode 'mapper_only' or 'runall' (got: %s)." % runmode
+        "XML mode supports runmode 'mapper_only', 'runall', or 'artifact_sim_only' (got: %s)." % runmode
       )
 
     csource = "xml_inputs/%s/%s.c" % (function, function)
-    return csource, function, config, runmode, xml_path, mem_alloc_path
+    return csource, function, config, runmode, xml_path, mem_alloc_path, run_tag
 
   if len(positional) < 2 or len(positional) > 4:
     raise RuntimeError("Invalid arguments.\n\n%s" % _usage())
@@ -88,7 +99,7 @@ def _parse_cli(argv):
   function = positional[1]
   config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
   runmode = positional[3] if len(positional) >= 4 else "runall"
-  return csource, function, config, runmode, None, None
+  return csource, function, config, runmode, None, None, run_tag
 
 
 def _resolve_mem_alloc_for_xml(xml_path, kernel, explicit_mem_alloc):
@@ -255,7 +266,7 @@ def main(
   csource,
   function,
   config=DEFAULT_CONFIG_PATH,
-  runmode="runall",
+  runmode="runall_artifact_sim",
   dfg_xml_path=None,
   mem_alloc_path=None,
 ):
@@ -299,11 +310,24 @@ def main(
     _run_auto_unroll(context)
     return
 
+  if runmode == "runall_artifact_sim":
+    original_enable_sim = context.config.enable_simulation
+    context.config.enable_simulation = True
+    run_dfg_generator(context)
+    context.config.enable_simulation = False
+    run_mapper(context)
+    run_artifact_simulator(context)
+    context.config.enable_simulation = original_enable_sim
+    return
+
   if (runmode == "runall" or runmode == "dfg_gen_only") and not dfg_xml_path:
     run_dfg_generator(context)
 
   if runmode == "runall" or runmode == "mapper_only":
     run_mapper(context)
+
+  if runmode == "artifact_sim_only":
+    run_artifact_simulator(context)
 
   if runmode == "runall" or runmode == "sim_only":
     if context.config.enable_simulation:
@@ -314,7 +338,9 @@ def main(
 
 if __name__ == "__main__":
   try:
-    csource, function, config, runmode, dfg_xml_path, mem_alloc_path = _parse_cli(sys.argv[1:])
+    csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag = _parse_cli(sys.argv[1:])
+    if run_tag:
+      os.environ["MORPHER_RUN_TAG"] = run_tag
     main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path)
   except subprocess.CalledProcessError as e:
     cmd = e.cmd if isinstance(e.cmd, str) else " ".join(e.cmd)

@@ -22,16 +22,16 @@
  sa_temp_max: 200.0
  sa_temp_min: 10.0
  sa_candidate_topk: 8
- enable_simulation: false
- spm_mode: 'off'
+ enable_simulation: true
+ spm_mode: 'on'
  llvm_debug_type: 'no'
  remove_agi: true
  auto_unroll:
-   enabled: false
+   enabled: true
    factors: [1, 2, 4, 8]
    remainder_policy: preserve
    stop_on_degradation: true
  simd:
-   enabled: false
-   lanes: 4
+   enabled: true
+   lanes: 8
    pack_load_store: true

@@ -1,4 +1,6 @@
 import os
+import re
+import shutil
 from dataclasses import dataclass
 
 import yaml
@@ -232,10 +234,20 @@ def build_context(csource, function, config_path, runmode):
   mapper_home = morpher_home + "/Morpher_CGRA_Mapper"
   simulator_home = morpher_home + "/hycube_simulator"
 
-  dfg_gen_kernel = dfg_gen_home + "/benchmarks/" + appfolder + "/"
-  mapper_kernel = mapper_home + "/benchmarks/" + config.mapper_subfolder + "/" + appfolder + "/"
-  simulator_kernel = simulator_home + "/benchmarks/" + appfolder + "/"
+  run_tag = _sanitize_run_tag(os.getenv("MORPHER_RUN_TAG", ""))
+  output_appfolder = _tagged_appfolder(appfolder, run_tag)
+
+  dfg_gen_kernel = dfg_gen_home + "/benchmarks/" + output_appfolder + "/"
+  mapper_kernel = mapper_home + "/benchmarks/" + config.mapper_subfolder + "/" + output_appfolder + "/"
+  simulator_kernel = simulator_home + "/benchmarks/" + output_appfolder + "/"
   mem_trace = dfg_gen_kernel + "memtraces"
+
+  if run_tag and runmode in ("runall", "dfg_gen_only", "runall_artifact_sim"):
+    source_dir = dfg_gen_home + "/benchmarks/" + appfolder
+    if os.path.isdir(source_dir):
+      _prepare_tagged_dfg_kernel(source_dir, dfg_gen_kernel.rstrip("/"))
+    else:
+      os.makedirs(dfg_gen_kernel, exist_ok=True)
 
   os.makedirs(mapper_kernel, exist_ok=True)
   os.makedirs(simulator_kernel, exist_ok=True)
@@ -258,3 +270,40 @@ def build_context(csource, function, config_path, runmode):
     simulator_kernel=simulator_kernel,
     mem_trace=mem_trace,
   )
+
+
+def _sanitize_run_tag(run_tag):
+  run_tag = run_tag.strip()
+  if not run_tag:
+    return ""
+  return re.sub(r"[^A-Za-z0-9._-]+", "_", run_tag)
+
+
+def _tagged_appfolder(appfolder, run_tag):
+  if not run_tag:
+    return appfolder
+  parent, leaf = os.path.split(appfolder.rstrip("/"))
+  tagged_leaf = "%s__run_%s" % (leaf, run_tag)
+  return os.path.join(parent, tagged_leaf) if parent else tagged_leaf
+
+
+def _prepare_tagged_dfg_kernel(source_dir, tagged_dir):
+  ignore = shutil.ignore_patterns(
+    "memtraces",
+    "*.ll",
+    "*.bc",
+    "*.dot",
+    "*.pdf",
+    "*.xml",
+    "*.log",
+    "*.o",
+    "*.bin",
+    "final",
+    "final_*",
+    "*_mem_alloc.txt",
+    "*_opt_instrument.ll",
+    "cfg.*",
+  )
+  if os.path.isdir(tagged_dir):
+    shutil.rmtree(tagged_dir)
+  shutil.copytree(source_dir, tagged_dir, ignore=ignore)

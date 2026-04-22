@@ -9,12 +9,13 @@ from morpher_runner.exec import run_commands
 from morpher_runner.fs_ops import copy_file
 from morpher_runner.fs_ops import remove_glob
 from morpher_runner.simd_packer import pack_simd_xml
+from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
 
 
 def count_trace_files(trace_dir, kernel):
-  pattern = re.compile(r"^%s_trace_[0-9]+\\.txt$" % re.escape(kernel))
+  pattern = re.compile(r"^%s_trace_[0-9]+\.txt$" % re.escape(kernel))
   count = 0
   for filename in os.listdir(trace_dir):
     if pattern.match(filename):
@@ -250,13 +251,14 @@ def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
   ))
   dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
   mapper_xml = dfg_xml
+  simd_mapping = None
   if config.simd_enabled:
     simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
       dfg_kernel.rstrip("/"),
       kernel,
       config.simd_lanes,
     )
-    report = pack_simd_xml(
+    report, simd_mapping = pack_simd_xml(
       dfg_xml,
       simd_xml,
       lanes=config.simd_lanes,
@@ -323,5 +325,11 @@ def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
     else:
       print("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
+
+  if simd_mapping is not None:
+    import glob as _glob
+    addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
+    for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
+      remap_addr_trace(addr_trace_path, addr_trace_path, simd_mapping)
 
   remove_glob(dfg_kernel, "*.ll")

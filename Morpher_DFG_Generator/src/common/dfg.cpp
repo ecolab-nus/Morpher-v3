@@ -10913,6 +10913,19 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			Type::getInt32Ty(Ctx)    //size
 	);
 
+	auto mem_access_report_FN = F.getParent()->getOrInsertFunction(
+			"MemAccessReport",
+			FunctionType::getVoidTy(Ctx),
+			Type::getInt8PtrTy(Ctx), //loop name
+			Type::getInt32Ty(Ctx),   //DFG node idx
+			Type::getInt8PtrTy(Ctx), //base pointer name
+			Type::getInt8PtrTy(Ctx), //spm base address (as string)
+			Type::getInt8PtrTy(Ctx), //actual runtime pointer
+			Type::getInt8PtrTy(Ctx), //actual array base pointer
+			Type::getInt32Ty(Ctx),   //access size in bytes
+			Type::getInt8Ty(Ctx)     //is store
+	);
+
 	auto live_out_report_FN = F.getParent()->getOrInsertFunction(
 			"LiveOutReport",
 			FunctionType::getVoidTy(Ctx),
@@ -10954,6 +10967,10 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 		IRBuilder<> builder(BuilderInsertPoint);
 
 		Value* ptr = it->first;
+		dfgNode *outLoopNode = nullptr;
+		auto outLoopIt = OutLoopNodeMap.find(ptr);
+		if (outLoopIt != OutLoopNodeMap.end())
+			outLoopNode = outLoopIt->second;
 		LLVM_DEBUG(dbgs() << "\n---ptr_name = " << ptr->getName() << "\n");
 		LLVM_DEBUG(ptr->dump());
 
@@ -10962,7 +10979,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 		// These appear in mem_accesses because GEP pointer operands are tracked in acc, but
 		// unnamed temporaries have no entry in array_pointer_sizes. They are still needed in
 		// acc for AllocateSPMBanks bank assignments, so we skip only the instrumentation here.
-		if (ptr->getName().empty()) {
+		if (ptr->getName().empty() && ptr->getType()->isPointerTy() && !outLoopNode) {
 			LLVM_DEBUG(dbgs() << "Skipping unnamed intermediate pointer in InstrumentInOutVars\n");
 			continue;
 		}
@@ -10973,6 +10990,9 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 		// name ("C"), not the load-result value's own name. Use traceBaseArrayName
 		// as fallback to resolve through pointer-load chains to the real base name.
 		std::string arr_name = ptr->getName().str();
+		if (outLoopNode && (arr_name.empty() || array_pointer_sizes.find(arr_name) == array_pointer_sizes.end())) {
+			arr_name = outLoopNode->getArrBasePtr();
+		}
 		if (array_pointer_sizes.find(arr_name) == array_pointer_sizes.end()) {
 			arr_name = traceBaseArrayName(ptr);
 		}
@@ -11173,6 +11193,54 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			}
 		}
 
+	}
+
+	for (dfgNode *node : NodeList) {
+		Instruction *ins = node->getNode();
+		if (!ins)
+			continue;
+
+		Value *pointer = nullptr;
+		Type *accessType = nullptr;
+		bool isStore = false;
+		if (LoadInst *LDI = dyn_cast<LoadInst>(ins)) {
+			pointer = LDI->getPointerOperand();
+			accessType = LDI->getType();
+			isStore = false;
+		} else if (StoreInst *STI = dyn_cast<StoreInst>(ins)) {
+			pointer = STI->getPointerOperand();
+			accessType = STI->getValueOperand()->getType();
+			isStore = true;
+		} else {
+			continue;
+		}
+
+		Value *rootBase = getGlobalBase(pointer);
+		if (!rootBase || !rootBase->getType()->isPointerTy())
+			continue;
+
+		auto baseIt = spm_base_address.find(rootBase);
+		if (baseIt == spm_base_address.end())
+			continue;
+
+		IRBuilder<> builder(ins);
+		DataLayout DL = F.getParent()->getDataLayout();
+		uint32_t accessSize = (uint32_t)DL.getTypeAllocSize(accessType);
+		std::string baseName = node->getArrBasePtr();
+		if (baseName.empty() || baseName == "NOT_A_MEM_OP")
+			baseName = traceBaseArrayName(rootBase);
+
+		Value *loopNameVal = builder.CreateGlobalStringPtr(this->kernelname);
+		Value *nodeIdxVal = ConstantInt::get(Type::getInt32Ty(Ctx), node->getIdx());
+		Value *baseNameVal = builder.CreateGlobalStringPtr(baseName);
+		Value *baseAddrVal = builder.CreateGlobalStringPtr(std::to_string(baseIt->second));
+		Value *actualPtr = builder.CreateBitCast(pointer, Type::getInt8PtrTy(Ctx));
+		Value *arrayBase = builder.CreateBitCast(rootBase, Type::getInt8PtrTy(Ctx));
+		Value *sizeVal = ConstantInt::get(Type::getInt32Ty(Ctx), accessSize);
+		Value *isStoreVal = ConstantInt::get(Type::getInt8Ty(Ctx), isStore ? 1 : 0);
+		builder.CreateCall(mem_access_report_FN,
+				{loopNameVal, nodeIdxVal, baseNameVal, baseAddrVal,
+				 actualPtr, arrayBase, sizeVal, isStoreVal});
 	}
 
 	//Insertion of loop end function to all exits

@@ -2301,6 +2301,10 @@ void DFGPartPred::addOrphanPseudoEdges() {
 	}
 
 	for(dfgNode* node : RecParents){
+		if(node->getNode() && dyn_cast<PHINode>(node->getNode())){
+			LLVM_DEBUG(dbgs() << "Skipping orphan pseudo edge for PHI node=" << node->getIdx() << "\n");
+			continue;
+		}
 
 		LLVM_DEBUG(dbgs() << "Searching for recParent=" << node->getIdx() << "\n");
 
