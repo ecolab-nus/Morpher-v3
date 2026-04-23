@@ -9,6 +9,7 @@ from morpher_runner.exec import run_commands
 from morpher_runner.fs_ops import copy_file
 from morpher_runner.fs_ops import remove_glob
 from morpher_runner.simd_packer import pack_simd_xml
+from morpher_runner.simd_packer import filter_trace_vars
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
@@ -61,6 +62,7 @@ def build_ir_generation_commands(context):
 def build_unroll_command(context, unroll_factor, remainder_policy):
   kernel = context.kernel
   reduction_lanes = context.config.simd_lanes if context.config.simd_enabled else 1
+  reduction_policy = context.config.simd_reduction_policy if context.config.simd_enabled else "tree"
   return Command(
     argv=[
       "opt",
@@ -75,6 +77,8 @@ def build_unroll_command(context, unroll_factor, remainder_policy):
       remainder_policy,
       "-morpher-reduction-lanes",
       str(reduction_lanes),
+      "-morpher-reduction-policy",
+      reduction_policy,
       "-simplifycfg",
       "-loop-simplify",
       "-lcssa",
@@ -197,12 +201,27 @@ def build_instrumentation_commands(context):
   return commands
 
 
-def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
+def _default_unroll_factor(config):
+  if config.auto_unroll_enabled:
+    factors = sorted(config.auto_unroll_factors, reverse=True)
+    if config.simd_enabled:
+      factors = [factor for factor in factors if factor >= config.simd_lanes]
+      if not factors:
+        factors = [config.simd_lanes]
+    return factors[0]
+  if config.simd_enabled:
+    return config.simd_lanes
+  return 1
+
+
+def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   config = context.config
   kernel = context.kernel
   dfg_kernel = context.dfg_gen_kernel
-  if config.simd_enabled and unroll_factor <= 1:
-    unroll_factor = config.simd_lanes
+  if unroll_factor is None:
+    unroll_factor = _default_unroll_factor(config)
+  if remainder_policy is None:
+    remainder_policy = config.auto_unroll_remainder_policy
 
   print("-----Running Morpher_DFG_Generator-----\n")
   if config.simd_enabled:
@@ -263,16 +282,18 @@ def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
       simd_xml,
       lanes=config.simd_lanes,
       pack_load_store=config.simd_pack_load_store,
+      prune_scalar_lane_outputs=config.remove_agi,
     )
     mapper_xml = simd_xml
     print(
       "SIMD pack: input_nodes=%d, output_nodes=%d, packed_groups=%d, "
-      "removed_nodes=%d, pack_ratio=%.3f\n"
+      "removed_nodes=%d, pruned_artifact_nodes=%d, pack_ratio=%.3f\n"
       % (
         report.input_nodes,
         report.output_nodes,
         report.packed_groups,
         report.packed_nodes_removed,
+        report.artifact_nodes_pruned,
         report.pack_ratio,
       )
     )
@@ -329,6 +350,8 @@ def run_dfg_generator(context, unroll_factor=1, remainder_policy="preserve"):
   if simd_mapping is not None:
     import glob as _glob
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
+    for trace_path in sorted(_glob.glob("%s/%s_trace_*.txt" % (addr_trace_dir, kernel))):
+      filter_trace_vars(trace_path, trace_path, report.artifact_vars_pruned)
     for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
       remap_addr_trace(addr_trace_path, addr_trace_path, simd_mapping)
 

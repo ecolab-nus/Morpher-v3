@@ -35,3 +35,4 @@
    enabled: true
    lanes: 8
    pack_load_store: true
+   reduction_policy: packed-psum

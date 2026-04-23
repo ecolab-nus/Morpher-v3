@@ -88,6 +88,7 @@ class RunnerConfig:
   simd_enabled: bool
   simd_lanes: int
   simd_pack_load_store: bool
+  simd_reduction_policy: str
 
   @staticmethod
   def _parse_simd(config_dict):
@@ -110,7 +111,10 @@ class RunnerConfig:
       raise RuntimeError("simd.lanes must be > 1 when simd.enabled=true.")
 
     pack_load_store = bool(simd_cfg.get("pack_load_store", True))
-    return enabled, lanes, pack_load_store
+    reduction_policy = str(simd_cfg.get("reduction_policy", "tree")).strip().lower()
+    if reduction_policy not in ("tree", "packed-psum"):
+      raise RuntimeError("simd.reduction_policy must be one of: tree, packed-psum.")
+    return enabled, lanes, pack_load_store, reduction_policy
 
   @staticmethod
   def _parse_auto_unroll(config_dict):
@@ -156,7 +160,12 @@ class RunnerConfig:
 
     memory_mode = _resolve_memory_mode(config_dict)
     arch_template_json = _resolve_arch_template_json(config_dict, memory_mode)
-    simd_enabled, simd_lanes, simd_pack_load_store = cls._parse_simd(config_dict)
+    (
+      simd_enabled,
+      simd_lanes,
+      simd_pack_load_store,
+      simd_reduction_policy,
+    ) = cls._parse_simd(config_dict)
     (
       auto_unroll_enabled,
       auto_unroll_factors,
@@ -199,6 +208,7 @@ class RunnerConfig:
       simd_enabled=simd_enabled,
       simd_lanes=simd_lanes,
       simd_pack_load_store=simd_pack_load_store,
+      simd_reduction_policy=simd_reduction_policy,
     )
 
 

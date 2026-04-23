@@ -28,15 +28,15 @@ int gemm() {
 
 /* Test harness: set up data, run reference computation, compare with gemm(). */
 int main() {
-    int n_val = 8;
+    int n_val = 16;
     volatile int N_storage = n_val;
-    static int A_flat[64];
-    static int B_flat[64];
-    static int C_flat[64];
-    static int C_ref[64];
-    static volatile int *A_rows[8];
-    static volatile int *B_rows[8];
-    static volatile int *C_rows[8];
+    static int A_flat[256];
+    static int B_flat[256];
+    static int C_flat[256];
+    static int C_ref[256];
+    static volatile int *A_rows[16];
+    static volatile int *B_rows[16];
+    static volatile int *C_rows[16];
     N = &N_storage;
 
     /* Polybench-style contiguous allocation: A[i] = flat + i*n */

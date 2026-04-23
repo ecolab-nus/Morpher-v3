@@ -1,0 +1,37 @@
+memory_mode: auto
+arch_template_json: hycube_original_updatemem.json
+mapper_subfolder: hycube
+dfg_type: PartPred
+init_II: 1
+ydim: 4
+xdim: 4
+numberofbanks: 2
+banksize: 2048
+max_test_samples: 2
+mapping_method: 2
+backtrack_limit: 4
+max_mapper_iter: 30
+max_II: 32
+ii_restarts: 0
+skip_ii_estimation: false
+print_dfg: true
+sa_seed: 0
+sa_restarts: 2
+sa_moves_per_temp: 20
+sa_temp_max: 200.0
+sa_temp_min: 10.0
+sa_candidate_topk: 8
+enable_simulation: true
+spm_mode: 'off'
+llvm_debug_type: 'no'
+remove_agi: true
+auto_unroll:
+  enabled: true
+  factors: [8]
+  remainder_policy: preserve
+  stop_on_degradation: true
+simd:
+  enabled: true
+  lanes: 4
+  pack_load_store: true
+  reduction_policy: packed-psum

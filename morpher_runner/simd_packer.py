@@ -22,6 +22,8 @@ PACKABLE_COMPUTE_OPS = {
   "CMP",
   "CLT",
   "CGT",
+  "SELECT",
+  "CMERGE",
 }
 
 PACKABLE_MEMORY_OPS = {
@@ -46,6 +48,8 @@ class SimdPackReport:
   output_nodes: int
   packed_groups: int
   packed_nodes_removed: int
+  artifact_nodes_pruned: int = 0
+  artifact_vars_pruned: tuple[str, ...] = ()
 
   @property
   def pack_ratio(self) -> float:
@@ -86,6 +90,10 @@ def _base_pointer(node: ET.Element) -> tuple[str | None, str | None]:
   if child is None:
     return None, None
   return (child.text.strip() if child.text else "", child.attrib.get("size"))
+
+
+def _base_pointer_name(node: ET.Element) -> str | None:
+  return _base_pointer(node)[0]
 
 
 def _gep_offset(node: ET.Element) -> str | None:
@@ -165,6 +173,25 @@ def _is_packable_op(op: str | None, pack_load_store: bool) -> bool:
   return False
 
 
+def _is_store_op(op: str | None) -> bool:
+  return op in {
+    "STORE",
+    "STOREH",
+    "STOREB",
+    "OSTORE",
+    "OSTOREH",
+    "OSTOREB",
+  }
+
+
+def _is_ostore_op(op: str | None) -> bool:
+  return op in {"OSTORE", "OSTOREH", "OSTOREB"}
+
+
+def _is_oload_op(op: str | None) -> bool:
+  return op in {"OLOAD", "OLOADH", "OLOADB"}
+
+
 def _candidate_groups(
   nodes: list[ET.Element],
   lanes: int,
@@ -191,7 +218,110 @@ def _candidate_groups(
       if not _compatible_node_metadata(chunk):
         continue
       candidates[(key[0], chunk_idx)] = chunk
+  _add_phi_cmerge_candidates(candidates, nodes, lanes)
+  _add_packed_output_store_candidates(candidates, nodes, lanes)
   return candidates
+
+
+def _input_refs(node: ET.Element) -> list[ET.Element]:
+  container = node.find("Inputs")
+  if container is None:
+    return []
+  return [ref for ref in list(container) if ref.tag == "Input"]
+
+
+def _add_phi_cmerge_candidates(
+  candidates: dict[tuple[int, int], list[ET.Element]],
+  nodes: list[ET.Element],
+  lanes: int,
+) -> None:
+  """Infer CMERGE groups feeding a packed SELECT PHI.
+
+  The DFG generator lowers PHIs into SELECT plus per-lane CMERGEs.  The SELECT
+  nodes inherit SIMD metadata from the LLVM PHI, but the synthetic CMERGEs do
+  not.  Infer those CMERGE groups from each SELECT candidate so recurrence
+  packability is not blocked by scalar PHI plumbing.
+  """
+  by_idx = {_node_idx(node): node for node in nodes}
+  next_key = 2000000000
+  existing = {_node_idx(node) for group in candidates.values() for node in group}
+
+  for group_nodes in list(candidates.values()):
+    if _child_text(group_nodes[0], "OP") != "SELECT":
+      continue
+    arity = min((len(_input_refs(node)) for node in group_nodes), default=0)
+    for input_pos in range(arity):
+      cmerge_nodes = []
+      for node in group_nodes:
+        refs = _input_refs(node)
+        input_idx = _ref_idx(refs[input_pos])
+        input_node = by_idx.get(input_idx)
+        if input_node is None or _child_text(input_node, "OP") != "CMERGE":
+          cmerge_nodes = []
+          break
+        if _node_idx(input_node) in existing:
+          cmerge_nodes = []
+          break
+        cmerge_nodes.append(input_node)
+      if len(cmerge_nodes) != lanes:
+        continue
+      if not _compatible_node_metadata(cmerge_nodes):
+        continue
+      key = (next_key, 0)
+      next_key += 1
+      candidates[key] = cmerge_nodes
+      existing.update(_node_idx(node) for node in cmerge_nodes)
+
+
+def _output_refs(node: ET.Element) -> list[ET.Element]:
+  container = node.find("Outputs")
+  if container is None:
+    return []
+  return [ref for ref in list(container) if ref.tag == "Output"]
+
+
+def _add_packed_output_store_candidates(
+  candidates: dict[tuple[int, int], list[ET.Element]],
+  nodes: list[ET.Element],
+  lanes: int,
+) -> None:
+  """Infer packed live-out stores from a packed producer group.
+
+  Deferred reduction mode intentionally leaves one scalar live-out per SIMD
+  lane in the LLVM IR.  The mapper artifact should see those as one vector
+  output, so collect sibling OSTOREs fed by each SIMD producer group.
+  """
+  by_idx = {_node_idx(node): node for node in nodes}
+  next_key = 2100000000
+  existing = {_node_idx(node) for group in candidates.values() for node in group}
+
+  for group_nodes in list(candidates.values()):
+    store_nodes = []
+    for node in group_nodes:
+      lane_stores = []
+      for ref in _output_refs(node):
+        target = by_idx.get(_ref_idx(ref))
+        if target is None:
+          continue
+        if _child_text(target, "OP") in {
+          "STORE", "STOREH", "STOREB",
+          "OSTORE", "OSTOREH", "OSTOREB",
+        }:
+          lane_stores.append(target)
+      if len(lane_stores) != 1:
+        store_nodes = []
+        break
+      store_node = lane_stores[0]
+      if _node_idx(store_node) in existing:
+        store_nodes = []
+        break
+      store_nodes.append(store_node)
+    if len(store_nodes) != lanes:
+      continue
+    key = (next_key, 0)
+    next_key += 1
+    candidates[key] = store_nodes
+    existing.update(_node_idx(node) for node in store_nodes)
 
 
 def _build_replacement(packable: dict[tuple[int, int], list[ET.Element]]) -> dict[int, int]:
@@ -201,6 +331,42 @@ def _build_replacement(packable: dict[tuple[int, int], list[ET.Element]]) -> dic
     for node in group_nodes:
       replacement[_node_idx(node)] = rep
   return replacement
+
+
+def _prunable_scalar_lane_ostores(
+  nodes: list[ET.Element],
+  replacement: dict[int, int],
+) -> set[int]:
+  """Drop scalar lane live-outs already represented by a packed vector output."""
+  packed_reps = set(replacement.values())
+  pruned = set()
+  for node in nodes:
+    if not _is_ostore_op(_child_text(node, "OP")):
+      continue
+    inputs = _input_refs(node)
+    if not inputs:
+      continue
+    if any(replacement.get(_ref_idx(ref), _ref_idx(ref)) in packed_reps for ref in inputs):
+      pruned.add(_node_idx(node))
+  return pruned
+
+
+def _prunable_packed_store_address_oloads(
+  nodes: list[ET.Element],
+  replacement: dict[int, int],
+  packed_store_reps: set[int],
+) -> set[int]:
+  """Drop scalar address OLOADs for packed stores when AGI is external."""
+  pruned = set()
+  for node in nodes:
+    if not _is_oload_op(_child_text(node, "OP")):
+      continue
+    outputs = _output_refs(node)
+    if not outputs:
+      continue
+    if all(replacement.get(_ref_idx(ref), _ref_idx(ref)) in packed_store_reps for ref in outputs):
+      pruned.add(_node_idx(node))
+  return pruned
 
 
 def _prune_packable_groups(
@@ -215,14 +381,28 @@ def _prune_packable_groups(
     for key, group_nodes in packable.items():
       self_group = {_node_idx(node) for node in group_nodes}
       first = group_nodes[0]
-      first_inputs = _refs_signature(first, "Inputs", "Input", replacement, self_group)
-      first_outputs = _refs_signature(first, "Outputs", "Output", replacement, self_group)
+      op = _child_text(first, "OP")
+      skip_external_inputs = op in {"SELECT", "CMERGE"} or _is_store_op(op)
+      first_inputs = _refs_signature(
+        first, "Inputs", "Input", replacement, self_group,
+        skip_external=skip_external_inputs,
+      )
+      first_outputs = _refs_signature(
+        first, "Outputs", "Output", replacement, self_group,
+        skip_external=True,
+      )
       first_rec = _refs_signature(first, "RecParents", "RecParent", replacement, self_group)
       for node in group_nodes[1:]:
-        if _refs_signature(node, "Inputs", "Input", replacement, self_group) != first_inputs:
+        if _refs_signature(
+          node, "Inputs", "Input", replacement, self_group,
+          skip_external=skip_external_inputs,
+        ) != first_inputs:
           remove_keys.append(key)
           break
-        if _refs_signature(node, "Outputs", "Output", replacement, self_group) != first_outputs:
+        if _refs_signature(
+          node, "Outputs", "Output", replacement, self_group,
+          skip_external=True,
+        ) != first_outputs:
           remove_keys.append(key)
           break
         if _refs_signature(node, "RecParents", "RecParent", replacement, self_group) != first_rec:
@@ -242,14 +422,22 @@ def _rewrite_refs(
   ref_name: str,
   replacement: dict[int, int],
   reindex: dict[int, int],
+  source_refs: list[ET.Element] | None = None,
 ) -> None:
   container = node.find(container_name)
   if container is None:
     return
 
-  original_refs = [ref for ref in list(container) if ref.tag == ref_name]
+  original_refs = source_refs
+  if original_refs is None:
+    original_refs = [ref for ref in list(container) if ref.tag == ref_name]
   for ref in original_refs:
-    container.remove(ref)
+    if ref in list(container):
+      container.remove(ref)
+
+  if source_refs is not None:
+    for ref in [ref for ref in list(container) if ref.tag == ref_name]:
+      container.remove(ref)
 
   seen = set()
   for ref in original_refs:
@@ -275,6 +463,7 @@ def pack_simd_xml(
   *,
   lanes: int,
   pack_load_store: bool = True,
+  prune_scalar_lane_outputs: bool = False,
 ) -> SimdPackReport:
   input_path = Path(input_xml)
   output_path = Path(output_xml)
@@ -288,13 +477,38 @@ def pack_simd_xml(
   candidates = _candidate_groups(nodes, lanes, pack_load_store)
   packable = _prune_packable_groups(candidates)
   replacement = _build_replacement(packable)
+  pack_group_by_rep = {
+    _node_idx(group_nodes[0]): group_nodes
+    for group_nodes in packable.values()
+  }
   removed = {
     _node_idx(node)
     for group_nodes in packable.values()
     for node in group_nodes[1:]
   }
+  artifact_pruned = set()
+  artifact_vars_pruned = set()
+  if prune_scalar_lane_outputs:
+    artifact_pruned = _prunable_scalar_lane_ostores(nodes, replacement) - removed
+    packed_store_reps = {
+      _node_idx(group_nodes[0])
+      for group_nodes in packable.values()
+      if _is_store_op(_child_text(group_nodes[0], "OP"))
+    }
+    artifact_pruned |= (
+      _prunable_packed_store_address_oloads(nodes, replacement, packed_store_reps)
+      - removed
+    )
+    artifact_vars_pruned = {
+      name
+      for node in nodes
+      if _node_idx(node) in artifact_pruned
+      for name in [_base_pointer_name(node)]
+      if name
+    }
 
-  remaining_nodes = [node for node in nodes if _node_idx(node) not in removed]
+  removed_or_pruned = removed | artifact_pruned
+  remaining_nodes = [node for node in nodes if _node_idx(node) not in removed_or_pruned]
   reindex = {_node_idx(node): idx for idx, node in enumerate(remaining_nodes)}
 
   # Capture pre-packing indices before mutating node elements below.
@@ -315,7 +529,19 @@ def pack_simd_xml(
       node.set("simd_packed", "true")
       node.set("simd_lanes", str(lanes))
     _rewrite_refs(node, old_idx, "Inputs", "Input", replacement, reindex)
-    _rewrite_refs(node, old_idx, "Outputs", "Output", replacement, reindex)
+    output_source_refs = None
+    if old_idx in pack_group_by_rep:
+      output_source_refs = []
+      for group_node in pack_group_by_rep[old_idx]:
+        container = group_node.find("Outputs")
+        if container is not None:
+          output_source_refs.extend(
+            ref for ref in list(container) if ref.tag == "Output"
+          )
+    _rewrite_refs(
+      node, old_idx, "Outputs", "Output", replacement, reindex,
+      source_refs=output_source_refs,
+    )
     _rewrite_refs(node, old_idx, "RecParents", "RecParent", replacement, reindex)
     dfg.append(node)
 
@@ -327,8 +553,32 @@ def pack_simd_xml(
     output_nodes=len(remaining_nodes),
     packed_groups=len(packable),
     packed_nodes_removed=len(removed),
+    artifact_nodes_pruned=len(artifact_pruned),
+    artifact_vars_pruned=tuple(sorted(artifact_vars_pruned)),
   )
   return report, SimdMapping(reindex=dict(reindex), simd_groups=simd_groups)
+
+
+def filter_trace_vars(
+  input_path: "str | Path",
+  output_path: "str | Path",
+  pruned_vars: "set[str] | tuple[str, ...] | list[str]",
+) -> None:
+  pruned = set(pruned_vars)
+  if not pruned:
+    return
+  input_path = Path(input_path)
+  output_path = Path(output_path)
+  lines = input_path.read_text(encoding="utf-8").splitlines()
+  kept = []
+  for line in lines:
+    if not line:
+      kept.append(line)
+      continue
+    parts = line.split(",")
+    if parts[0] == "var_name" or parts[0] not in pruned:
+      kept.append(line)
+  output_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
 def remap_addr_trace(

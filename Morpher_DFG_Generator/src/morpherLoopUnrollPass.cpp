@@ -33,6 +33,10 @@ static cl::opt<unsigned> MorpherReductionLanes(
     "morpher-reduction-lanes", cl::init(1),
     cl::desc("SIMD width for scalar reduction expansion after unroll"));
 
+static cl::opt<std::string> MorpherReductionPolicy(
+    "morpher-reduction-policy", cl::init("tree"),
+    cl::desc("Reduction lowering policy: tree or packed-psum"));
+
 Function *getCalledFunctionThroughBitcast(CallInst *CI) {
   Function *CalledFn = CI->getCalledFunction();
   if (CalledFn)
@@ -57,6 +61,11 @@ void setIntMetadata(Instruction &I, StringRef Name, unsigned Value) {
   I.setMetadata(Name, MDNode::get(Ctx, MD));
 }
 
+void setSIMDMetadata(Instruction &I, unsigned Group, unsigned Lanes) {
+  setIntMetadata(I, "morpher.simd.group", Group);
+  setIntMetadata(I, "morpher.simd.lanes", Lanes);
+}
+
 void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
   unsigned Group = 0;
   for (BasicBlock *BB : TargetLoop->blocks()) {
@@ -64,8 +73,7 @@ void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
       if (auto *CI = dyn_cast<CallInst>(&I))
         if (isPleaseMapMe(CI))
           continue;
-      setIntMetadata(I, "morpher.simd.group", Group++);
-      setIntMetadata(I, "morpher.simd.lanes", Lanes);
+      setSIMDMetadata(I, Group++, Lanes);
     }
   }
 }
@@ -370,7 +378,147 @@ bool expandIntegerAddReduction(PHINode *Phi, Loop *L, unsigned Lanes) {
   return true;
 }
 
-bool expandReductionsForSIMD(Loop *L, unsigned Lanes) {
+bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
+  if (Lanes <= 1)
+    return false;
+
+  BasicBlock *Preheader = L->getLoopPreheader();
+  BasicBlock *Latch = L->getLoopLatch();
+  if (!Preheader || !Latch)
+    return false;
+
+  SmallVector<BasicBlock *, 4> ExitBlocks;
+  L->getExitBlocks(ExitBlocks);
+  if (ExitBlocks.size() != 1)
+    return false;
+  BasicBlock *Exit = ExitBlocks[0];
+
+  int PreheaderIdx = Phi->getBasicBlockIndex(Preheader);
+  int LatchIdx = Phi->getBasicBlockIndex(Latch);
+  if (PreheaderIdx < 0 || LatchIdx < 0)
+    return false;
+
+  Value *Init = Phi->getIncomingValue(PreheaderIdx);
+  Value *BackedgeValue = Phi->getIncomingValue(LatchIdx);
+  if (!Phi->getType()->isIntegerTy())
+    return false;
+  std::string PhiName = Phi->getName().str();
+
+  SmallVector<BinaryOperator *, 32> Chain;
+  SmallVector<Value *, 32> Terms;
+  unsigned ReductionOpcode = 0;
+  if (!collectReductionAddChain(Phi, BackedgeValue, ReductionOpcode, Chain, Terms))
+    return false;
+
+  bool HasNonConstantTerm = false;
+  for (Value *Term : Terms)
+    if (!isa<ConstantInt>(Term)) {
+      HasNonConstantTerm = true;
+      break;
+    }
+  if (!HasNonConstantTerm)
+    return false;
+
+  if (Terms.size() < Lanes || Terms.size() % Lanes != 0)
+    return false;
+
+  unsigned VectorGroups = Terms.size() / Lanes;
+
+  SmallVector<Use *, 8> ExternalBackedgeUses;
+  for (Use &U : BackedgeValue->uses()) {
+    auto *UserI = dyn_cast<Instruction>(U.getUser());
+    if (!UserI || !L->contains(UserI))
+      ExternalBackedgeUses.push_back(&U);
+  }
+
+  unsigned NextGroup = 1000000;
+  SmallVector<SmallVector<Value *, 16>, 16> LaneLevels;
+  LaneLevels.resize(Lanes);
+  for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
+    for (unsigned Group = 0; Group < VectorGroups; ++Group)
+      LaneLevels[Lane].push_back(Terms[Group * Lanes + Lane]);
+  }
+
+  IRBuilder<> BodyBuilder(Chain.back());
+  while (LaneLevels[0].size() > 1) {
+    SmallVector<SmallVector<Value *, 16>, 16> NextLevels;
+    NextLevels.resize(Lanes);
+    for (unsigned Pair = 0; Pair + 1 < LaneLevels[0].size(); Pair += 2) {
+      unsigned TreeGroup = NextGroup++;
+      for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
+        Value *Combined = createReductionOp(
+            BodyBuilder, termCombineOpcode(ReductionOpcode),
+            LaneLevels[Lane][Pair], LaneLevels[Lane][Pair + 1],
+            "morpher.psum.tree");
+        if (auto *I = dyn_cast<Instruction>(Combined))
+          setSIMDMetadata(*I, TreeGroup, Lanes);
+        NextLevels[Lane].push_back(Combined);
+      }
+    }
+    if (LaneLevels[0].size() & 1) {
+      unsigned Last = LaneLevels[0].size() - 1;
+      for (unsigned Lane = 0; Lane < Lanes; ++Lane)
+        NextLevels[Lane].push_back(LaneLevels[Lane][Last]);
+    }
+    LaneLevels = std::move(NextLevels);
+  }
+
+  SmallVector<Value *, 16> LaneOutputs;
+  for (unsigned Lane = 0; Lane < Lanes; ++Lane)
+    LaneOutputs.push_back(LaneLevels[Lane][0]);
+
+  Function *F = Phi->getFunction();
+  LLVMContext &Ctx = F->getContext();
+  IRBuilder<> EntryBuilder(&*F->getEntryBlock().getFirstInsertionPt());
+  Value *LaneCount = ConstantInt::get(Type::getInt32Ty(Ctx), Lanes);
+  AllocaInst *VectorOut =
+      EntryBuilder.CreateAlloca(Phi->getType(), LaneCount,
+                                PhiName + ".morpher.vecout");
+  unsigned StoreGroup = NextGroup++;
+  for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
+    Value *LaneIdx = ConstantInt::get(Type::getInt32Ty(Ctx), Lane);
+    Value *Slot = BodyBuilder.CreateInBoundsGEP(Phi->getType(), VectorOut,
+                                                LaneIdx,
+                                                "morpher.vecout.ptr");
+    StoreInst *Store = BodyBuilder.CreateStore(LaneOutputs[Lane], Slot);
+    Store->setVolatile(true);
+    setSIMDMetadata(*Store, StoreGroup, Lanes);
+  }
+
+  Instruction *ExitInsert = Exit->getTerminator();
+  for (Instruction &I : *Exit) {
+    if (!isa<PHINode>(&I)) {
+      ExitInsert = &I;
+      break;
+    }
+  }
+  IRBuilder<> ExitBuilder(ExitInsert);
+  Value *Combined = LaneOutputs[0];
+  for (unsigned Lane = 1; Lane < LaneOutputs.size(); ++Lane)
+    Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
+                                 Combined, LaneOutputs[Lane], "morpher.psum.final");
+  Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
+                               Init, Combined, "morpher.psum.final.init");
+
+  for (Use *U : ExternalBackedgeUses)
+    U->set(Combined);
+
+  Phi->setIncomingValue(LatchIdx, LaneOutputs[0]);
+  for (auto It = Chain.rbegin(); It != Chain.rend(); ++It)
+    if ((*It)->use_empty())
+      (*It)->eraseFromParent();
+  if (Phi->use_empty())
+    Phi->eraseFromParent();
+
+  errs() << "Morpher reduction expansion (packed-output): phi=" << PhiName
+         << " lanes=" << Lanes
+         << " terms=" << Terms.size()
+         << " vector_groups=" << VectorGroups
+         << " deferred_horizontal=1\n";
+  return true;
+}
+
+bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   if (Lanes <= 1)
     return false;
 
@@ -379,8 +527,12 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes) {
     Phis.push_back(&Phi);
 
   bool Changed = false;
-  for (PHINode *Phi : Phis)
-    Changed |= expandIntegerAddReduction(Phi, L, Lanes);
+  for (PHINode *Phi : Phis) {
+    if (Policy == "packed-psum")
+      Changed |= expandIntegerReductionPackedPsum(Phi, L, Lanes);
+    else
+      Changed |= expandIntegerAddReduction(Phi, L, Lanes);
+  }
   return Changed;
 }
 
@@ -399,6 +551,10 @@ struct MorpherLoopUnrollPass : public FunctionPass {
     if (MorpherRemainderPolicy != "preserve" &&
         MorpherRemainderPolicy != "assume-multiple") {
       report_fatal_error("morpher-remainder-policy must be preserve or assume-multiple");
+    }
+    if (MorpherReductionPolicy != "tree" &&
+        MorpherReductionPolicy != "packed-psum") {
+      report_fatal_error("morpher-reduction-policy must be tree or packed-psum");
     }
 
     LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
@@ -446,13 +602,15 @@ struct MorpherLoopUnrollPass : public FunctionPass {
     if (Result == LoopUnrollResult::FullyUnrolled)
       report_fatal_error("Morpher annotated loop was fully unrolled away");
 
-    expandReductionsForSIMD(TargetLoop, MorpherReductionLanes);
+    expandReductionsForSIMD(TargetLoop, MorpherReductionLanes,
+                            MorpherReductionPolicy);
     normalizePleaseMapMeMarkers(F, LI, TargetLoop);
 
     errs() << "Morpher loop unroll: function=" << F.getName()
            << " factor=" << MorpherUnrollFactor
            << " remainder_policy=" << MorpherRemainderPolicy
-           << " reduction_lanes=" << MorpherReductionLanes << "\n";
+           << " reduction_lanes=" << MorpherReductionLanes
+           << " reduction_policy=" << MorpherReductionPolicy << "\n";
     return true;
   }
 
