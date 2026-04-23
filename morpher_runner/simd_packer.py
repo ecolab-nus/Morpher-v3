@@ -369,6 +369,56 @@ def _prunable_packed_store_address_oloads(
   return pruned
 
 
+def _is_artifact_store_root(node: ET.Element) -> bool:
+  op = _child_text(node, "OP")
+  if op in {"STORE", "STOREH"}:
+    return True
+  if op == "STOREB" and node.attrib.get("simd_packed") == "true":
+    return True
+  return False
+
+
+def _prunable_external_control_nodes(
+  nodes: list[ET.Element],
+  replacement: dict[int, int],
+  already_removed: set[int],
+) -> set[int]:
+  """Keep only the data cone needed by artifact stores.
+
+  With remove_agi=true, loop iteration, loop flag stores, PHI merges, and scalar
+  live-outs are driven externally or are not part of the mapped data artifact.
+  A backward slice from real store roots keeps the compute/load path and prunes
+  everything else.
+  """
+  by_idx = {_node_idx(node): node for node in nodes}
+  available = set(by_idx) - already_removed
+  roots = {
+    _node_idx(node)
+    for node in nodes
+    if _node_idx(node) in available and _is_artifact_store_root(node)
+  }
+  if not roots:
+    return set()
+
+  keep = set()
+  stack = list(roots)
+  while stack:
+    idx = stack.pop()
+    idx = replacement.get(idx, idx)
+    if idx in keep or idx not in available:
+      continue
+    keep.add(idx)
+    node = by_idx.get(idx)
+    if node is None:
+      continue
+    for ref in _input_refs(node):
+      parent = replacement.get(_ref_idx(ref), _ref_idx(ref))
+      if parent in available and parent not in keep:
+        stack.append(parent)
+
+  return available - keep
+
+
 def _prune_packable_groups(
   candidates: dict[tuple[int, int], list[ET.Element]],
 ) -> dict[tuple[int, int], list[ET.Element]]:
@@ -464,6 +514,7 @@ def pack_simd_xml(
   lanes: int,
   pack_load_store: bool = True,
   prune_scalar_lane_outputs: bool = False,
+  prune_iter_control: bool = False,
 ) -> SimdPackReport:
   input_path = Path(input_xml)
   output_path = Path(output_xml)
@@ -499,6 +550,12 @@ def pack_simd_xml(
       _prunable_packed_store_address_oloads(nodes, replacement, packed_store_reps)
       - removed
     )
+  if prune_iter_control:
+    artifact_pruned |= (
+      _prunable_external_control_nodes(nodes, replacement, removed | artifact_pruned)
+      - removed
+    )
+  if prune_scalar_lane_outputs or prune_iter_control:
     artifact_vars_pruned = {
       name
       for node in nodes

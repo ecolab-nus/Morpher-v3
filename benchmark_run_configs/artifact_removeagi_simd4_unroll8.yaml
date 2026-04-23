@@ -25,6 +25,7 @@ enable_simulation: true
 spm_mode: 'off'
 llvm_debug_type: 'no'
 remove_agi: true
+remove_iter: true
 auto_unroll:
   enabled: true
   factors: [8]

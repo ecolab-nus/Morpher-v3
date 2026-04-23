@@ -283,6 +283,7 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
       lanes=config.simd_lanes,
       pack_load_store=config.simd_pack_load_store,
       prune_scalar_lane_outputs=config.remove_agi,
+      prune_iter_control=config.remove_iter,
     )
     mapper_xml = simd_xml
     print(

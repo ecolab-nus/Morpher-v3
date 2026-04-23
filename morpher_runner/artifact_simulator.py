@@ -54,6 +54,8 @@ def build_artifact_sim_command(context, trace_file):
   addr_trace_path = os.path.join(context.mem_trace, addr_trace)
   if os.path.isfile(addr_trace_path):
     argv.extend(["--addr-trace", addr_trace_path])
+  if context.config.remove_iter:
+    argv.extend(["--max-iters", "1"])
   return Command(
     argv=argv,
     cwd=context.mapper_kernel,

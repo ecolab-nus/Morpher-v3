@@ -81,6 +81,7 @@ class RunnerConfig:
   spm_mode: str
   llvm_debug_type: str
   remove_agi: bool
+  remove_iter: bool
   auto_unroll_enabled: bool
   auto_unroll_factors: list
   auto_unroll_remainder_policy: str
@@ -201,6 +202,7 @@ class RunnerConfig:
       spm_mode=config_dict.get("spm_mode", "on"),
       llvm_debug_type=config_dict["llvm_debug_type"],
       remove_agi=config_dict.get("remove_agi", False),
+      remove_iter=config_dict.get("remove_iter", False),
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_remainder_policy=auto_unroll_remainder_policy,
