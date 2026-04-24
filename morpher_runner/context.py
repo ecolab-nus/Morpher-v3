@@ -295,6 +295,8 @@ def build_context(csource, function, config_path, runmode, run_tag=""):
 
 
 def _sanitize_run_tag(run_tag):
+  if run_tag is None:
+    return ""
   run_tag = run_tag.strip()
   if not run_tag:
     return ""

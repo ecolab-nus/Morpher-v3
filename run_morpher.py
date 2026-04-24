@@ -44,7 +44,7 @@ def _usage():
 def _parse_cli(argv):
   positional = []
   mem_alloc_path = None
-  run_tag = None
+  run_tag = ""
 
   i = 0
   while i < len(argv):
