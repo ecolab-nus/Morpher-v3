@@ -91,8 +91,7 @@ _ERROR_LINE_RE = re.compile(
 
 
 STAGE_MARKERS: list[tuple[str, str]] = [
-    ("artifact_simulator", "-----Running Morpher artifact_simulator-----"),
-    ("simulator", "-----Running hycube_simulator-----"),
+    ("artifact_simulator", "-----Running Morpher artifact_simulator ("),
     ("simulator", "[sim "),
     ("mapper", "[2/2] Run mapper"),
     ("mapper", "[1/1] Run mapper"),
@@ -297,7 +296,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default="config/default_config.yaml",
+        default="config/default.yaml",
         help="Config path relative to --repo-root.",
     )
     parser.add_argument(
@@ -355,10 +354,21 @@ def sanitize_name(text: str) -> str:
 
 
 def tagged_appfolder(appfolder: str, run_tag: str) -> str:
+    # Legacy helper retained for older reports; new tagged runs live under
+    # workspace/morpher_runs/<tag>/ instead of source benchmark trees.
     if not run_tag:
         return appfolder
     path = Path(appfolder)
     return (path.parent / f"{path.name}__run_{run_tag}").as_posix()
+
+
+def workspace_run_dirs(repo_root: Path, run_tag: str, appfolder: str, mapper_subfolder: str) -> tuple[Path, Path, Path]:
+    run_root = repo_root / "workspace" / "morpher_runs" / run_tag
+    return (
+        run_root / "dfg" / appfolder,
+        run_root / "mapper" / mapper_subfolder / appfolder,
+        run_root / "simulator" / appfolder,
+    )
 
 
 def discover_all_benchmarks(repo_root: Path) -> list[BenchmarkSpec]:
@@ -459,24 +469,22 @@ def run_one(
         spec.function,
         config_rel,
         runmode,
+        "--run-tag",
+        run_tag,
     ]
     start = time.time()
     rc = None
     timed_out = False
 
     appfolder = str(Path(spec.rel_source).parent).replace("\\", "/")
-    output_appfolder = tagged_appfolder(appfolder, run_tag)
-    mapper_kernel_dir = (
-        repo_root / "Morpher_CGRA_Mapper" / "benchmarks" / mapper_subfolder / output_appfolder
+    dfg_kernel_dir, mapper_kernel_dir, sim_kernel_dir = workspace_run_dirs(
+        repo_root, run_tag, appfolder, mapper_subfolder
     )
-    sim_kernel_dir = repo_root / "hycube_simulator" / "benchmarks" / output_appfolder
-    dfg_kernel_dir = repo_root / "Morpher_DFG_Generator" / "benchmarks" / output_appfolder
     for work_dir in (dfg_kernel_dir, mapper_kernel_dir, sim_kernel_dir):
         if work_dir.exists():
             shutil.rmtree(work_dir)
 
     env = os.environ.copy()
-    env["MORPHER_RUN_TAG"] = run_tag
 
     try:
         with log_file.open("w", encoding="utf-8") as log:

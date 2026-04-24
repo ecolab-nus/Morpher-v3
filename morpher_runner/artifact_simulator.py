@@ -9,20 +9,20 @@ from morpher_runner.simulator import select_trace_samples
 
 def resolve_artifact_simulator(context):
   candidates = [
-    os.path.join(context.morpher_home, "artifact_simulator", "build", "artifact_simulator"),
-    os.path.join(context.morpher_home, "artifact_simulator", "build", "src", "artifact_simulator"),
+    os.path.join(context.morpher_home, "simulator", "artifact_simulator", "build", "artifact_simulator"),
+    os.path.join(context.morpher_home, "simulator", "artifact_simulator", "build", "src", "artifact_simulator"),
   ]
   for candidate in candidates:
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
       return candidate
   raise RuntimeError(
     "artifact_simulator executable not found. Build it with: "
-    "cmake -S artifact_simulator -B artifact_simulator/build && "
-    "cmake --build artifact_simulator/build"
+    "cmake -S simulator/artifact_simulator -B simulator/artifact_simulator/build && "
+    "cmake --build simulator/artifact_simulator/build"
   )
 
 
-def resolve_mapping_file(context):
+def resolve_mapping_file(context, validation_mode):
   matches = sorted(
     glob.glob(os.path.join(context.mapper_kernel, "*.mappingwithlatency.txt")),
     key=os.path.getmtime,
@@ -30,17 +30,22 @@ def resolve_mapping_file(context):
   )
   if not matches:
     raise RuntimeError("No mapper latency artifact found in %s" % context.mapper_kernel)
+  for match in matches:
+    if os.path.getsize(match) > 0:
+      return match
+  # Some mapper runs emit an empty mappingwithlatency file but still emit
+  # mapping_i.txtmapping.json; the C++ parser handles that fallback.
   return matches[0]
 
 
-def build_artifact_sim_command(context, trace_file):
+def build_artifact_sim_command(context, trace_file, validation_mode):
   kernel = context.kernel
   argv = [
       resolve_artifact_simulator(context),
       "--dfg",
       os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel),
       "--mapping",
-      resolve_mapping_file(context),
+      resolve_mapping_file(context, validation_mode),
       "--mem-alloc",
       os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % kernel),
       "--trace",
@@ -54,16 +59,21 @@ def build_artifact_sim_command(context, trace_file):
   addr_trace_path = os.path.join(context.mem_trace, addr_trace)
   if os.path.isfile(addr_trace_path):
     argv.extend(["--addr-trace", addr_trace_path])
-  if context.config.remove_iter:
-    argv.extend(["--max-iters", "1"])
+  if validation_mode == "event_driven":
+    argv.extend([
+      "--arch",
+      os.path.join(context.mapper_kernel, "%s_arch_runtime.json" % kernel),
+      "--result",
+      os.path.join(context.mapper_kernel, "result.txt"),
+    ])
   return Command(
     argv=argv,
     cwd=context.mapper_kernel,
   )
 
 
-def run_artifact_simulator(context):
-  print("\n-----Running Morpher artifact_simulator-----\n")
+def run_artifact_simulator(context, validation_mode="functional"):
+  print("\n-----Running Morpher artifact_simulator (%s)-----\n" % validation_mode)
   files = collect_trace_files(context)
   if not files:
     raise RuntimeError(
@@ -77,7 +87,7 @@ def run_artifact_simulator(context):
   matches = 0
   mismatches = 0
   for file in samplefiles:
-    command = build_artifact_sim_command(context, file)
+    command = build_artifact_sim_command(context, file, validation_mode)
     command.check = False
     command.capture_output = True
     command.text = True

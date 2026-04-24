@@ -5,3 +5,6 @@ scripts/run_v3_benchmarks.py
 # Python cache/bytecode
 __pycache__/
 *.py[cod]
+
+# Morpher run workspaces
+workspace/

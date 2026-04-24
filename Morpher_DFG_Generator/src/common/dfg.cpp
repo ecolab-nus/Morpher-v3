@@ -11223,8 +11223,14 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 		if (baseIt == spm_base_address.end())
 			continue;
 
-		IRBuilder<> builder(ins);
-		DataLayout DL = F.getParent()->getDataLayout();
+			IRBuilder<> builder(ins);
+			if (isStore) {
+				Instruction *next = ins->getNextNode();
+				if (next) {
+					builder.SetInsertPoint(next);
+				}
+			}
+			DataLayout DL = F.getParent()->getDataLayout();
 		uint32_t accessSize = (uint32_t)DL.getTypeAllocSize(accessType);
 		std::string baseName = node->getArrBasePtr();
 		if (baseName.empty() || baseName == "NOT_A_MEM_OP")

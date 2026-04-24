@@ -108,6 +108,7 @@ struct MemAccessTuple {
 	uint32_t size;
 	uint8_t isStore;
 	std::string baseName;
+	std::vector<uint8_t> bytes;
 };
 
 static std::map<std::string,std::vector<MemAccessTuple>> mem_access_trace;
@@ -291,13 +292,27 @@ void PrintMemAccessTrace(std::string ln){
 	ss << "memtraces/"  << ln  << "_addr_trace_" << loopRunIdx[ln] << ".txt";
 	FILE *addrFile = fopen(ss.str().c_str(), "w");
 	assert(addrFile);
-	fprintf(addrFile, "node_idx,access_idx,addr,size,is_store,base\n");
 	auto &trace = mem_access_trace[ln];
+	fprintf(addrFile, "node_idx,access_idx,addr,size,is_store,base");
+	uint32_t maxSize = 0;
+	for (const MemAccessTuple &entry : trace) {
+		if (entry.size > maxSize) {
+			maxSize = entry.size;
+		}
+	}
+	for (uint32_t byteIdx = 0; byteIdx < maxSize; byteIdx++) {
+		fprintf(addrFile, ",byte%u", byteIdx);
+	}
+	fprintf(addrFile, "\n");
 	for (uint32_t i = 0; i < trace.size(); i++){
 		const MemAccessTuple &entry = trace[i];
-		fprintf(addrFile, "%u,%u,%u,%u,%u,%s\n",
+		fprintf(addrFile, "%u,%u,%u,%u,%u,%s",
 				entry.nodeIdx, i, entry.address, entry.size,
 				entry.isStore, entry.baseName.c_str());
+		for (uint8_t byte : entry.bytes) {
+			fprintf(addrFile, ",%u", byte);
+		}
+		fprintf(addrFile, "\n");
 	}
 	fclose(addrFile);
 }
@@ -759,6 +774,10 @@ void MemAccessReport(const char* loopName, uint32_t nodeIdx, const char* baseNam
 	entry.size = size;
 	entry.isStore = isStore;
 	entry.baseName = baseNameStr;
+	uint8_t *bytePtr = actual_ptr;
+	for (uint32_t i = 0; i < size; i++){
+		entry.bytes.push_back(bytePtr[i]);
+	}
 	mem_access_trace[loopNameStr].push_back(entry);
 }
 
@@ -804,9 +823,6 @@ void LiveOutReportIntermediateVar(const char* varname, uint32_t value){
 //		data_morpher[varname_str].post_data[i] = value_ptr[i];
 	}
 }
-
-
-
 
 
 

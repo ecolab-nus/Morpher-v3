@@ -10,9 +10,8 @@ from morpher_runner.context import build_context
 from morpher_runner.artifact_simulator import run_artifact_simulator
 from morpher_runner.dfg_generator import run_dfg_generator
 from morpher_runner.mapper import run_mapper
-from morpher_runner.simulator import run_simulator
 
-DEFAULT_CONFIG_PATH = "config/default_config.yaml"
+DEFAULT_CONFIG_PATH = "config/default.yaml"
 RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"}
 _RESULT_LINE_II_RE = re.compile(r"method:\S+\s+(\d+)\s+status:(success|failed)\s+\d+\s*$")
 
@@ -257,9 +256,9 @@ def _run_auto_unroll(context):
     run_mapper(context)
 
   if context.config.enable_simulation:
-    run_simulator(context)
+    run_artifact_simulator(context, context.config.validation_mode)
   else:
-    print("\nSimulation disabled by config (enable_simulation=false); skipping hycube_simulator.\n")
+    print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
 
 
 def main(
@@ -269,6 +268,7 @@ def main(
   runmode="runall_artifact_sim",
   dfg_xml_path=None,
   mem_alloc_path=None,
+  run_tag="",
 ):
   print(r"""
     __  ___                 __                 ________________  ___       ____            _                ______                                             __  
@@ -279,17 +279,18 @@ def main(
                  /_/                                                                     /____/                                                                    
     """)
 
-  context = build_context(csource, function, config, runmode)
+  context = build_context(csource, function, config, runmode, run_tag)
 
   print(
     "\n Kernel: %s \n C source: %s/benchmarks/%s \n Memory mode: %s \n Arch template: %s"
-    "\n Config: %s\n Run mode: %s\n"
+    "\n Validation mode: %s\n Config: %s\n Run mode: %s\n"
     % (
       context.kernel,
       context.dfg_gen_home,
       context.csource,
       context.config.memory_mode,
       context.config.arch_template_json,
+      context.config.validation_mode,
       context.config_path,
       context.runmode,
     )
@@ -312,12 +313,14 @@ def main(
 
   if runmode == "runall_artifact_sim":
     original_enable_sim = context.config.enable_simulation
-    context.config.enable_simulation = True
-    run_dfg_generator(context)
-    context.config.enable_simulation = False
-    run_mapper(context)
-    run_artifact_simulator(context)
-    context.config.enable_simulation = original_enable_sim
+    try:
+      context.config.enable_simulation = True
+      run_dfg_generator(context)
+      context.config.enable_simulation = False
+      run_mapper(context)
+    finally:
+      context.config.enable_simulation = original_enable_sim
+    run_artifact_simulator(context, context.config.validation_mode)
     return
 
   if (runmode == "runall" or runmode == "dfg_gen_only") and not dfg_xml_path:
@@ -327,21 +330,19 @@ def main(
     run_mapper(context)
 
   if runmode == "artifact_sim_only":
-    run_artifact_simulator(context)
+    run_artifact_simulator(context, context.config.validation_mode)
 
   if runmode == "runall" or runmode == "sim_only":
     if context.config.enable_simulation:
-      run_simulator(context)
+      run_artifact_simulator(context, context.config.validation_mode)
     else:
-      print("\nSimulation disabled by config (enable_simulation=false); skipping hycube_simulator.\n")
+      print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
 
 
 if __name__ == "__main__":
   try:
     csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag = _parse_cli(sys.argv[1:])
-    if run_tag:
-      os.environ["MORPHER_RUN_TAG"] = run_tag
-    main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path)
+    main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag)
   except subprocess.CalledProcessError as e:
     cmd = e.cmd if isinstance(e.cmd, str) else " ".join(e.cmd)
     print("Error: external command failed with exit code %d." % e.returncode)

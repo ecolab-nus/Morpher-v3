@@ -63,6 +63,7 @@ class SimdMapping:
   """Index remapping produced by SIMD packing, needed to fix addr traces."""
   reindex: dict  # pre_idx -> post_idx for all surviving nodes
   simd_groups: dict  # post_idx -> [pre_idx_lane0, ..., pre_idx_laneL-1]
+  simd_splat_groups: frozenset = frozenset()  # post_idx values whose lane0 addr should be replicated.
 
 
 def _read_wrapped_xml(path: Path) -> ET.Element:
@@ -190,6 +191,10 @@ def _is_ostore_op(op: str | None) -> bool:
 
 def _is_oload_op(op: str | None) -> bool:
   return op in {"OLOAD", "OLOADH", "OLOADB"}
+
+
+def _is_load_op(op: str | None) -> bool:
+  return op in {"LOAD", "LOADH", "LOADB", "OLOAD", "OLOADH", "OLOADB"}
 
 
 def _candidate_groups(
@@ -419,6 +424,27 @@ def _prunable_external_control_nodes(
   return available - keep
 
 
+def _splat_load_reps(packable: dict[tuple[int, int], list[ET.Element]]) -> set[int]:
+  """Packed loads of the same scalar address should be lane replicated.
+
+  The architecture has no broadcast op, so an invariant scalar load used by all
+  SIMD lanes is represented as a normal packed load whose trace repeats lane 0.
+  """
+  splat = set()
+  for group_nodes in packable.values():
+    if not group_nodes:
+      continue
+    if not _is_load_op(_child_text(group_nodes[0], "OP")):
+      continue
+    first_addr = (_base_pointer(group_nodes[0]), _gep_offset(group_nodes[0]), group_nodes[0].attrib.get("CONST"))
+    if all(
+      (_base_pointer(node), _gep_offset(node), node.attrib.get("CONST")) == first_addr
+      for node in group_nodes[1:]
+    ):
+      splat.add(_node_idx(group_nodes[0]))
+  return splat
+
+
 def _prune_packable_groups(
   candidates: dict[tuple[int, int], list[ET.Element]],
 ) -> dict[tuple[int, int], list[ET.Element]]:
@@ -570,10 +596,14 @@ def pack_simd_xml(
 
   # Capture pre-packing indices before mutating node elements below.
   simd_groups = {}
+  splat_reps = _splat_load_reps(packable)
+  simd_splat_groups = set()
   for group_nodes in packable.values():
     rep_pre_idx = _node_idx(group_nodes[0])
     rep_post_idx = reindex[rep_pre_idx]
     simd_groups[rep_post_idx] = [_node_idx(n) for n in group_nodes]
+    if rep_pre_idx in splat_reps:
+      simd_splat_groups.add(rep_post_idx)
 
   for node in nodes:
     dfg.remove(node)
@@ -613,7 +643,11 @@ def pack_simd_xml(
     artifact_nodes_pruned=len(artifact_pruned),
     artifact_vars_pruned=tuple(sorted(artifact_vars_pruned)),
   )
-  return report, SimdMapping(reindex=dict(reindex), simd_groups=simd_groups)
+  return report, SimdMapping(
+    reindex=dict(reindex),
+    simd_groups=simd_groups,
+    simd_splat_groups=frozenset(simd_splat_groups),
+  )
 
 
 def filter_trace_vars(
@@ -636,6 +670,13 @@ def filter_trace_vars(
     if parts[0] == "var_name" or parts[0] not in pruned:
       kept.append(line)
   output_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+
+def _is_splat_lane_entries(entries: list[tuple[str, ...]]) -> bool:
+  if not entries:
+    return False
+  first = entries[0]
+  return all(entry[1:] == first[1:] for entry in entries[1:])
 
 
 def remap_addr_trace(
@@ -673,6 +714,19 @@ def remap_addr_trace(
     n_iters = max((len(e) for e in lane_entries), default=0)
     interleaved = []
     for i in range(n_iters):
+      if post_idx in mapping.simd_splat_groups:
+        first_lane = lane_entries[0]
+        if i < len(first_lane):
+          interleaved.extend([first_lane[i]] * len(pre_indices))
+          continue
+      current_entries = [
+        lane_e[i]
+        for lane_e in lane_entries
+        if i < len(lane_e)
+      ]
+      if _is_splat_lane_entries(current_entries):
+        interleaved.extend([current_entries[0]] * len(current_entries))
+        continue
       for lane_e in lane_entries:
         if i < len(lane_e):
           interleaved.append(lane_e[i])

@@ -1,0 +1,3 @@
+/home/pranav/Dataflow-arch-mapper/simulator/artifact_simulator/build/CMakeFiles/artifact_simulator.dir
+/home/pranav/Dataflow-arch-mapper/simulator/artifact_simulator/build/CMakeFiles/edit_cache.dir
+/home/pranav/Dataflow-arch-mapper/simulator/artifact_simulator/build/CMakeFiles/rebuild_cache.dir

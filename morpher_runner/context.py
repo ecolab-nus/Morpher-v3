@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 
 import yaml
 
@@ -78,8 +79,8 @@ class RunnerConfig:
   sa_temp_min: float
   sa_candidate_topk: int
   enable_simulation: bool
+  validation_mode: str
   spm_mode: str
-  llvm_debug_type: str
   remove_agi: bool
   remove_iter: bool
   auto_unroll_enabled: bool
@@ -174,6 +175,13 @@ class RunnerConfig:
       auto_unroll_stop_on_degradation,
     ) = cls._parse_auto_unroll(config_dict)
     _print_deprecation_warning(config_dict)
+    validation_mode = str(config_dict.get("validation_mode", "functional")).strip().lower()
+    if validation_mode == "event-driven":
+      validation_mode = "event_driven"
+    if validation_mode not in ("functional", "event_driven"):
+      raise RuntimeError(
+        "validation_mode must be one of: functional, event_driven."
+      )
 
     return cls(
       memory_mode=memory_mode,
@@ -189,18 +197,18 @@ class RunnerConfig:
       backtrack_limit=config_dict.get("backtrack_limit", 0),
       max_mapper_iter=config_dict.get("max_mapper_iter", 30),
       max_II=config_dict.get("max_II", 32),
-      ii_restarts=config_dict.get("ii_restarts", 1),
-      skip_ii_estimation=config_dict.get("skip_ii_estimation", True),
-      print_dfg=config_dict.get("print_dfg", False),
+      ii_restarts=config_dict.get("ii_restarts", 0),
+      skip_ii_estimation=config_dict.get("skip_ii_estimation", False),
+      print_dfg=config_dict.get("print_dfg", True),
       sa_seed=config_dict.get("sa_seed", 0),
       sa_restarts=config_dict.get("sa_restarts", 2),
-      sa_moves_per_temp=config_dict.get("sa_moves_per_temp", 100),
+      sa_moves_per_temp=config_dict.get("sa_moves_per_temp", 20),
       sa_temp_max=config_dict.get("sa_temp_max", 200.0),
       sa_temp_min=config_dict.get("sa_temp_min", 10.0),
       sa_candidate_topk=config_dict.get("sa_candidate_topk", 8),
       enable_simulation=config_dict.get("enable_simulation", True),
+      validation_mode=validation_mode,
       spm_mode=config_dict.get("spm_mode", "on"),
-      llvm_debug_type=config_dict["llvm_debug_type"],
       remove_agi=config_dict.get("remove_agi", False),
       remove_iter=config_dict.get("remove_iter", False),
       auto_unroll_enabled=auto_unroll_enabled,
@@ -237,24 +245,26 @@ class RunnerContext:
     return self.config.numberofbanks * self.config.banksize
 
 
-def build_context(csource, function, config_path, runmode):
+def build_context(csource, function, config_path, runmode, run_tag=""):
   config = RunnerConfig.from_yaml(config_path)
   appfolder, csourcefile = csource.rsplit("/", 1)
 
   morpher_home = os.getcwd()
   dfg_gen_home = morpher_home + "/Morpher_DFG_Generator"
   mapper_home = morpher_home + "/Morpher_CGRA_Mapper"
-  simulator_home = morpher_home + "/hycube_simulator"
+  simulator_home = morpher_home + "/simulator/hycube_simulator"
 
-  run_tag = _sanitize_run_tag(os.getenv("MORPHER_RUN_TAG", ""))
-  output_appfolder = _tagged_appfolder(appfolder, run_tag)
+  run_tag = _sanitize_run_tag(run_tag)
+  if not run_tag:
+    run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-  dfg_gen_kernel = dfg_gen_home + "/benchmarks/" + output_appfolder + "/"
-  mapper_kernel = mapper_home + "/benchmarks/" + config.mapper_subfolder + "/" + output_appfolder + "/"
-  simulator_kernel = simulator_home + "/benchmarks/" + output_appfolder + "/"
+  run_root = os.path.join(morpher_home, "workspace", "morpher_runs", run_tag)
+  dfg_gen_kernel = os.path.join(run_root, "dfg", appfolder) + "/"
+  mapper_kernel = os.path.join(run_root, "mapper", config.mapper_subfolder, appfolder) + "/"
+  simulator_kernel = os.path.join(run_root, "simulator", appfolder) + "/"
   mem_trace = dfg_gen_kernel + "memtraces"
 
-  if run_tag and runmode in ("runall", "dfg_gen_only", "runall_artifact_sim"):
+  if runmode in ("runall", "dfg_gen_only", "runall_artifact_sim"):
     source_dir = dfg_gen_home + "/benchmarks/" + appfolder
     if os.path.isdir(source_dir):
       _prepare_tagged_dfg_kernel(source_dir, dfg_gen_kernel.rstrip("/"))
@@ -289,14 +299,6 @@ def _sanitize_run_tag(run_tag):
   if not run_tag:
     return ""
   return re.sub(r"[^A-Za-z0-9._-]+", "_", run_tag)
-
-
-def _tagged_appfolder(appfolder, run_tag):
-  if not run_tag:
-    return appfolder
-  parent, leaf = os.path.split(appfolder.rstrip("/"))
-  tagged_leaf = "%s__run_%s" % (leaf, run_tag)
-  return os.path.join(parent, tagged_leaf) if parent else tagged_leaf
 
 
 def _prepare_tagged_dfg_kernel(source_dir, tagged_dir):
