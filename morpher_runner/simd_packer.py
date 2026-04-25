@@ -650,6 +650,71 @@ def pack_simd_xml(
   )
 
 
+def prune_iter_control_xml(
+  input_xml: str,
+  output_xml: str,
+) -> "tuple[int, dict[int, int]]":
+  """Apply iter-control pruning to a scalar (non-SIMD) DFG XML.
+
+  Returns (n_pruned, reindex) where reindex maps old node idx to new node idx.
+  Callers should pass reindex to reindex_addr_trace so the simulator can match
+  external addresses to the correct post-pruning node indices.
+  """
+  input_path = Path(input_xml)
+  output_path = Path(output_xml)
+  root = _read_wrapped_xml(input_path)
+  dfg = root.find("DFG")
+  if dfg is None:
+    raise RuntimeError("DFG XML missing <DFG> element: %s" % input_path)
+  nodes = list(dfg.findall("Node"))
+  pruned = _prunable_external_control_nodes(nodes, {}, set())
+  remaining = [n for n in nodes if _node_idx(n) not in pruned]
+  reindex = {_node_idx(n): idx for idx, n in enumerate(remaining)}
+  for node in nodes:
+    dfg.remove(node)
+  for node in remaining:
+    old_idx = _node_idx(node)
+    node.set("idx", str(reindex[old_idx]))
+    _rewrite_refs(node, old_idx, "Inputs", "Input", {}, reindex)
+    _rewrite_refs(node, old_idx, "Outputs", "Output", {}, reindex)
+    _rewrite_refs(node, old_idx, "RecParents", "RecParent", {}, reindex)
+    dfg.append(node)
+  dfg.set("count", str(len(remaining)))
+  _write_unwrapped_xml(root, output_path)
+  return len(pruned), reindex
+
+
+def reindex_addr_trace(
+  input_path: "str | Path",
+  output_path: "str | Path",
+  reindex: "dict[int, int]",
+) -> None:
+  """Rewrite an addr_trace to use post-pruning node indices.
+
+  The instrumented binary records addresses with pre-pruning DFG node indices.
+  After iter-control pruning the indices change; this remaps them so the
+  artifact simulator can match external addresses to the correct nodes.
+  Entries for pruned nodes (not in reindex) are dropped.
+  """
+  lines_out = ["node_idx,access_idx,addr,size,is_store,base\n"]
+  access_idx = 0
+  with open(input_path, encoding="utf-8") as f:
+    for line in f:
+      line = line.rstrip("\n")
+      if not line or line.startswith("node_idx"):
+        continue
+      parts = line.split(",")
+      if len(parts) < 6:
+        continue
+      old_idx = int(parts[0])
+      new_idx = reindex.get(old_idx)
+      if new_idx is None:
+        continue
+      lines_out.append("%d,%d,%s\n" % (new_idx, access_idx, ",".join(parts[2:])))
+      access_idx += 1
+  Path(output_path).write_text("".join(lines_out), encoding="utf-8")
+
+
 def filter_trace_vars(
   input_path: "str | Path",
   output_path: "str | Path",

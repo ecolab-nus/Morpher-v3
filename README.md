@@ -149,8 +149,8 @@ Default config: `config/default.yaml`. Several preset configs are provided:
 | `mapping_method` | Mapper strategy selection |
 | `proximity_sort` | Sort candidate PE placements by Manhattan distance to parent centroid (reduces routing pressure) |
 | `node_pin` | Force a specific DFG node to a PE: `idx:X:Y` — useful for debugging placement |
-| `remove_agi` | Remove address-generation (GEP/iterator) nodes from the DFG; assumes a scalar core handles loop addressing externally |
-| `remove_iter` | Remove loop-control and PHI-merge nodes from a SIMD-packed DFG, keeping only the core data kernel; requires `simd.enabled: true` |
+| `remove_agi` | Remove address-generation (GEP/iterator) nodes from the DFG; assumes existence of AGU |
+| `remove_iter` | Remove loop-control and PHI-merge nodes; assumes existence of external iteration control HW|
 
 ### Auto-unroll (`auto_unroll.*`)
 

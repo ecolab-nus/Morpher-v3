@@ -8,8 +8,10 @@ from morpher_runner.exec import run_command
 from morpher_runner.exec import run_commands
 from morpher_runner.fs_ops import copy_file
 from morpher_runner.fs_ops import remove_glob
-from morpher_runner.simd_packer import pack_simd_xml
 from morpher_runner.simd_packer import filter_trace_vars
+from morpher_runner.simd_packer import pack_simd_xml
+from morpher_runner.simd_packer import prune_iter_control_xml
+from morpher_runner.simd_packer import reindex_addr_trace
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
@@ -271,6 +273,12 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
   mapper_xml = dfg_xml
   simd_mapping = None
+  scalar_iter_reindex: "dict[int, int]" = {}
+  if config.remove_iter and not config.simd_enabled:
+    pruned_xml = "%s/%s_noiter_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
+    n, scalar_iter_reindex = prune_iter_control_xml(dfg_xml, pruned_xml)
+    print("Iter-control prune (scalar): removed %d nodes\n" % n)
+    mapper_xml = pruned_xml
   if config.simd_enabled:
     simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
       dfg_kernel.rstrip("/"),
@@ -312,6 +320,7 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
     remove_glob(dfg_kernel, "*.ll")
     return
 
+
   print("\nCode instrumentation..\n")
   run_commands(build_instrumentation_commands(context))
 
@@ -348,6 +357,11 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
       print("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
 
+  if scalar_iter_reindex:
+    import glob as _glob
+    addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
+    for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
+      reindex_addr_trace(addr_trace_path, addr_trace_path, scalar_iter_reindex)
   if simd_mapping is not None:
     import glob as _glob
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
