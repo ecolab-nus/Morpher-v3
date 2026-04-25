@@ -262,10 +262,18 @@ To include it in a regression suite, add an entry under the relevant suite in `s
 
 ## Mapper Regression Suites
 
-Run the 4×4 regression suite (used for pre-commit checks):
+Run the default 4×4 regression suite (used for pre-commit checks):
 
 ```bash
 python3 scripts/run_regression_benchmarks.py --suite ci_4x4
+```
+
+Run the focused 4×4 configuration suites:
+
+```bash
+python3 scripts/run_regression_benchmarks.py --suite ci_4x4_scalar_agi
+python3 scripts/run_regression_benchmarks.py --suite ci_4x4_simd4_noiter
+python3 scripts/run_regression_benchmarks.py --suite ci_4x4_gemm_simd4_unroll
 ```
 
 Run the 8×8 suite (slower; not part of default CI):
@@ -274,7 +282,7 @@ Run the 8×8 suite (slower; not part of default CI):
 python3 scripts/run_regression_benchmarks.py --suite ci_8x8
 ```
 
-Suite definitions and per-benchmark maximum II bounds live in `scripts/regression_benchmarks.yaml`. The runner fails if any benchmark exceeds its `max_ii` bound.
+Suite definitions, per-suite configs, and per-benchmark maximum II bounds live in `scripts/regression_benchmarks.yaml`. Regression outputs are written under `generated/morpher_runs/regression/<suite>/`. The runner fails if any benchmark exceeds its `max_ii` bound.
 
 ## Maintenance
 

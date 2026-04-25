@@ -1,27 +1,54 @@
 suites:
   ci_4x4:
-    description: Small diverse 4x4 mapper regression suite for CI and pre-commit checks.
-    config: config/default_config.yaml
+    description: Minimal default 4x4 mapper regression suite for CI and pre-commit checks.
+    config: config/default.yaml
     runmode: runall
-    jobs: 8
+    jobs: 4
     timeout_sec: 360
     benchmarks:
-      # Microbench convolution: compact local dataflow and routing pressure.
-      - benchmark: cgrame_microbench/conv2/conv2.c
-        function: conv2
-        max_ii: 4
       # Conditional/control benchmark: exercises mutex basic-block handling.
       - benchmark: morpher_benchmarks/array_cond/array_cond.c
         function: array_cond
         max_ii: 4
-      # Streaming/OpenCGRA benchmark: catches common memory/routing regressions.
-      - benchmark: opencgra_benchmarks/fir/fir.c
-        function: fir
+
+  ci_4x4_scalar_agi:
+    description: 4x4 scalar regression suite that preserves AGI and iterator structure.
+    config: config/scalar.yaml
+    runmode: runall
+    jobs: 4
+    timeout_sec: 360
+    benchmarks:
+      # Control-heavy Morpher kernel in scalar mode with AGI preserved.
+      - benchmark: morpher_benchmarks/array_cond/array_cond.c
+        function: array_cond
         max_ii: 4
-      # Unrolled PolyBench kernel: non-trivial dependency/routing pattern.
-      - benchmark: polybench/bicg_unroll/bicg_unroll.c
-        function: bicg_unroll
-        max_ii: 5
+      # MachSuite stencil exercises address generation without SIMD packing.
+      - benchmark: machsuite/stencil2d/stencil2d.c
+        function: stencil2d
+        max_ii: 8
+
+  ci_4x4_simd4_noiter:
+    description: 4x4 SIMD-4 regression suite with iterator pruning enabled.
+    config: config/simd4_noiter.yaml
+    runmode: runall
+    jobs: 4
+    timeout_sec: 360
+    benchmarks:
+      # Compact convolution is a good SIMD/no-iter smoke test.
+      - benchmark: cgrame_microbench/conv2/conv2.c
+        function: conv2
+        max_ii: 4
+
+  ci_4x4_gemm_simd4_unroll:
+    description: 4x4 GEMM regression with SIMD-4, auto-unroll, AGI removal, and iterator pruning.
+    config: config/regression_gemm_simd4_unroll.yaml
+    runmode: runall
+    jobs: 1
+    timeout_sec: 360
+    benchmarks:
+      - benchmark: polybench/gemm/gemm.c
+        function: gemm
+        max_ii: 8
 
   ci_8x8:
     description: Minimal 8x8 mapper regression suite; kept small because 8x8 runs are slower.

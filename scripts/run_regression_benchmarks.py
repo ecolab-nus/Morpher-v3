@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -210,7 +211,7 @@ def main() -> int:
     suite = load_suite(manifest_path, args.suite)
     expectations = parse_expectations(suite)
 
-    config = suite_value(args, suite, "config", "config/default_config.yaml")
+    config = suite_value(args, suite, "config", "config/default.yaml")
     runmode = suite_value(args, suite, "runmode", "runall")
     jobs = int(suite_value(args, suite, "jobs", 1))
     timeout_sec = int(suite_value(args, suite, "timeout_sec", 0))
@@ -223,7 +224,14 @@ def main() -> int:
         print(f"  {item.benchmark} :: max_ii={item.max_ii}")
     sys.stdout.flush()
 
-    output_dir = args.output_dir or Path("regression_artifacts") / args.suite
+    output_dir = args.output_dir or Path("generated") / "morpher_runs" / "regression" / args.suite
+    resolved_output_dir = output_dir if output_dir.is_absolute() else repo_root / output_dir
+    if not args.dry_run:
+        shutil.rmtree(resolved_output_dir / "logs", ignore_errors=True)
+        try:
+            (resolved_output_dir / "results.csv").unlink()
+        except FileNotFoundError:
+            pass
 
     cmd, output_csv = run_all_command(
         repo_root=repo_root,
