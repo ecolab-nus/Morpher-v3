@@ -58,9 +58,8 @@ ensure_placeholder() {
 
 clean_dfg_benchmarks
 clean_generated_benchmarks "$ROOT_DIR/Morpher_CGRA_Mapper/benchmarks"
-clean_generated_benchmarks "$ROOT_DIR/hycube_simulator/benchmarks"
+run_rm_rf "$ROOT_DIR/workspace/morpher_runs"
 
 ensure_placeholder "$ROOT_DIR/Morpher_CGRA_Mapper/benchmarks/.gitkeep"
-ensure_placeholder "$ROOT_DIR/hycube_simulator/benchmarks/.gitkeep"
 
 echo "Cleanup complete."

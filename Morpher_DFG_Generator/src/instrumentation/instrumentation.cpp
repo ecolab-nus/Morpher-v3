@@ -102,6 +102,17 @@ typedef struct{
 
 static std::map<std::string,AddrDataTupleMorpher> data_morpher;
 
+struct MemAccessTuple {
+	uint32_t nodeIdx;
+	uint32_t address;
+	uint32_t size;
+	uint8_t isStore;
+	std::string baseName;
+	std::vector<uint8_t> bytes;
+};
+
+static std::map<std::string,std::vector<MemAccessTuple>> mem_access_trace;
+
 static void initMaxTraceFilesFromEnv(){
 	if(maxTraceFilesInitialized){
 		return;
@@ -276,11 +287,42 @@ void PrintDataMorpher(std::string ln){
 	}
 }
 
+void PrintMemAccessTrace(std::string ln){
+	std::stringstream ss;
+	ss << "memtraces/"  << ln  << "_addr_trace_" << loopRunIdx[ln] << ".txt";
+	FILE *addrFile = fopen(ss.str().c_str(), "w");
+	assert(addrFile);
+	auto &trace = mem_access_trace[ln];
+	fprintf(addrFile, "node_idx,access_idx,addr,size,is_store,base");
+	uint32_t maxSize = 0;
+	for (const MemAccessTuple &entry : trace) {
+		if (entry.size > maxSize) {
+			maxSize = entry.size;
+		}
+	}
+	for (uint32_t byteIdx = 0; byteIdx < maxSize; byteIdx++) {
+		fprintf(addrFile, ",byte%u", byteIdx);
+	}
+	fprintf(addrFile, "\n");
+	for (uint32_t i = 0; i < trace.size(); i++){
+		const MemAccessTuple &entry = trace[i];
+		fprintf(addrFile, "%u,%u,%u,%u,%u,%s",
+				entry.nodeIdx, i, entry.address, entry.size,
+				entry.isStore, entry.baseName.c_str());
+		for (uint8_t byte : entry.bytes) {
+			fprintf(addrFile, ",%u", byte);
+		}
+		fprintf(addrFile, "\n");
+	}
+	fclose(addrFile);
+}
+
 
 void loopStart(const char* loopName){
 	std::string ln(loopName);
 	std::stringstream ss;
 	data_morpher.clear();
+	mem_access_trace[ln].clear();
 	initMaxTraceFilesFromEnv();
 
 	if(loopRunIdx.find(ln)==loopRunIdx.end()){
@@ -299,6 +341,7 @@ void loopStart(const char* loopName){
 void loopEnd(const char* loopName){
 	std::string ln(loopName);
 	PrintDataMorpher(ln);
+	PrintMemAccessTrace(ln);
 	fclose(currentFiles[ln]);
 	loopRunIdx[ln]++;
 	//cout << ln <<"------------LOOP END----------------\n";
@@ -717,6 +760,27 @@ void LiveInReportPtrTypeUsage(const char* varname, const char* varbaseaddr, uint
 	}
 }
 
+void MemAccessReport(const char* loopName, uint32_t nodeIdx, const char* baseName,
+		const char* varbaseaddr, uint8_t* actual_ptr, uint8_t* array_base,
+		uint32_t size, uint8_t isStore){
+	std::string loopNameStr(loopName);
+	std::string baseNameStr(baseName);
+	std::string varbaseaddrStr(varbaseaddr);
+	uint32_t spmBase = static_cast<uint32_t>(std::stoul(varbaseaddrStr));
+	uint32_t byteOffset = (uint32_t)(actual_ptr - array_base);
+	MemAccessTuple entry;
+	entry.nodeIdx = nodeIdx;
+	entry.address = spmBase + byteOffset;
+	entry.size = size;
+	entry.isStore = isStore;
+	entry.baseName = baseNameStr;
+	uint8_t *bytePtr = actual_ptr;
+	for (uint32_t i = 0; i < size; i++){
+		entry.bytes.push_back(bytePtr[i]);
+	}
+	mem_access_trace[loopNameStr].push_back(entry);
+}
+
 void LiveInReport2(const char* varname, uint32_t* value, uint32_t size){
 	std::string varname_str(varname);
 
@@ -759,10 +823,6 @@ void LiveOutReportIntermediateVar(const char* varname, uint32_t value){
 //		data_morpher[varname_str].post_data[i] = value_ptr[i];
 	}
 }
-
-
-
-
 
 
 

@@ -12,15 +12,15 @@ int syr2k_unroll() {
     int n = *N;
 
     int sum = 0;
-    for (k = 1; k< n-1; k++) {
-               #ifdef CGRA_COMPILER
+    for (k = 1; k+1 < n-1; k+=2) {
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
-       C[i][j] += alpha * A[i][k] * B[j][k];
-	  C[i][j] += alpha * B[i][k] * A[j][k];
+        #endif
+        C[i][j] += alpha * A[i][k] * B[j][k];
+        C[i][j] += alpha * B[i][k] * A[j][k];
 
-      C[i][j] += alpha * A[i][k+1] * B[j][k+1];
-	  C[i][j] += alpha * B[i][k+1] * A[j][k+1];
+        C[i][j] += alpha * A[i][k+1] * B[j][k+1];
+        C[i][j] += alpha * B[i][k+1] * A[j][k+1];
     }
 
     return sum;

@@ -15,6 +15,7 @@ import concurrent.futures
 import csv
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -43,6 +44,9 @@ class RunResult:
     timeout: bool
     elapsed_sec: float
     log_file: Path
+    run_tag: str
+    failure_stage: str
+    failure_reason: str
     achieved_ii: int | None
     ii_source: str | None
     mapping_file: Path | None
@@ -80,6 +84,30 @@ _SIM_RESULT_RE = re.compile(
 )
 _MAP_SUCCESS_II_RE = re.compile(r"Map Success with II =\s*(\d+)")
 _II_IN_FILENAME_RE = re.compile(r"_II=(\d+)")
+_ERROR_LINE_RE = re.compile(
+    r"(Error:|error:|RuntimeError:|FileNotFoundError:|CalledProcessError|"
+    r"Assertion|Traceback|Segmentation fault|Aborted|\[TIMEOUT\])"
+)
+
+
+STAGE_MARKERS: list[tuple[str, str]] = [
+    ("artifact_simulator", "-----Running Morpher artifact_simulator ("),
+    ("simulator", "[sim "),
+    ("mapper", "[2/2] Run mapper"),
+    ("mapper", "[1/1] Run mapper"),
+    ("mapper_mem_alloc", "[1/2] Update memory allocation"),
+    ("mapper_mem_alloc", "Updating memory allocation.."),
+    ("mapper_setup", "-----Running Morpher_CGRA_Mapper-----"),
+    ("trace_gen", "Running instrumented code to generate"),
+    ("instrumentation", "Code instrumentation.."),
+    ("simd_pack", "SIMD pack:"),
+    ("dfg_dot_render", "_PartPredDFG.pdf"),
+    ("dfg_gen", "Generating DFG ("),
+    ("unroll", "Unrolling annotated loop for DFG candidate.."),
+    ("ir_opt", "Optimizing IR.."),
+    ("ir_gen", "Generating IR.."),
+    ("dfg_setup", "-----Running Morpher_DFG_Generator-----"),
+]
 
 
 def parse_matches_mismatches(log_text: str) -> tuple[int | None, int | None]:
@@ -98,6 +126,78 @@ def parse_ii_from_log(log_text: str) -> int | None:
     if not last_match:
         return None
     return int(last_match.group(1))
+
+
+def infer_last_stage(log_text: str) -> str:
+    last_stage = "setup"
+    for line in log_text.splitlines():
+        for stage, marker in STAGE_MARKERS:
+            if marker in line:
+                last_stage = stage
+    return last_stage
+
+
+def infer_failure_stage(log_text: str, timed_out: bool, return_code: int | None) -> str:
+    if not timed_out and return_code == 0:
+        return ""
+
+    if "DFG generation step finished without required output files" in log_text:
+        return "dfg_gen"
+    if "DFG generation does not support this kernel's array dimensionality" in log_text:
+        return "dfg_gen"
+    if "DFG generation failed during SPM bank allocation" in log_text:
+        return "dfg_gen"
+    if "DFG XML missing <DFG> element" in log_text:
+        return "simd_pack"
+    if "_PartPredDFG.dot: syntax error" in log_text:
+        return "dfg_dot_render"
+    if "morpher-loop-unroll" in log_text and "returned non-zero exit" in log_text:
+        return "unroll"
+    if "opt:" in log_text and "_uf" in log_text and "_opt.ll: error: Could not open input file" in log_text:
+        return "dfg_gen"
+    if "No CGRA config binaries found" in log_text:
+        return "simulator_setup"
+    if "No trace files found" in log_text:
+        return "simulator_setup"
+    return infer_last_stage(log_text)
+
+
+def infer_failure_reason(log_text: str, timed_out: bool, return_code: int | None) -> str:
+    if not timed_out and return_code == 0:
+        return ""
+    if timed_out:
+        return "command exceeded timeout"
+
+    preferred_messages = [
+        "Error: DFG generation does not support this kernel's array dimensionality.",
+        "Error: DFG generation failed during SPM bank allocation.",
+        "DFG generation step finished without required output files",
+        "DFG XML missing <DFG> element",
+        "_PartPredDFG.dot: syntax error",
+        "No CGRA config binaries found",
+        "No trace files found",
+    ]
+    for message in preferred_messages:
+        if message in log_text:
+            if "\n" not in message:
+                for line in log_text.splitlines():
+                    if message in line:
+                        return line.strip()[:300]
+            return message[:300]
+
+    interesting = []
+    for line in log_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _ERROR_LINE_RE.search(stripped):
+            interesting.append(stripped)
+
+    if interesting:
+        return interesting[-1][:300]
+
+    lines = [line.strip() for line in log_text.splitlines() if line.strip()]
+    return lines[-1][:300] if lines else "no log output"
 
 
 def newest_ii_from_bins(bin_files: list[Path], start_time: float) -> int | None:
@@ -196,13 +296,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default="config/default_config.yaml",
+        default="config/default.yaml",
         help="Config path relative to --repo-root.",
     )
     parser.add_argument(
         "--runmode",
         default="runall",
-        choices=["runall", "dfg_gen_only", "mapper_only", "sim_only"],
+        choices=["runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"],
         help="Run mode passed to run_morpher.py.",
     )
     parser.add_argument(
@@ -253,12 +353,34 @@ def sanitize_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "__", text)
 
 
+def tagged_appfolder(appfolder: str, run_tag: str) -> str:
+    # Legacy helper retained for older reports; new tagged runs live under
+    # workspace/morpher_runs/<tag>/ instead of source benchmark trees.
+    if not run_tag:
+        return appfolder
+    path = Path(appfolder)
+    return (path.parent / f"{path.name}__run_{run_tag}").as_posix()
+
+
+def workspace_run_dirs(repo_root: Path, run_tag: str, appfolder: str, mapper_subfolder: str) -> tuple[Path, Path, Path]:
+    run_root = repo_root / "workspace" / "morpher_runs" / run_tag
+    return (
+        run_root / "dfg" / appfolder,
+        run_root / "mapper" / mapper_subfolder / appfolder,
+        run_root / "simulator" / appfolder,
+    )
+
+
 def discover_all_benchmarks(repo_root: Path) -> list[BenchmarkSpec]:
     bench_root = repo_root / BMARK_ROOT
     if not bench_root.exists():
         raise FileNotFoundError(f"Benchmark root not found: {bench_root}")
 
-    all_c_files = sorted(bench_root.rglob("*.c"))
+    all_c_files = sorted(
+        path
+        for path in bench_root.rglob("*.c")
+        if "__run_" not in path.relative_to(bench_root).as_posix()
+    )
     invalid_layout: list[str] = []
     normalized: list[BenchmarkSpec] = []
     seen_rel: set[str] = set()
@@ -335,6 +457,8 @@ def run_one(
     mapper_subfolder: str,
 ) -> RunResult:
     safe = sanitize_name(spec.rel_source)
+    source_stem = safe[:-2] if safe.endswith(".c") else safe
+    run_tag = f"{idx:03d}_{source_stem}"
     log_file = log_dir / f"{idx:03d}_{safe}.log"
 
     cmd = [
@@ -345,16 +469,22 @@ def run_one(
         spec.function,
         config_rel,
         runmode,
+        "--run-tag",
+        run_tag,
     ]
     start = time.time()
     rc = None
     timed_out = False
 
     appfolder = str(Path(spec.rel_source).parent).replace("\\", "/")
-    mapper_kernel_dir = (
-        repo_root / "Morpher_CGRA_Mapper" / "benchmarks" / mapper_subfolder / appfolder
+    dfg_kernel_dir, mapper_kernel_dir, sim_kernel_dir = workspace_run_dirs(
+        repo_root, run_tag, appfolder, mapper_subfolder
     )
-    sim_kernel_dir = repo_root / "hycube_simulator" / "benchmarks" / appfolder
+    for work_dir in (dfg_kernel_dir, mapper_kernel_dir, sim_kernel_dir):
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+
+    env = os.environ.copy()
 
     try:
         with log_file.open("w", encoding="utf-8") as log:
@@ -366,6 +496,7 @@ def run_one(
                 text=True,
                 timeout=(None if timeout_sec <= 0 else timeout_sec),
                 check=False,
+                env=env,
             )
         rc = completed.returncode
     except subprocess.TimeoutExpired as exc:
@@ -379,6 +510,8 @@ def run_one(
 
     log_text = log_file.read_text(encoding="utf-8", errors="ignore")
     matches, mismatches = parse_matches_mismatches(log_text)
+    failure_stage = infer_failure_stage(log_text, timed_out, rc)
+    failure_reason = infer_failure_reason(log_text, timed_out, rc)
     mapper_bins = list(mapper_kernel_dir.glob("*.bin")) if mapper_kernel_dir.exists() else []
     sim_bins = list(sim_kernel_dir.glob("*.bin")) if sim_kernel_dir.exists() else []
     mapping_files = (
@@ -424,6 +557,9 @@ def run_one(
         timeout=timed_out,
         elapsed_sec=elapsed,
         log_file=log_file,
+        run_tag=run_tag,
+        failure_stage=failure_stage,
+        failure_reason=failure_reason,
         achieved_ii=achieved_ii,
         ii_source=ii_source,
         mapping_file=mapping_file,
@@ -447,6 +583,9 @@ def write_csv(results: list[RunResult], out_csv: Path) -> None:
         "timeout",
         "elapsed_sec",
         "log_file",
+        "run_tag",
+        "failure_stage",
+        "failure_reason",
         "mapping_file",
         "result_file",
     ]
@@ -467,6 +606,9 @@ def write_csv(results: list[RunResult], out_csv: Path) -> None:
                     "timeout": r.timeout,
                     "elapsed_sec": r.elapsed_sec,
                     "log_file": str(r.log_file),
+                    "run_tag": r.run_tag,
+                    "failure_stage": r.failure_stage,
+                    "failure_reason": r.failure_reason,
                     "mapping_file": (str(r.mapping_file) if r.mapping_file else ""),
                     "result_file": (str(r.result_file) if r.result_file else ""),
                 }
@@ -528,6 +670,7 @@ def main() -> int:
             print(
                 f"[{result.idx}/{result.total}] {result.rel_source} :: "
                 f"{result.status} rc={result.return_code} "
+                f"stage={result.failure_stage or '-'} "
                 f"ii={result.achieved_ii} ii_src={result.ii_source} "
                 f"mismatches={result.mismatches} map={mapping_name} "
                 f"elapsed={result.elapsed_sec}s"
@@ -538,10 +681,20 @@ def main() -> int:
     results = [result for _, result in indexed_results]
     failed = sum(1 for r in results if r.status != "ok")
     write_csv(results, output_csv)
+    stage_counts = {}
+    for result in results:
+        if result.status == "ok":
+            continue
+        stage = result.failure_stage or "unknown"
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
 
     print("\nSummary:")
     print(f"  total benchmarks: {len(results)}")
     print(f"  failed benchmarks: {failed}")
+    if stage_counts:
+        print("  failures by stage:")
+        for stage, count in sorted(stage_counts.items()):
+            print(f"    {stage}: {count}")
     print(f"  csv: {output_csv}")
     print(f"  logs: {log_dir}")
     return 0 if failed == 0 else 1

@@ -24,18 +24,18 @@ int bicg_unroll() {
     for (i = 0; i < n; i++) {
         int qi = 0;
         for (j = 0; j + 1 < m; j += 2) {
-                   #ifdef CGRA_COMPILER
+            #ifdef CGRA_COMPILER
                please_map_me();
-               #endif
+            #endif
             s[j] = s[j] + r[i] * A[i][j];
-	      qi = qi + A[i][j] * p[j];
+            qi = qi + A[i][j] * p[j];
 
             s[j + 1] = s[j + 1] + r[i] * A[i][j + 1];
-	      qi = qi + A[i][j + 1] * p[j + 1];
+            qi = qi + A[i][j + 1] * p[j + 1];
         }
         for (; j < m; j++) {
             s[j] = s[j] + r[i] * A[i][j];
-	      qi = qi + A[i][j] * p[j];
+            qi = qi + A[i][j] * p[j];
         }
         q[i] = qi;
     }

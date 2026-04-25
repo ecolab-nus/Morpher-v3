@@ -2861,6 +2861,10 @@ struct dfggenPass : public FunctionPass
 				 * the ADD must use two register inputs (constValid=false).
 				 * Clear GEPbaseAddr for those nodes so the mapper emits constValid=0. */
 				LoopDFG->clearGEPbaseAddrForOLOADnodes();
+				if (LoopDFG->removeAGI) {
+					LoopDFG->removeAGINodes();
+					LoopDFG->removeAGI = false;
+				}
 				LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][InstrumentInOutVars begin]\n");
 				LoopDFG->InstrumentInOutVars(F,mem_acceses,OLNodesWithPtrTyUsage,spm_base_address);
 				LLVM_DEBUG(dbgs() << "[Skeleton.cpp][InstrumentInOutVars end]\n\n");

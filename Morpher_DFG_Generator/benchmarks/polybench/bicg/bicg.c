@@ -53,5 +53,30 @@ int bicg() {
 }
 
 int main() {
-    return bicg();
+    int n_val = 8;
+    volatile int N_storage = n_val;
+    static int A_flat[64];
+    static volatile int *A_rows[8];
+    static volatile int p_data[8];
+    static volatile int r_data[8];
+    static volatile int s_data[8];
+    static volatile int q_data[8];
+    N = &N_storage;
+
+    for (int ii = 0; ii < n_val; ii++) {
+        A_rows[ii] = (volatile int *)(A_flat + ii * n_val);
+        p_data[ii] = ii + 1;
+        r_data[ii] = ii + 2;
+        for (int jj = 0; jj < n_val; jj++) {
+            A_rows[ii][jj] = ii + jj + 1;
+        }
+    }
+    A = A_rows;
+    p = p_data;
+    r = r_data;
+    s = s_data;
+    q = q_data;
+
+    int result = bicg();
+    return result;
 }

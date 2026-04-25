@@ -95,6 +95,8 @@ class dfgNode{
 
 			//served phi index
 			std::string array_base_pointer = "NOT_A_MEM_OP";
+			int simdGroup = -1;
+			int simdLanes = 1;
 
 
 
@@ -276,6 +278,12 @@ class dfgNode{
 				array_base_pointer = abp;
 			}
 			std::string getArrBasePtr(){return array_base_pointer;}
+			int getSimdGroup(){return simdGroup;}
+			int getSimdLanes(){return simdLanes;}
+			void setSimdInfo(int group, int lanes){
+				simdGroup = group;
+				simdLanes = lanes;
+			}
 
 };
 

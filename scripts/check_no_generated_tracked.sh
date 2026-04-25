@@ -29,7 +29,9 @@ tracked_with_prefix() {
 
 dfg_repo="$ROOT_DIR/Morpher_DFG_Generator"
 mapper_repo="$ROOT_DIR/Morpher_CGRA_Mapper"
-sim_repo="$ROOT_DIR/hycube_simulator"
+
+root_generated="$(git -C "$ROOT_DIR" ls-files 'workspace/*' 2>/dev/null || true)"
+print_violation "Root repo tracks run artifacts under workspace/." "$root_generated"
 
 if [[ -d "$dfg_repo/.git" ]]; then
   dfg_non_c="$(tracked_with_prefix "$dfg_repo" 'benchmarks/' | grep -Ev '\.c$' || true)"
@@ -48,18 +50,6 @@ if [[ -d "$mapper_repo/.git" ]]; then
   )"
   print_violation "Mapper tracks benchmark artifacts (only benchmarks/.gitkeep allowed)." "$mapper_bench"
   print_violation "Mapper tracks build outputs under build/ or src/build/." "$mapper_build"
-fi
-
-if [[ -d "$sim_repo/.git" ]]; then
-  sim_bench="$(tracked_with_prefix "$sim_repo" 'benchmarks/' | grep -Ev '^benchmarks/\.gitkeep$' || true)"
-  sim_build="$(
-    {
-      tracked_with_prefix "$sim_repo" 'build/'
-      tracked_with_prefix "$sim_repo" 'src/build/'
-    } | sed '/^$/d' || true
-  )"
-  print_violation "Simulator tracks benchmark artifacts (only benchmarks/.gitkeep allowed)." "$sim_bench"
-  print_violation "Simulator tracks build outputs under build/ or src/build/." "$sim_build"
 fi
 
 if [[ "$FAIL" -ne 0 ]]; then

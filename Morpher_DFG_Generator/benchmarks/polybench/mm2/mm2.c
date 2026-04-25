@@ -19,9 +19,9 @@ int mm2() {
 
  
     for (k = 1; k < n-1; ++k){
-                   #ifdef CGRA_COMPILER
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
         sum += alpha * A[i][k] * B[k][j];
 
         sum += A[i][k];

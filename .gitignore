@@ -2,16 +2,6 @@ bench_compare_artifacts/
 scripts/compare_v2_v3_benchmarks.py
 scripts/run_v3_benchmarks.py
 bot.md
-# Python cache/bytecode
 __pycache__/
 *.py[cod]
-bot.md
-
-# Local benchmark/run outputs
-/benchmark_run_logs/
-/benchmark_baseline_logs/
-/benchmark_run_results.csv
-/benchmark_cs*.csv
-/result.txt
-/.codex
-/regression_artifacts/
+workspace/

@@ -12,10 +12,10 @@ int atax_unroll() {
     int n = *N;
 
     int sum = 0;
-    for (j = 1; j < n-1; j++) {
-               #ifdef CGRA_COMPILER
+    for (j = 1; j+1 < n-1; j+=2) {
+        #ifdef CGRA_COMPILER
            please_map_me();
-           #endif
+        #endif
         y[j] = y[j] + A[i][j] * tmp[i];
         y[j+1] = y[j+1] + A[i][j+1] * tmp[i];
     }

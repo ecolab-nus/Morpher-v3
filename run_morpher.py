@@ -1,16 +1,19 @@
 #!/usr/bin/env python
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 
 from morpher_runner.context import build_context
+from morpher_runner.artifact_simulator import run_artifact_simulator
 from morpher_runner.dfg_generator import run_dfg_generator
 from morpher_runner.mapper import run_mapper
-from morpher_runner.simulator import run_simulator
 
-DEFAULT_CONFIG_PATH = "config/default_config.yaml"
-RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only"}
+DEFAULT_CONFIG_PATH = "config/default.yaml"
+RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"}
+_RESULT_LINE_II_RE = re.compile(r"method:\S+\s+(\d+)\s+status:(success|failed)\s+\d+\s*$")
 
 
 def _derive_kernel_from_xml(xml_path):
@@ -29,7 +32,10 @@ def _usage():
     "Usage:\n"
     "  python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runmode]\n"
     "  python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]\n\n"
-    "Run modes: runall, dfg_gen_only, mapper_only, sim_only\n"
+    "Options:\n"
+    "  --run-tag <tag>    Write DFG/mapper/simulator artifacts under tagged output directories.\n"
+    "  --mem-alloc <path> Mem-alloc file for XML input mode.\n\n"
+    "Run modes: runall, dfg_gen_only, mapper_only, sim_only, artifact_sim_only, runall_artifact_sim\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
   )
@@ -38,10 +44,17 @@ def _usage():
 def _parse_cli(argv):
   positional = []
   mem_alloc_path = None
+  run_tag = ""
 
   i = 0
   while i < len(argv):
     token = argv[i]
+    if token == "--run-tag":
+      if i + 1 >= len(argv):
+        raise RuntimeError("Missing value for --run-tag.\n\n%s" % _usage())
+      run_tag = argv[i + 1]
+      i += 2
+      continue
     if token == "--mem-alloc":
       if i + 1 >= len(argv):
         raise RuntimeError("Missing value for --mem-alloc.\n\n%s" % _usage())
@@ -68,13 +81,13 @@ def _parse_cli(argv):
     config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
     runmode = positional[3] if len(positional) >= 4 else "mapper_only"
 
-    if runmode not in ("mapper_only", "runall"):
+    if runmode not in ("mapper_only", "runall", "artifact_sim_only"):
       raise RuntimeError(
-        "XML mode supports runmode 'mapper_only' or 'runall' (got: %s)." % runmode
+        "XML mode supports runmode 'mapper_only', 'runall', or 'artifact_sim_only' (got: %s)." % runmode
       )
 
     csource = "xml_inputs/%s/%s.c" % (function, function)
-    return csource, function, config, runmode, xml_path, mem_alloc_path
+    return csource, function, config, runmode, xml_path, mem_alloc_path, run_tag
 
   if len(positional) < 2 or len(positional) > 4:
     raise RuntimeError("Invalid arguments.\n\n%s" % _usage())
@@ -85,7 +98,7 @@ def _parse_cli(argv):
   function = positional[1]
   config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
   runmode = positional[3] if len(positional) >= 4 else "runall"
-  return csource, function, config, runmode, None, None
+  return csource, function, config, runmode, None, None, run_tag
 
 
 def _resolve_mem_alloc_for_xml(xml_path, kernel, explicit_mem_alloc):
@@ -134,13 +147,128 @@ def _stage_mapper_inputs_from_xml(context, xml_path, mem_alloc_path=None):
   print("Staged mapper mem-alloc: %s" % mem_dst)
 
 
+def _latest_mapper_result(context, start_time):
+  result_path = os.path.join(context.mapper_kernel, "result.txt")
+  if not os.path.isfile(result_path):
+    return None, None
+  if os.path.getmtime(result_path) < start_time:
+    return None, None
+
+  with open(result_path, "r", encoding="utf-8", errors="ignore") as result_file:
+    lines = [line.strip() for line in result_file if line.strip()]
+  if not lines:
+    return None, None
+
+  match = _RESULT_LINE_II_RE.search(lines[-1])
+  if not match:
+    return None, None
+
+  return int(match.group(1)), match.group(2)
+
+
+def _auto_unroll_score(ii, factor):
+  return float(ii) / float(factor)
+
+
+def _run_auto_unroll(context):
+  config = context.config
+  factors = sorted(config.auto_unroll_factors, reverse=True)
+  if config.simd_enabled:
+    factors = [factor for factor in factors if factor >= config.simd_lanes]
+    if not factors:
+      factors = [config.simd_lanes]
+  best = None
+  successful_lower_probe_degraded = False
+
+  print("\n-----Running Morpher auto-unroll search-----\n")
+  print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
+  if config.simd_enabled:
+    print(
+      "SIMD mode packs each candidate into groups of simd.lanes=%d."
+      % config.simd_lanes
+    )
+  print("Remainder policy: %s" % config.auto_unroll_remainder_policy)
+  print(
+    "Score: II / unroll_factor. Lower is better; this approximates II * loop_iters / unroll_factor.\n"
+  )
+
+  for factor in factors:
+    print("== Auto-unroll candidate factor %d ==\n" % factor)
+    start_time = time.time()
+    try:
+      run_dfg_generator(
+        context,
+        unroll_factor=factor,
+        remainder_policy=config.auto_unroll_remainder_policy,
+      )
+      run_mapper(context)
+    except subprocess.CalledProcessError as exc:
+      print(
+        "Candidate factor %d failed with exit code %d; trying the next lower factor.\n"
+        % (factor, exc.returncode)
+      )
+      continue
+
+    ii, status = _latest_mapper_result(context, start_time)
+    if status != "success" or ii is None:
+      print(
+        "Candidate factor %d did not produce a successful mapper result; trying the next lower factor.\n"
+        % factor
+      )
+      continue
+
+    score = _auto_unroll_score(ii, factor)
+    print("Candidate factor %d: II=%d, score=%.4f\n" % (factor, ii, score))
+
+    candidate = {"factor": factor, "ii": ii, "score": score}
+    if best is None or score < best["score"] or (
+      score == best["score"] and factor > best["factor"]
+    ):
+      best = candidate
+      continue
+
+    if config.auto_unroll_stop_on_degradation:
+      print(
+        "Factor %d is worse than best factor %d; stopping lower-factor search.\n"
+        % (factor, best["factor"])
+      )
+      successful_lower_probe_degraded = True
+      break
+
+  if best is None:
+    raise RuntimeError("auto_unroll failed: no candidate factor mapped successfully.")
+
+  print(
+    "Selected auto-unroll factor %d (II=%d, score=%.4f).\n"
+    % (best["factor"], best["ii"], best["score"])
+  )
+
+  # Rerun the selected candidate so normal output directories contain the chosen
+  # DFG, mapping, and optional simulation inputs even if the search ended on a
+  # lower failed or degraded candidate.
+  if successful_lower_probe_degraded or best["factor"] != factors[-1]:
+    print("Rerunning selected factor %d to leave final artifacts in place.\n" % best["factor"])
+    run_dfg_generator(
+      context,
+      unroll_factor=best["factor"],
+      remainder_policy=config.auto_unroll_remainder_policy,
+    )
+    run_mapper(context)
+
+  if context.config.enable_simulation:
+    run_artifact_simulator(context, context.config.validation_mode)
+  else:
+    print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
+
+
 def main(
   csource,
   function,
   config=DEFAULT_CONFIG_PATH,
-  runmode="runall",
+  runmode="runall_artifact_sim",
   dfg_xml_path=None,
   mem_alloc_path=None,
+  run_tag="",
 ):
   print(r"""
     __  ___                 __                 ________________  ___       ____            _                ______                                             __  
@@ -151,17 +279,18 @@ def main(
                  /_/                                                                     /____/                                                                    
     """)
 
-  context = build_context(csource, function, config, runmode)
+  context = build_context(csource, function, config, runmode, run_tag)
 
   print(
     "\n Kernel: %s \n C source: %s/benchmarks/%s \n Memory mode: %s \n Arch template: %s"
-    "\n Config: %s\n Run mode: %s\n"
+    "\n Validation mode: %s\n Config: %s\n Run mode: %s\n"
     % (
       context.kernel,
       context.dfg_gen_home,
       context.csource,
       context.config.memory_mode,
       context.config.arch_template_json,
+      context.config.validation_mode,
       context.config_path,
       context.runmode,
     )
@@ -174,23 +303,46 @@ def main(
     _stage_mapper_inputs_from_xml(context, dfg_xml_path, mem_alloc_path)
     print("Skipping DFG generation stage (XML input mode).\n")
 
+  if (
+    context.config.auto_unroll_enabled
+    and runmode == "runall"
+    and not dfg_xml_path
+  ):
+    _run_auto_unroll(context)
+    return
+
+  if runmode == "runall_artifact_sim":
+    original_enable_sim = context.config.enable_simulation
+    try:
+      context.config.enable_simulation = True
+      run_dfg_generator(context)
+      context.config.enable_simulation = False
+      run_mapper(context)
+    finally:
+      context.config.enable_simulation = original_enable_sim
+    run_artifact_simulator(context, context.config.validation_mode)
+    return
+
   if (runmode == "runall" or runmode == "dfg_gen_only") and not dfg_xml_path:
     run_dfg_generator(context)
 
   if runmode == "runall" or runmode == "mapper_only":
     run_mapper(context)
 
+  if runmode == "artifact_sim_only":
+    run_artifact_simulator(context, context.config.validation_mode)
+
   if runmode == "runall" or runmode == "sim_only":
     if context.config.enable_simulation:
-      run_simulator(context)
+      run_artifact_simulator(context, context.config.validation_mode)
     else:
-      print("\nSimulation disabled by config (enable_simulation=false); skipping hycube_simulator.\n")
+      print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
 
 
 if __name__ == "__main__":
   try:
-    csource, function, config, runmode, dfg_xml_path, mem_alloc_path = _parse_cli(sys.argv[1:])
-    main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path)
+    csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag = _parse_cli(sys.argv[1:])
+    main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag)
   except subprocess.CalledProcessError as e:
     cmd = e.cmd if isinstance(e.cmd, str) else " ".join(e.cmd)
     print("Error: external command failed with exit code %d." % e.returncode)
