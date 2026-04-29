@@ -22,7 +22,7 @@ int B[SIZE];
 //#define c33 10
 
 __attribute__((noinline))
-void convolution2d() {
+void convolution2d4() {
 	for (int i = 1; i < NI -1; i++) {
 		for (int j = 1; j < NJ-5; j= j + 4) {
 #ifdef CGRA_COMPILER
@@ -52,6 +52,6 @@ for(int i=0;i<SIZE;i++){
     A[i] = i+1;
   }
 
-convolution2d();
+convolution2d4();
 return 0;
 }

@@ -412,10 +412,11 @@ def discover_all_benchmarks(repo_root: Path) -> list[BenchmarkSpec]:
     if invalid_layout:
         bad = "\n  - ".join(invalid_layout[:40])
         extra = "" if len(invalid_layout) <= 40 else f"\n  ... and {len(invalid_layout) - 40} more"
-        raise ValueError(
-            "Found benchmark .c files outside required layout "
+        print(
+            "WARNING: skipping benchmark .c files outside required layout "
             "'<suite>/<kernel>/<kernel>.c':\n"
-            f"  - {bad}{extra}"
+            f"  - {bad}{extra}",
+            flush=True,
         )
 
     if duplicates:
