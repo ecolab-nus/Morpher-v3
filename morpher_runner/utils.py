@@ -6,6 +6,12 @@ from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
 
 
+class BankSizeTooSmallError(RuntimeError):
+  def __init__(self, message, required_banksize=None):
+    super().__init__(message)
+    self.required_banksize = required_banksize
+
+
 def build_clang_ir_command(src_file, out_file, define_cgra_compiler=False, suppress_frontend_warnings=False, cwd=None):
   """Compile C/C++ source into LLVM IR with Morpher's expected non-vectorized flags."""
   cmd_parts = ["clang"]
@@ -54,6 +60,13 @@ def find_arrays_larger_than_bank(ir_file, banksize):
   return oversized
 
 
+def suggest_larger_banksize(ir_file, banksize):
+  oversized = find_arrays_larger_than_bank(ir_file, banksize)
+  if oversized:
+    return max(banksize + 1, oversized[0][1]), oversized
+  return max(banksize + 1, banksize * 2), []
+
+
 def run_dfg_opt_with_diagnostics(opt_cmd_argv, kernel, banksize, numberofbanks, cwd=None):
   """Run DFG generation pass and print friendly memory-bank diagnostics."""
   result = run_command(Command(argv=opt_cmd_argv, cwd=cwd, check=False, capture_output=True, text=True))
@@ -82,18 +95,24 @@ def run_dfg_opt_with_diagnostics(opt_cmd_argv, kernel, banksize, numberofbanks, 
 
     if bank_size_error:
       print("Error: DFG generation failed during SPM bank allocation.")
-      print("At least one array is larger than the configured bank size.")
       print(
         "Config: numberofbanks=%d, banksize=%d bytes, total_mem=%d bytes."
         % (numberofbanks, banksize, numberofbanks * banksize)
       )
-      oversized = find_arrays_larger_than_bank("%s_opt.ll" % kernel, banksize)
+      suggested_banksize, oversized = suggest_larger_banksize("%s_opt.ll" % kernel, banksize)
       if oversized:
+        print("At least one array is larger than the configured bank size.")
         print("Arrays larger than banksize (from LLVM IR):")
         for name, size_bytes in oversized[:8]:
           print("  - %s: %d bytes" % (name, size_bytes))
-      print("Suggestion: increase `banksize` (and if needed `numberofbanks`) in your config YAML.\n")
-      raise subprocess.CalledProcessError(returncode, opt_cmd_argv)
+      else:
+        print("No single oversized array was found in LLVM IR.")
+        print("The allocation likely overflowed a bank due to cumulative placement.")
+      print("Suggested banksize for retry: at least %d bytes.\n" % suggested_banksize)
+      raise BankSizeTooSmallError(
+        "DFG generation failed during SPM bank allocation.",
+        required_banksize=suggested_banksize,
+      )
 
     if result.stdout:
       print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")

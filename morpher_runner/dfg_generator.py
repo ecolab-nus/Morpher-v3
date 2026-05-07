@@ -14,6 +14,7 @@ from morpher_runner.simd_packer import prune_iter_control_xml
 from morpher_runner.simd_packer import reindex_addr_trace
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.utils import build_clang_ir_command
+from morpher_runner.utils import BankSizeTooSmallError
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
 
 
@@ -124,6 +125,58 @@ def build_dfg_pass_command(context, skeleton_ir=None):
   if config.remove_agi:
     cmd.append("-remove-agi")
   return cmd
+
+
+def _can_auto_grow_banksize(context):
+  if context.config.memory_mode == "auto":
+    return True
+  return str(context.config.spm_mode).strip().lower() != "on"
+
+
+def _run_dfg_pass_with_banksize_retry(context, skeleton_ir):
+  config = context.config
+  kernel = context.kernel
+  dfg_kernel = context.dfg_gen_kernel
+  original_banksize = config.banksize
+  max_attempts = 8
+  last_error = None
+
+  for attempt in range(1, max_attempts + 1):
+    if attempt > 1:
+      print(
+        "Retrying DFG generation with larger banksize=%d bytes (attempt %d/%d).\n"
+        % (config.banksize, attempt, max_attempts)
+      )
+    try:
+      run_dfg_opt_with_diagnostics(
+        build_dfg_pass_command(context, skeleton_ir=skeleton_ir),
+        kernel,
+        config.banksize,
+        config.numberofbanks,
+        cwd=dfg_kernel,
+      )
+      if config.banksize != original_banksize:
+        print(
+          "DFG bank allocation required banksize=%d bytes; continuing with that effective size.\n"
+          % config.banksize
+        )
+      return
+    except BankSizeTooSmallError as exc:
+      last_error = exc
+      if not _can_auto_grow_banksize(context):
+        print(
+          "Auto-growing banksize is disabled for memory_mode=%s with spm_mode=%s because the selected "
+          "static architecture JSON would become inconsistent.\n"
+          % (context.config.memory_mode, context.config.spm_mode)
+        )
+        raise
+      next_banksize = exc.required_banksize or (config.banksize * 2)
+      if next_banksize <= config.banksize:
+        next_banksize = config.banksize + 1
+      config.banksize = next_banksize
+
+  if last_error is not None:
+    raise last_error
 
 
 def validate_dfg_outputs(context):
@@ -256,13 +309,7 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
     skeleton_ir = "%s_uf%d_opt.ll" % (kernel, unroll_factor)
 
   print("Generating DFG (%s_PartPredDFG.xml/dot) and data layout (%s_mem_alloc.txt)..\n" % (kernel, kernel))
-  run_dfg_opt_with_diagnostics(
-    build_dfg_pass_command(context, skeleton_ir=skeleton_ir),
-    kernel,
-    config.banksize,
-    config.numberofbanks,
-    cwd=dfg_kernel,
-  )
+  _run_dfg_pass_with_banksize_retry(context, skeleton_ir)
 
   validate_dfg_outputs(context)
 

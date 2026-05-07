@@ -87,6 +87,7 @@ Primary outputs per kernel:
 
 - Memory bank allocation failure:
   - array too large for configured bank size
-  - fixed by increasing `banksize` and/or `numberofbanks`
+  - runner now auto-retries with a larger effective `banksize` when the selected memory/SPM mode can absorb the change safely
+  - if auto-growth is unsafe or still insufficient, increase `banksize` and/or `numberofbanks`
 - Unsupported array/pointer dimensionality:
   - currently limited to patterns equivalent to up to 2D arrays

@@ -13,12 +13,24 @@ Important groups:
 - memory model:
   - `memory_mode`
   - `arch_template_json`
-  - `numberofbanks`, `banksize`
+  - `numberofbanks`, `banksize` are optional when the arch JSON declares SPM banks and bank size
+  - if omitted, bank count is inferred from `SPM_B*_WRAPPER` instances and bank size from `ARCH.SPM.MEM.SIZE`
+  - for non-SPM architectures, keep them explicit in config
+  - if DFG bank allocation still overflows, the runner can auto-grow the effective `banksize` during the run when doing so will not make the architecture model inconsistent
 - mapper behavior:
-  - `mapping_method`
-  - `init_II`, `max_II`, `ii_restarts`
-  - `max_mapper_iter`, `backtrack_limit`
-  - SA parameters (`sa_*`)
+  - `mapper_preset`: one of `fast`, `balanced`, `quality`, `exhaust`
+  - `init_II`, `multihop`
+  - presets expand to the low-level mapper search knobs internally
+  - `fast`: quicker answer, less search
+  - `balanced`: current general-purpose default
+  - `quality`: tries harder for better mappings / lower II
+  - `exhaust`: deepest search, highest runtime cost; disables proximity bias by default to broaden exploration
+  - `node_pin`: optional advanced override, passed through to the mapper as `--node_pin`
+  - `node_pin` syntax: `node_idx:X:Y` (example: `17:0:0`)
+- architecture dimensions:
+  - `xdim`, `ydim` are optional
+  - when omitted, they are inferred from `arch_template_json`
+  - if provided, they must match the JSON dimensions
 - simulation behavior:
   - `enable_simulation`
   - `max_test_samples`

@@ -283,13 +283,14 @@ def main(
 
   print(
     "\n Kernel: %s \n C source: %s/benchmarks/%s \n Memory mode: %s \n Arch template: %s"
-    "\n Validation mode: %s\n Config: %s\n Run mode: %s\n"
+    "\n Mapper preset: %s\n Validation mode: %s\n Config: %s\n Run mode: %s\n"
     % (
       context.kernel,
       context.dfg_gen_home,
       context.csource,
       context.config.memory_mode,
       context.config.arch_template_json,
+      context.config.mapper_preset,
       context.config.validation_mode,
       context.config_path,
       context.runmode,

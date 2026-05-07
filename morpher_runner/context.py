@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import json
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -54,12 +55,235 @@ def _print_deprecation_warning(config_dict):
     )
 
 
+MAPPER_PRESETS = {
+  "fast": {
+    "mapping_method": 2,
+    "backtrack_limit": 2,
+    "max_mapper_iter": 12,
+    "max_II": 16,
+    "ii_restarts": 0,
+    "skip_ii_estimation": False,
+    "print_dfg": False,
+    "sa_seed": 0,
+    "sa_restarts": 0,
+    "sa_moves_per_temp": 12,
+    "sa_temp_max": 120.0,
+    "sa_temp_min": 20.0,
+    "sa_candidate_topk": 4,
+    "proximity_sort": True,
+  },
+  "balanced": {
+    "mapping_method": 2,
+    "backtrack_limit": 4,
+    "max_mapper_iter": 30,
+    "max_II": 32,
+    "ii_restarts": 0,
+    "skip_ii_estimation": False,
+    "print_dfg": True,
+    "sa_seed": 0,
+    "sa_restarts": 2,
+    "sa_moves_per_temp": 20,
+    "sa_temp_max": 200.0,
+    "sa_temp_min": 10.0,
+    "sa_candidate_topk": 8,
+    "proximity_sort": True,
+  },
+  "quality": {
+    "mapping_method": 2,
+    "backtrack_limit": 8,
+    "max_mapper_iter": 60,
+    "max_II": 64,
+    "ii_restarts": 1,
+    "skip_ii_estimation": False,
+    "print_dfg": True,
+    "sa_seed": 0,
+    "sa_restarts": 4,
+    "sa_moves_per_temp": 40,
+    "sa_temp_max": 250.0,
+    "sa_temp_min": 5.0,
+    "sa_candidate_topk": 12,
+    "proximity_sort": True,
+  },
+  "exhaust": {
+    "mapping_method": 2,
+    "backtrack_limit": 12,
+    "max_mapper_iter": 100,
+    "max_II": 96,
+    "ii_restarts": 2,
+    "skip_ii_estimation": False,
+    "print_dfg": True,
+    "sa_seed": 0,
+    "sa_restarts": 8,
+    "sa_moves_per_temp": 80,
+    "sa_temp_max": 300.0,
+    "sa_temp_min": 3.0,
+    "sa_candidate_topk": 16,
+    "proximity_sort": False,
+  },
+}
+
+
+def _parse_mapper_preset(config_dict):
+  preset_name = str(config_dict.get("mapper_preset", "balanced")).strip().lower().replace("-", "_")
+  if preset_name not in MAPPER_PRESETS:
+    raise RuntimeError(
+      "mapper_preset must be one of: %s."
+      % ", ".join(sorted(MAPPER_PRESETS.keys()))
+    )
+
+  resolved = dict(MAPPER_PRESETS[preset_name])
+  override_keys = [
+    "mapping_method",
+    "backtrack_limit",
+    "max_mapper_iter",
+    "max_II",
+    "ii_restarts",
+    "skip_ii_estimation",
+    "print_dfg",
+    "sa_seed",
+    "sa_restarts",
+    "sa_moves_per_temp",
+    "sa_temp_max",
+    "sa_temp_min",
+    "sa_candidate_topk",
+    "proximity_sort",
+  ]
+  used_overrides = []
+  for key in override_keys:
+    if key in config_dict:
+      resolved[key] = config_dict[key]
+      used_overrides.append(key)
+
+  if used_overrides:
+    print(
+      "Warning: mapper_preset=%s overridden by explicit mapper keys (%s). "
+      "Prefer using the preset alone unless you are intentionally doing advanced tuning."
+      % (preset_name, ", ".join(used_overrides))
+    )
+
+  return preset_name, resolved
+
+
+def resolve_arch_template_path(morpher_home, mapper_home, arch_template_json):
+  template = arch_template_json
+  if os.path.isabs(template):
+    if os.path.isfile(template):
+      return template
+    raise RuntimeError("Architecture template not found: %s" % template)
+
+  candidates = [
+    os.path.join(mapper_home, "json_arch", template),
+    os.path.join(morpher_home, template),
+  ]
+  for candidate in candidates:
+    if os.path.isfile(candidate):
+      return candidate
+
+  raise RuntimeError(
+    "Architecture template '%s' not found. Checked: %s"
+    % (template, ", ".join(candidates))
+  )
+
+
+def _find_arch_dims(node):
+  if isinstance(node, dict):
+    dims = node.get("DIMS")
+    if isinstance(dims, dict) and "X" in dims and "Y" in dims:
+      return dims["X"], dims["Y"]
+    for value in node.values():
+      found = _find_arch_dims(value)
+      if found is not None:
+        return found
+    return None
+
+  if isinstance(node, list):
+    for value in node:
+      found = _find_arch_dims(value)
+      if found is not None:
+        return found
+  return None
+
+
+def infer_arch_dims(morpher_home, mapper_home, arch_template_json):
+  arch_path = resolve_arch_template_path(morpher_home, mapper_home, arch_template_json)
+  with open(arch_path, "r", encoding="utf-8") as stream:
+    arch_data = json.load(stream)
+
+  arch_root = arch_data.get("ARCH")
+  if not isinstance(arch_root, dict):
+    raise RuntimeError("Architecture JSON %s is missing top-level ARCH object." % arch_path)
+
+  cgra_root = arch_root.get("CGRA")
+  if cgra_root is None:
+    raise RuntimeError("Architecture JSON %s is missing ARCH.CGRA." % arch_path)
+
+  dims = _find_arch_dims(cgra_root)
+  if dims is None:
+    raise RuntimeError("Could not infer CGRA dimensions from architecture JSON: %s" % arch_path)
+
+  try:
+    xdim = int(dims[0])
+    ydim = int(dims[1])
+  except (TypeError, ValueError):
+    raise RuntimeError("Architecture JSON %s has non-integer CGRA dimensions." % arch_path)
+  if xdim < 1 or ydim < 1:
+    raise RuntimeError("Architecture JSON %s has invalid CGRA dimensions %sx%s." % (arch_path, xdim, ydim))
+  return xdim, ydim
+
+
+def infer_arch_spm_config(morpher_home, mapper_home, arch_template_json):
+  arch_path = resolve_arch_template_path(morpher_home, mapper_home, arch_template_json)
+  with open(arch_path, "r", encoding="utf-8") as stream:
+    arch_data = json.load(stream)
+
+  arch_root = arch_data.get("ARCH")
+  if not isinstance(arch_root, dict):
+    raise RuntimeError("Architecture JSON %s is missing top-level ARCH object." % arch_path)
+
+  cgra_root = arch_root.get("CGRA")
+  if not isinstance(cgra_root, dict):
+    raise RuntimeError("Architecture JSON %s is missing ARCH.CGRA." % arch_path)
+
+  cgra_submods = cgra_root.get("SUBMODS")
+  if not isinstance(cgra_submods, list):
+    raise RuntimeError("Architecture JSON %s is missing ARCH.CGRA.SUBMODS list." % arch_path)
+
+  wrapper_names = set()
+  for entry in cgra_submods:
+    if not isinstance(entry, dict):
+      continue
+    for key in entry.keys():
+      if re.match(r"^SPM_B[0-9]+_WRAPPER$", key):
+        wrapper_names.add(key)
+
+  spm = arch_root.get("SPM")
+  if not isinstance(spm, dict):
+    return None, None
+  spm_mem = spm.get("MEM")
+  if not isinstance(spm_mem, dict) or "SIZE" not in spm_mem:
+    return None, None
+
+  try:
+    bank_size = int(spm_mem["SIZE"])
+  except (TypeError, ValueError):
+    raise RuntimeError("Architecture JSON %s has non-integer ARCH.SPM.MEM.SIZE." % arch_path)
+  if bank_size < 1:
+    raise RuntimeError("Architecture JSON %s has invalid SPM bank size %d." % (arch_path, bank_size))
+
+  if not wrapper_names:
+    return None, bank_size
+
+  return len(wrapper_names), bank_size
+
+
 @dataclass
 class RunnerConfig:
   memory_mode: str
   arch_template_json: str
   mapper_subfolder: str
+  mapper_preset: str
   init_II: int
+  multihop: int
   ydim: int
   xdim: int
   numberofbanks: int
@@ -81,6 +305,8 @@ class RunnerConfig:
   enable_simulation: bool
   validation_mode: str
   spm_mode: str
+  proximity_sort: bool
+  node_pin: str
   remove_agi: bool
   remove_iter: bool
   auto_unroll_enabled: bool
@@ -162,6 +388,7 @@ class RunnerConfig:
 
     memory_mode = _resolve_memory_mode(config_dict)
     arch_template_json = _resolve_arch_template_json(config_dict, memory_mode)
+    mapper_preset, mapper_tuning = _parse_mapper_preset(config_dict)
     (
       simd_enabled,
       simd_lanes,
@@ -182,34 +409,103 @@ class RunnerConfig:
       raise RuntimeError(
         "validation_mode must be one of: functional, event_driven."
       )
+    try:
+      multihop = int(config_dict.get("multihop", 4))
+    except (TypeError, ValueError):
+      raise RuntimeError("multihop must be an integer.")
+    if multihop < 1:
+      raise RuntimeError("multihop must be >= 1.")
+    morpher_home = os.getcwd()
+    mapper_home = os.path.join(morpher_home, "Morpher_CGRA_Mapper")
+    inferred_xdim = None
+    inferred_ydim = None
+    inferred_numberofbanks = None
+    inferred_banksize = None
+    try:
+      inferred_xdim, inferred_ydim = infer_arch_dims(morpher_home, mapper_home, arch_template_json)
+    except RuntimeError:
+      if "xdim" not in config_dict or "ydim" not in config_dict:
+        raise
+    try:
+      inferred_numberofbanks, inferred_banksize = infer_arch_spm_config(
+        morpher_home,
+        mapper_home,
+        arch_template_json,
+      )
+    except RuntimeError:
+      if "numberofbanks" not in config_dict or "banksize" not in config_dict:
+        raise
+
+    xdim = config_dict.get("xdim", inferred_xdim)
+    ydim = config_dict.get("ydim", inferred_ydim)
+    if xdim is None or ydim is None:
+      raise RuntimeError("Config must provide xdim/ydim or use an architecture JSON with inferable dimensions.")
+    try:
+      xdim = int(xdim)
+      ydim = int(ydim)
+    except (TypeError, ValueError):
+      raise RuntimeError("xdim and ydim must be integers.")
+    if xdim < 1 or ydim < 1:
+      raise RuntimeError("xdim and ydim must be >= 1.")
+    if inferred_xdim is not None and inferred_ydim is not None and (xdim != inferred_xdim or ydim != inferred_ydim):
+      raise RuntimeError(
+        "Config xdim/ydim (%d, %d) do not match architecture JSON dimensions (%d, %d)."
+        % (xdim, ydim, inferred_xdim, inferred_ydim)
+      )
+    numberofbanks = config_dict.get("numberofbanks", inferred_numberofbanks)
+    banksize = config_dict.get("banksize", inferred_banksize)
+    if numberofbanks is None or banksize is None:
+      raise RuntimeError(
+        "Config must provide numberofbanks/banksize or use an architecture JSON with explicit SPM bank metadata."
+      )
+    try:
+      numberofbanks = int(numberofbanks)
+      banksize = int(banksize)
+    except (TypeError, ValueError):
+      raise RuntimeError("numberofbanks and banksize must be integers.")
+    if numberofbanks < 1 or banksize < 1:
+      raise RuntimeError("numberofbanks and banksize must be >= 1.")
+    if inferred_numberofbanks is not None and numberofbanks != inferred_numberofbanks:
+      raise RuntimeError(
+        "Config numberofbanks (%d) does not match architecture JSON bank count (%d)."
+        % (numberofbanks, inferred_numberofbanks)
+      )
+    if inferred_banksize is not None and banksize != inferred_banksize:
+      raise RuntimeError(
+        "Config banksize (%d) does not match architecture JSON SPM bank size (%d)."
+        % (banksize, inferred_banksize)
+      )
 
     return cls(
       memory_mode=memory_mode,
       arch_template_json=arch_template_json,
       mapper_subfolder=config_dict["mapper_subfolder"],
+      mapper_preset=mapper_preset,
       init_II=config_dict["init_II"],
-      ydim=config_dict["ydim"],
-      xdim=config_dict["xdim"],
-      numberofbanks=config_dict["numberofbanks"],
-      banksize=config_dict["banksize"],
+      multihop=multihop,
+      ydim=ydim,
+      xdim=xdim,
+      numberofbanks=numberofbanks,
+      banksize=banksize,
       max_test_samples=config_dict["max_test_samples"],
-      mapping_method=config_dict["mapping_method"],
-      backtrack_limit=config_dict.get("backtrack_limit", 0),
-      max_mapper_iter=config_dict.get("max_mapper_iter", 30),
-      max_II=config_dict.get("max_II", 32),
-      ii_restarts=config_dict.get("ii_restarts", 0),
-      skip_ii_estimation=config_dict.get("skip_ii_estimation", False),
-      print_dfg=config_dict.get("print_dfg", True),
-      sa_seed=config_dict.get("sa_seed", 0),
-      sa_restarts=config_dict.get("sa_restarts", 2),
-      sa_moves_per_temp=config_dict.get("sa_moves_per_temp", 20),
-      sa_temp_max=config_dict.get("sa_temp_max", 200.0),
-      sa_temp_min=config_dict.get("sa_temp_min", 10.0),
-      sa_candidate_topk=config_dict.get("sa_candidate_topk", 8),
+      mapping_method=mapper_tuning["mapping_method"],
+      backtrack_limit=mapper_tuning["backtrack_limit"],
+      max_mapper_iter=mapper_tuning["max_mapper_iter"],
+      max_II=mapper_tuning["max_II"],
+      ii_restarts=mapper_tuning["ii_restarts"],
+      skip_ii_estimation=mapper_tuning["skip_ii_estimation"],
+      print_dfg=mapper_tuning["print_dfg"],
+      sa_seed=mapper_tuning["sa_seed"],
+      sa_restarts=mapper_tuning["sa_restarts"],
+      sa_moves_per_temp=mapper_tuning["sa_moves_per_temp"],
+      sa_temp_max=mapper_tuning["sa_temp_max"],
+      sa_temp_min=mapper_tuning["sa_temp_min"],
+      sa_candidate_topk=mapper_tuning["sa_candidate_topk"],
       enable_simulation=config_dict.get("enable_simulation", True),
       validation_mode=validation_mode,
       spm_mode=config_dict.get("spm_mode", "on"),
       remove_agi=config_dict.get("remove_agi", False),
+      node_pin=str(config_dict.get("node_pin", "") or ""),
       remove_iter=config_dict.get("remove_iter", False),
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
@@ -219,6 +515,7 @@ class RunnerConfig:
       simd_lanes=simd_lanes,
       simd_pack_load_store=simd_pack_load_store,
       simd_reduction_policy=simd_reduction_policy,
+      proximity_sort=mapper_tuning["proximity_sort"],
     )
 
 

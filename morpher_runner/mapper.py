@@ -3,6 +3,7 @@ import shlex
 import sys
 import time
 
+from morpher_runner.context import resolve_arch_template_path as resolve_shared_arch_template_path
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
 from morpher_runner.fs_ops import copy_glob
@@ -10,23 +11,10 @@ from morpher_runner.fs_ops import remove_glob
 
 
 def resolve_arch_template_path(context):
-  template = context.config.arch_template_json
-  if os.path.isabs(template):
-    if os.path.isfile(template):
-      return template
-    raise RuntimeError("Architecture template not found: %s" % template)
-
-  candidates = [
-    os.path.join(context.mapper_home, "json_arch", template),
-    os.path.join(context.morpher_home, template),
-  ]
-  for candidate in candidates:
-    if os.path.isfile(candidate):
-      return candidate
-
-  raise RuntimeError(
-    "Architecture template '%s' not found. Checked: %s"
-    % (template, ", ".join(candidates))
+  return resolve_shared_arch_template_path(
+    context.morpher_home,
+    context.mapper_home,
+    context.config.arch_template_json,
   )
 
 
@@ -56,6 +44,8 @@ def build_mapper_commands(context):
     str(config.ydim),
     "-i",
     str(config.init_II),
+    "--hops",
+    str(config.multihop),
     "-m",
     str(config.mapping_method),
     "-b",
