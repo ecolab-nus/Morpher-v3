@@ -346,6 +346,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Validate and print benchmark list without executing.",
     )
+    parser.add_argument(
+        "--run-tag-prefix",
+        default="",
+        help="Optional prefix added to each benchmark run_tag to avoid workspace collisions across concurrent batches.",
+    )
     return parser.parse_args()
 
 
@@ -456,10 +461,13 @@ def run_one(
     timeout_sec: int,
     log_dir: Path,
     mapper_subfolder: str,
+    run_tag_prefix: str,
 ) -> RunResult:
     safe = sanitize_name(spec.rel_source)
     source_stem = safe[:-2] if safe.endswith(".c") else safe
     run_tag = f"{idx:03d}_{source_stem}"
+    if run_tag_prefix:
+        run_tag = f"{sanitize_name(run_tag_prefix)}__{run_tag}"
     log_file = log_dir / f"{idx:03d}_{safe}.log"
 
     cmd = [
@@ -661,6 +669,7 @@ def main() -> int:
                 timeout_sec=args.timeout_sec,
                 log_dir=log_dir,
                 mapper_subfolder=mapper_subfolder,
+                run_tag_prefix=args.run_tag_prefix,
             ): idx
             for idx, spec in enumerate(selected, start=1)
         }

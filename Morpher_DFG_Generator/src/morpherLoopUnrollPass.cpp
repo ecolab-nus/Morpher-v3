@@ -1,13 +1,15 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
-#include "llvm/Pass.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -37,20 +39,19 @@ static cl::opt<std::string> MorpherReductionPolicy(
     "morpher-reduction-policy", cl::init("tree"),
     cl::desc("Reduction lowering policy: tree or packed-psum"));
 
-Function *getCalledFunctionThroughBitcast(CallInst *CI) {
-  Function *CalledFn = CI->getCalledFunction();
+Function *resolveCalledFunction(CallBase *CB) {
+  if (!CB)
+    return nullptr;
+
+  Function *CalledFn = CB->getCalledFunction();
   if (CalledFn)
     return CalledFn;
 
-  if (auto *CE = dyn_cast<ConstantExpr>(CI->getCalledOperand()))
-    if (CE->getOpcode() == Instruction::BitCast)
-      return dyn_cast<Function>(CE->getOperand(0));
-
-  return nullptr;
+  return dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
 }
 
-bool isPleaseMapMe(CallInst *CI) {
-  Function *CalledFn = getCalledFunctionThroughBitcast(CI);
+bool isPleaseMapMe(CallBase *CB) {
+  Function *CalledFn = resolveCalledFunction(CB);
   return CalledFn && CalledFn->getName() == "please_map_me";
 }
 
@@ -70,7 +71,7 @@ void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
   unsigned Group = 0;
   for (BasicBlock *BB : TargetLoop->blocks()) {
     for (Instruction &I : *BB) {
-      if (auto *CI = dyn_cast<CallInst>(&I))
+      if (auto *CI = dyn_cast<CallBase>(&I))
         if (isPleaseMapMe(CI))
           continue;
       setSIMDMetadata(I, Group++, Lanes);
@@ -78,13 +79,13 @@ void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
   }
 }
 
-CallInst *findAnnotatedLoopMarker(Function &F, LoopInfo &LI, Loop *&TargetLoop) {
-  CallInst *Marker = nullptr;
+CallBase *findAnnotatedLoopMarker(Function &F, LoopInfo &LI, Loop *&TargetLoop) {
+  CallBase *Marker = nullptr;
   TargetLoop = nullptr;
 
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      auto *CI = dyn_cast<CallInst>(&I);
+      auto *CI = dyn_cast<CallBase>(&I);
       if (!CI || !isPleaseMapMe(CI))
         continue;
 
@@ -107,18 +108,18 @@ CallInst *findAnnotatedLoopMarker(Function &F, LoopInfo &LI, Loop *&TargetLoop) 
 }
 
 bool normalizePleaseMapMeMarkers(Function &F, LoopInfo &LI, Loop *TargetLoop) {
-  SmallVector<CallInst *, 8> Markers;
+  SmallVector<CallBase *, 8> Markers;
   for (BasicBlock &BB : F)
     for (Instruction &I : BB)
-      if (auto *CI = dyn_cast<CallInst>(&I))
+      if (auto *CI = dyn_cast<CallBase>(&I))
         if (isPleaseMapMe(CI))
           Markers.push_back(CI);
 
   if (Markers.empty())
     report_fatal_error("unrolled loop no longer contains please_map_me()");
 
-  CallInst *Keep = nullptr;
-  for (CallInst *Marker : Markers) {
+  CallBase *Keep = nullptr;
+  for (CallBase *Marker : Markers) {
     BasicBlock *BB = Marker->getParent();
     if (TargetLoop && TargetLoop->contains(BB)) {
       Keep = Marker;
@@ -130,7 +131,7 @@ bool normalizePleaseMapMeMarkers(Function &F, LoopInfo &LI, Loop *TargetLoop) {
     Keep = Markers.front();
 
   bool Changed = false;
-  for (CallInst *Marker : Markers) {
+  for (CallBase *Marker : Markers) {
     if (Marker == Keep)
       continue;
     Marker->eraseFromParent();
@@ -536,12 +537,8 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   return Changed;
 }
 
-struct MorpherLoopUnrollPass : public FunctionPass {
-  static char ID;
-
-  MorpherLoopUnrollPass() : FunctionPass(ID) {}
-
-  bool runOnFunction(Function &F) override {
+static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
+                                 DominatorTree &DT, AssumptionCache &AC) {
     if (MorpherUnrollFactor <= 1)
       return false;
 
@@ -556,12 +553,6 @@ struct MorpherLoopUnrollPass : public FunctionPass {
         MorpherReductionPolicy != "packed-psum") {
       report_fatal_error("morpher-reduction-policy must be tree or packed-psum");
     }
-
-    LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-    ScalarEvolution &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
-    DominatorTree &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-    AssumptionCache &AC =
-        getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
 
     Loop *TargetLoop = nullptr;
     findAnnotatedLoopMarker(F, LI, TargetLoop);
@@ -582,19 +573,14 @@ struct MorpherLoopUnrollPass : public FunctionPass {
 
     UnrollLoopOptions ULO;
     ULO.Count = MorpherUnrollFactor;
-    ULO.TripCount = 0;
     ULO.Force = true;
-    ULO.AllowRuntime = MorpherRemainderPolicy == "preserve";
+    ULO.Runtime = MorpherRemainderPolicy == "preserve";
     ULO.AllowExpensiveTripCount = true;
-    ULO.PreserveCondBr = false;
-    ULO.PreserveOnlyFirst = false;
-    ULO.TripMultiple = 1;
-    ULO.PeelCount = 0;
     ULO.UnrollRemainder = false;
     ULO.ForgetAllSCEV = true;
 
     LoopUnrollResult Result =
-        UnrollLoop(TargetLoop, ULO, &LI, &SE, &DT, &AC, nullptr, true);
+        UnrollLoop(TargetLoop, ULO, &LI, &SE, &DT, &AC, nullptr, nullptr, true);
 
     if (Result == LoopUnrollResult::Unmodified)
       report_fatal_error("LLVM could not unroll the Morpher annotated loop");
@@ -613,18 +599,23 @@ struct MorpherLoopUnrollPass : public FunctionPass {
            << " reduction_policy=" << MorpherReductionPolicy << "\n";
     return true;
   }
+struct MorpherLoopUnrollPass : public PassInfoMixin<MorpherLoopUnrollPass> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+    LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
+    ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
+    DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
+    AssumptionCache &AC = AM.getResult<AssumptionAnalysis>(F);
 
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<LoopInfoWrapperPass>();
-    AU.addRequired<ScalarEvolutionWrapperPass>();
-    AU.addRequired<DominatorTreeWrapperPass>();
-    AU.addRequired<AssumptionCacheTracker>();
+    return runMorpherLoopUnroll(F, LI, SE, DT, AC)
+               ? PreservedAnalyses::none()
+               : PreservedAnalyses::all();
   }
 };
 
 } // namespace
 
-char MorpherLoopUnrollPass::ID = 0;
-static RegisterPass<MorpherLoopUnrollPass>
-    X("morpher-loop-unroll", "Morpher annotated scalar loop unroll", false,
-      false);
+FunctionPassManager createMorpherLoopUnrollPipeline() {
+  FunctionPassManager FPM;
+  FPM.addPass(MorpherLoopUnrollPass());
+  return FPM;
+}

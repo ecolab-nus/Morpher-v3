@@ -1,5 +1,6 @@
-add_library(dfggenPass MODULE
-    # List your source files here.
+llvm_add_library(dfggenPass MODULE
+    OUTPUT_NAME "libdfggenPass"
+    PLUGIN_TOOL opt
     dfggenPass.cpp
     morpherLoopUnrollPass.cpp
     ../include/morpherdfggen/arch/CGRANode.h
@@ -14,6 +15,7 @@ add_library(dfggenPass MODULE
     common/dfg.cpp
     ../include/morpherdfggen/common/astar.h
     common/astar.cpp
+    llvm18PassPlugin.cpp
     ../include/morpherdfggen/util/tinyxml2.h
     util/tinyxml2.cpp
     common/dfgmacro.cpp
@@ -22,19 +24,13 @@ add_library(dfggenPass MODULE
     dfg/DFGPartPred.cpp
 )
 
-
-# Use C++11 to compile our pass (i.e., supply -std=c++11).
-target_compile_features(dfggenPass PRIVATE cxx_range_for cxx_auto_type)
-
-# LLVM is (typically) built with no C++ RTTI. We need to match that.
-set_target_properties(dfggenPass PROPERTIES
-    COMPILE_FLAGS "-fno-rtti -ggdb"
+target_include_directories(dfggenPass PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
-# Get proper shared-library behavior (where symbols are not necessarily
-# resolved when the shared library is linked) on OS X.
+target_compile_options(dfggenPass PRIVATE -fno-rtti -fexceptions -ggdb)
+
 if(APPLE)
-    set_target_properties(dfggenPass PROPERTIES
-        LINK_FLAGS "-undefined dynamic_lookup"
-    )
-endif(APPLE)
+    target_link_options(dfggenPass PRIVATE "-undefined" "dynamic_lookup")
+endif()

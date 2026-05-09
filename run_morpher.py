@@ -9,6 +9,7 @@ import time
 from morpher_runner.context import build_context
 from morpher_runner.artifact_simulator import run_artifact_simulator
 from morpher_runner.dfg_generator import run_dfg_generator
+from morpher_runner.dfg_generator import simd_packing_active_for_factor
 from morpher_runner.mapper import run_mapper
 
 DEFAULT_CONFIG_PATH = "config/default.yaml"
@@ -173,10 +174,6 @@ def _auto_unroll_score(ii, factor):
 def _run_auto_unroll(context):
   config = context.config
   factors = sorted(config.auto_unroll_factors, reverse=True)
-  if config.simd_enabled:
-    factors = [factor for factor in factors if factor >= config.simd_lanes]
-    if not factors:
-      factors = [config.simd_lanes]
   best = None
   successful_lower_probe_degraded = False
 
@@ -184,7 +181,7 @@ def _run_auto_unroll(context):
   print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
   if config.simd_enabled:
     print(
-      "SIMD mode packs each candidate into groups of simd.lanes=%d."
+      "SIMD packing activates only for candidates with unroll_factor >= simd.lanes=%d."
       % config.simd_lanes
     )
   print("Remainder policy: %s" % config.auto_unroll_remainder_policy)
@@ -194,6 +191,11 @@ def _run_auto_unroll(context):
 
   for factor in factors:
     print("== Auto-unroll candidate factor %d ==\n" % factor)
+    if config.simd_enabled and not simd_packing_active_for_factor(config, factor):
+      print(
+        "Candidate factor %d will map as scalar on the SIMD-capable architecture.\n"
+        % factor
+      )
     start_time = time.time()
     try:
       run_dfg_generator(

@@ -197,7 +197,7 @@ Primary output:
 
 ## `config/` (Runtime Tuning)
 
-- `default_config.yaml`: default integrated flow behavior.
+- `default.yaml`: default integrated flow behavior.
 - `xml_mapper_static.yaml`: XML-mode static mapping example.
 
 Important dimensions this folder controls:

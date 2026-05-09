@@ -1,53 +1,42 @@
-# Morpher DFG Generator :  LLVM-based Control Data-Flow Graph (CDFG) generator
+# Morpher DFG Generator
 
-CGRAs target loop kernels where the application spends significat fraction of the execution time. Morpher requires the user to annotate the specifica loop kernels to be mapped. Morpher DFG Generator extract the loop in an .xml file. Morpher supports control-divergence (i.e., existence of multiple control flow paths) inside the loop kernel through partial predication.
+This directory builds Morpher's LLVM 18 DFG-generation plugin, `libdfggenPass.so`.
+The runner loads it through `opt -load-pass-plugin` and uses two pipeline entries:
 
-## Build dependencies:
+- `-passes=skeleton` for DFG extraction/instrumentation
+- `-passes=morpher-loop-unroll` for Morpher's annotated-loop unroll pass
 
-This version requires LLVM 10.0.0 and JSON libraries. 
+The pass expects the target loop to be marked with `please_map_me()` in the benchmark source.
 
-### LLVM, clang, polly:
+## Requirements
 
-Read https://llvm.org/docs/GettingStarted.html
-follow https://github.com/llvm/llvm-project
+- LLVM/Clang 18 development packages
+- CMake and a C++17-capable compiler
+- The parent repository's LLVM environment variables when LLVM 18 is not the default toolchain:
+  - `MORPHER_LLVM_BIN_DIR`
+  - `MORPHER_LLVM_LIB_DIR`
+  - `MORPHER_LLVM_DIR`
 
-    git clone https://github.com/llvm/llvm-project.git
-    git checkout <correct version> (llvm10.0.0)
-    cd llvm-project
-    mkdir build
-    cd build
-    cmake -DLLVM_ENABLE_PROJECTS='polly;clang' -G "Unix Makefiles" ../llvm
-    make -j4
-    sudo make install
+`polly` is not required for the current build.
 
-Important points:
+## Build
 
-    make sure to checkout correct version before building
-    better to use gold linker instead of ld if you face memory problem while building: https://stackoverflow.com/questions/25197570/llvm-clang-compile-error-with-memory-exhausted
-    don't use release type use default debug version (will take about 70GB disk space)
+From the repository root, prefer:
 
-### JSON:
-https://blog.csdn.net/jiaken2660/article/details/105155257
+```bash
+bash build_all.sh
+```
 
+To build only this component:
 
-    git clone https://github.com/nlohmann/json.git
-    mkdir build
-    cd build
-    cmake ../
-    make -j2
-    sudo make install
+```bash
+cmake -S Morpher_DFG_Generator -B Morpher_DFG_Generator/build \
+  ${MORPHER_LLVM_DIR:+-DLLVM_DIR="$MORPHER_LLVM_DIR"}
+cmake --build Morpher_DFG_Generator/build --parallel "$(nproc)"
+```
 
-## Build DFG Generator:
+## Notes
 
-    cd Morpher_DFG_Generator
-    git checkout stable
-    mkdir build
-    cd build
-    cmake ..
-    make all
-
-
-# Examples:
-
-   Please refer the parent repository (https://github.com/ecolab-nus/morpher) 
-
+- This repository now targets LLVM 18 directly rather than maintaining an older multi-version compatibility branch.
+- If the host has multiple LLVM installs, set both `MORPHER_LLVM_BIN_DIR` and `MORPHER_LLVM_LIB_DIR` so `clang`, `opt`, and the plugin resolve against the same runtime.
+- Usage examples and the end-to-end flow are documented in the repository-level [`README.md`](../README.md).

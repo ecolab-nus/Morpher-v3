@@ -1,8 +1,6 @@
-#include "llvm/Pass.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/CFGPrinter.h"
@@ -32,12 +30,14 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/LCSSA.h"
+#include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/GraphWriter.h"
 
 #include "llvm/ADT/GraphTraits.h"
 
@@ -45,7 +45,7 @@
 #include "llvm/CodeGen/Passes.h"
 
 #include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/Analysis/ScalarEvolutionExpander.h"
+#include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/CFG.h"
@@ -70,6 +70,7 @@
 #include <morpherdfggen/dfg/DFGPartPred.h>
 #include <morpherdfggen/common/edge.h>
 #include <morpherdfggen/common/DFGError.h>
+#include <morpherdfggen/util/llvm_compat.h>
 
 //#define CDFG
 #define DEFAULT_DATA_PLACEMENT
@@ -80,13 +81,14 @@ static bool xmlRun = false;
 
 int MEM_SIZE;
 
-namespace llvm
+static Function *resolveCalledFunction(CallBase *CB)
 {
-void initializeSkeletonFunctionPassPass(PassRegistry &);
-void initializeSkeletonModulePassPass(PassRegistry &);
-
-Pass *createskeleton();
-} // namespace llvm
+	if (!CB)
+		return nullptr;
+	if (Function *calledFn = CB->getCalledFunction())
+		return calledFn;
+	return dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
+}
 
 using namespace llvm;
 #define LV_NAME "dfg_gen" //"sfp"
@@ -138,13 +140,11 @@ static unsigned getEffectiveArrayDims(const GetElementPtrInst *GEP)
 
 static unsigned getPointerDepth(Type *T)
 {
-	unsigned depth = 0;
-	while (PointerType *PT = dyn_cast<PointerType>(T))
+	if (!T->isPointerTy())
 	{
-		depth++;
-		T = PT->getElementType();
+		return 0;
 	}
-	return depth;
+	return 1;
 }
 
 static void ValidateSupportedArrayDimensions(Function &F)
@@ -158,7 +158,7 @@ static void ValidateSupportedArrayDimensions(Function &F)
 				continue;
 
 			unsigned effectiveArrayDims = getEffectiveArrayDims(GEP);
-			unsigned pointerDepth = getPointerDepth(GEP->getPointerOperandType());
+			unsigned pointerDepth = morpher::llvm_compat::getLogicalPointerDepthForGEP(GEP);
 			if (effectiveArrayDims <= 2 && pointerDepth <= 2)
 				continue;
 
@@ -1522,8 +1522,7 @@ void HoistInvariantRowPointers(Function &F, LoopInfo &LI) {
 
 				// Base must be a pointer-to-pointer (i32**).
 				Value *gep_base = row_gep->getPointerOperand();
-				auto *ptrTy = dyn_cast<PointerType>(gep_base->getType());
-				if (!ptrTy || !ptrTy->getElementType()->isPointerTy()) continue;
+				if (!row_gep->getSourceElementType()->isPointerTy()) continue;
 
 				patterns.push_back({row_load, row_gep, gep_base});
 			}
@@ -1540,8 +1539,8 @@ void HoistInvariantRowPointers(Function &F, LoopInfo &LI) {
 			Value *preheader_base = nullptr;
 			if (auto *inLoopLI = dyn_cast<LoadInst>(pat.gep_base)) {
 				if (L->contains(inLoopLI->getParent()))
-					preheader_base = preBuilder.CreateLoad(
-						inLoopLI->getPointerOperand(), "hoist_base");
+					preheader_base = morpher::llvm_compat::createTypedLoad(
+						preBuilder, inLoopLI->getType(), inLoopLI->getPointerOperand(), "hoist_base");
 			}
 			if (!preheader_base) {
 				if (auto *baseInst = dyn_cast<Instruction>(pat.gep_base))
@@ -1550,9 +1549,10 @@ void HoistInvariantRowPointers(Function &F, LoopInfo &LI) {
 			}
 
 			Value *row_idx     = *pat.row_gep->idx_begin();
-			Value *hoist_addr  = preBuilder.CreateGEP(
-				preheader_base, row_idx, "hoist_row_addr");
-			Value *hoisted_row = preBuilder.CreateLoad(hoist_addr, "hoist_row");
+			Value *hoist_addr  = morpher::llvm_compat::createTypedGEP(
+				preBuilder, pat.row_gep->getSourceElementType(), preheader_base, row_idx, "hoist_row_addr");
+			Value *hoisted_row = morpher::llvm_compat::createTypedLoad(
+				preBuilder, pat.row_load->getType(), hoist_addr, "hoist_row");
 
 			// Replace every in-loop use of row_load with the hoisted pointer.
 			pat.row_load->replaceAllUsesWith(hoisted_row);
@@ -1582,8 +1582,8 @@ void HoistInvariantRowPointers(Function &F, LoopInfo &LI) {
 			for (auto *elemGEP : elemGEPs) {
 				SmallVector<Value *, 2> idxs(
 					elemGEP->idx_begin(), elemGEP->idx_end());
-				Value *hoisted_elem = preBuilder.CreateGEP(
-					hoisted_row, idxs, "hoist_elem_addr");
+				Value *hoisted_elem = morpher::llvm_compat::createTypedGEP(
+					preBuilder, elemGEP->getSourceElementType(), hoisted_row, idxs, "hoist_elem_addr");
 				elemGEP->replaceAllUsesWith(hoisted_elem);
 				elemGEP->eraseFromParent();
 			}
@@ -1744,8 +1744,7 @@ void FlattenDoublePointers(Function &F, LoopInfo &LI) {
 
 				// GEP base must be pointer-to-pointer (volatile int**)
 				Value *gep_base = row_gep->getPointerOperand();
-				auto *ptrTy = dyn_cast<PointerType>(gep_base->getType());
-				if (!ptrTy || !ptrTy->getElementType()->isPointerTy()) continue;
+					if (!row_gep->getSourceElementType()->isPointerTy()) continue;
 
 				// row_load must have exactly one user that is a GEP
 				if (!row_load->hasOneUse()) continue;
@@ -1780,8 +1779,8 @@ void FlattenDoublePointers(Function &F, LoopInfo &LI) {
 			Value *preheader_base = nullptr;
 			if (auto *inLoopLI = dyn_cast<LoadInst>(pat.gep_base)) {
 				if (L->contains(inLoopLI->getParent()))
-					preheader_base = preBuilder.CreateLoad(
-						inLoopLI->getPointerOperand(), "row_outer_ptr");
+					preheader_base = morpher::llvm_compat::createTypedLoad(
+						preBuilder, inLoopLI->getType(), inLoopLI->getPointerOperand(), "row_outer_ptr");
 			}
 			if (!preheader_base) {
 				if (auto *baseInst = dyn_cast<Instruction>(pat.gep_base))
@@ -1790,14 +1789,15 @@ void FlattenDoublePointers(Function &F, LoopInfo &LI) {
 			}
 
 			// row_init = B[k_start]: row pointer for the first iteration
-			Value *Bkinit_addr = preBuilder.CreateGEP(
-				preheader_base, IV_start, "row_init_ptr");
-			Value *row_init = preBuilder.CreateLoad(Bkinit_addr, "row_init");
+			Value *Bkinit_addr = morpher::llvm_compat::createTypedGEP(
+				preBuilder, pat.row_gep->getSourceElementType(), preheader_base, IV_start, "row_init_ptr");
+			Value *row_init = morpher::llvm_compat::createTypedLoad(
+				preBuilder, pat.row_load->getType(), Bkinit_addr, "row_init");
 
 			// B_elem_init = B[k_start][j]: fold col_idx into the initial ptr.
 			// This eliminates the in-loop element GEP node entirely.
-			Value *B_elem_init = preBuilder.CreateGEP(
-				row_init, col_idx, "elem_init_ptr");
+			Value *B_elem_init = morpher::llvm_compat::createTypedGEP(
+				preBuilder, pat.elem_gep->getSourceElementType(), row_init, col_idx, "elem_init_ptr");
 
 			// ----------------------------------------------------------------
 			// 4c. Create an element-pointer PHI in the loop header.
@@ -1815,7 +1815,8 @@ void FlattenDoublePointers(Function &F, LoopInfo &LI) {
 			Value *N_cast = N_val;
 			if (N_val->getType() != i32Ty)
 				N_cast = latchBuilder.CreateSExtOrTrunc(N_val, i32Ty, "N_cast");
-			Value *B_elem_next = latchBuilder.CreateGEP(B_elem, N_cast, "B_elem_next");
+			Value *B_elem_next = morpher::llvm_compat::createTypedGEP(
+				latchBuilder, pat.elem_gep->getSourceElementType(), B_elem, N_cast, "B_elem_next");
 			B_elem->addIncoming(B_elem_next, latch);
 
 			// ----------------------------------------------------------------
@@ -1986,7 +1987,7 @@ void ReplaceCMPs(Function &F)
 				Instruction *notIns = cast<Instruction>(builder.CreateNot(cmpEqNew));
 				BasicBlock::iterator ii(CI);
 				notIns->removeFromParent();
-				ReplaceInstWithInst(CI->getParent()->getInstList(), ii, notIns);
+				ReplaceInstWithInst(CI->getParent(), ii, notIns);
 				break;
 			}
 			case CmpInst::FCMP_ONE:
@@ -1996,7 +1997,7 @@ void ReplaceCMPs(Function &F)
 				Instruction *notIns = cast<Instruction>(builder.CreateNot(cmpEqNew));
 				BasicBlock::iterator ii(CI);
 				notIns->removeFromParent();
-				ReplaceInstWithInst(CI->getParent()->getInstList(), ii, notIns);
+				ReplaceInstWithInst(CI->getParent(), ii, notIns);
 				break;
 			}
 
@@ -2018,7 +2019,7 @@ void ReplaceCMPs(Function &F)
 				Instruction *notIns = cast<Instruction>(builder.CreateNot(cmpEqNew));
 				BasicBlock::iterator ii(CI);
 				notIns->removeFromParent();
-				ReplaceInstWithInst(CI->getParent()->getInstList(), ii, notIns);
+				ReplaceInstWithInst(CI->getParent(), ii, notIns);
 				break;
 			}
 			case CmpInst::ICMP_SGT:
@@ -2053,7 +2054,7 @@ void ReplaceCMPs(Function &F)
 				Instruction *notIns = cast<Instruction>(builder.CreateNot(cmpEqNew));
 				BasicBlock::iterator ii(CI);
 				notIns->removeFromParent();
-				ReplaceInstWithInst(CI->getParent()->getInstList(), ii, notIns);
+				ReplaceInstWithInst(CI->getParent(), ii, notIns);
 				break;
 			}
 			break;
@@ -2201,7 +2202,7 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 	auto traceStartFn = F.getParent()->getOrInsertFunction(
 			"loopTraceOpen",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto traceEndFn = F.getParent()->getOrInsertFunction(
 			"loopTraceClose",
@@ -2210,25 +2211,25 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 	auto loopInvFn = F.getParent()->getOrInsertFunction(
 			"loopInvoke",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto loopInsUpdateFn = F.getParent()->getOrInsertFunction(
 			"loopInsUpdate",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
 			Type::getInt32Ty(Ctx));
 
 	auto loopBBInsUpdateFn = F.getParent()->getOrInsertFunction(
 			"loopBBInsUpdate",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
 			Type::getInt32Ty(Ctx));
 
 	auto loopInsClearFn = F.getParent()->getOrInsertFunction(
 			"loopInsClear",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto loopBBInsClearFn = F.getParent()->getOrInsertFunction(
 			"loopBBInsClear",
@@ -2237,7 +2238,7 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 	auto loopInvokeEndFn = F.getParent()->getOrInsertFunction(
 			"loopInvokeEnd",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto reportExecInsCountFn = F.getParent()->getOrInsertFunction(
 			"reportExecInsCount",
@@ -2247,27 +2248,27 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 	auto updateLoopPreHeaderFn = F.getParent()->getOrInsertFunction(
 			"updateLoopPreHeader",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto loopBBMappingUnitUpdate = F.getParent()->getOrInsertFunction(
 			"loopBBMappingUnitUpdate",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto recordUncondMunitTransition = F.getParent()->getOrInsertFunction(
 			"recordUncondMunitTransition",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	auto recordCondMunitTransition = F.getParent()->getOrInsertFunction(
 			"recordCondMunitTransition",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
 			Type::getInt1Ty(Ctx));
 
 	for (std::pair<Loop *, std::string> lnPair : loopNames)
@@ -2281,7 +2282,7 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 
 		for (BasicBlock *BB : loopsExclusieBasicBlockMap[lnPair.first])
 		{
-			int instructionCountBB = BB->getInstList().size();
+			int instructionCountBB = BB->size();
 			Value *instructionCountBBVal = ConstantInt::get(Type::getInt32Ty(Ctx), instructionCountBB);
 			Value *BBName = builder.CreateGlobalStringPtr(BB->getName());
 
@@ -2305,7 +2306,7 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 		BasicBlock *lpPreHeaderBB = lt.lp->getLoopPreheader();
 		Value *loopName = builder.CreateGlobalStringPtr(loopNames[lt.lp]);
 
-		int instructionCountBB = lpPreHeaderBB->getInstList().size();
+		int instructionCountBB = lpPreHeaderBB->size();
 		Value *instructionCountBBVal = ConstantInt::get(Type::getInt32Ty(Ctx), instructionCountBB);
 		Value *BBName = builder.CreateGlobalStringPtr(lpPreHeaderBB->getName());
 
@@ -2316,7 +2317,7 @@ void loopTrace(std::map<Loop *, std::string> loopNames, Function &F, LoopTree ro
 	//find return instruction
 	for (BasicBlock &BB : F)
 	{
-		Value *insCountBBVal = ConstantInt::get(Type::getInt32Ty(Ctx), BB.getInstList().size());
+		Value *insCountBBVal = ConstantInt::get(Type::getInt32Ty(Ctx), BB.size());
 		builder.SetInsertPoint(&BB, --BB.end());
 		builder.CreateCall(reportExecInsCountFn, {insCountBBVal});
 
@@ -2396,20 +2397,14 @@ std::string getMappingUnitNameUsingTokenFunction(Function &F)
 		// BB.dump();
 		for (auto &I : BB)
 		{
-			if (CallInst *CI = dyn_cast<CallInst>(&I))
+			if (CallBase *CB = dyn_cast<CallBase>(&I))
 			{
-				Function *calledFn = CI->getCalledFunction();
-				if (!calledFn) {
-					// Handle calls through bitcasts (e.g., from implicit function declarations)
-					if (auto *CE = dyn_cast<ConstantExpr>(CI->getCalledOperand()))
-						if (CE->getOpcode() == Instruction::BitCast)
-							calledFn = dyn_cast<Function>(CE->getOperand(0));
-				}
+				Function *calledFn = resolveCalledFunction(CB);
 				if (calledFn && calledFn->getName() == "please_map_me")
 				{
 					LLVM_DEBUG(dbgs()  << "token found in BB = " << BB.getName() << "\n");
 					MUBB = &BB;
-					checker_ins = CI;
+					checker_ins = cast<Instruction>(CB);
 				}
 			}
 		}
@@ -2466,7 +2461,7 @@ void AllocateSPMBanks(std::unordered_set<Value *> &outer_vals,
 	{
 		Value *mem_value = it->first;
 		GetElementPtrInst *gep = it->second;
-		std::string gep_pointer_name = gep->getPointerOperand()->getName();
+		std::string gep_pointer_name = gep->getPointerOperand()->getName().str();
 		if (sizeArrMap.find(gep_pointer_name) != sizeArrMap.end())
 		{
 			variable_sizes_bytes[gep->getPointerOperand()] = sizeArrMap[gep_pointer_name];
@@ -2611,16 +2606,9 @@ void AllocateSPMBanks(std::unordered_set<Value *> &outer_vals,
 namespace
 {
 
-struct dfggenPass : public FunctionPass
+static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
+		DependenceInfo &DI, DominatorTree &DT)
 {
-	static char ID;
-	dfggenPass() : FunctionPass(ID)
-	{
-		//    	initializeSkeletonFunctionPassPass(*PassRegistry::getPassRegistry());
-	}
-
-	virtual bool runOnFunction(Function &F)
-	{
 	  try {
 		std::map<Instruction *, int> insMap;
 		std::map<Instruction *, int> insMap2;
@@ -2652,27 +2640,11 @@ struct dfggenPass : public FunctionPass
 			ParseSizeAttr(F, &sizeArrMap);
 			ValidateSupportedArrayDimensions(F);
 
-			std::string Filename = ("cfg." + F.getName() + ".dot").str();
-		//errs() << "Writing '" << Filename << "'...";
-
-		raw_fd_ostream File(Filename, EC, sys::fs::F_Text);
-
-		if (!EC)
-		{
-			WriteGraph(File, (const Function *)&F);
-		}
-		else
-		{
-			errs() << "  error opening file for writing!";
-			errs() << "\n";
-		}
-
 		LLVM_DEBUG(dbgs() << "Processing : " << F.getName() << "\n");
 
-		LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-		ScalarEvolution *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
-		DependenceInfo *DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
-		DominatorTree *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+		ScalarEvolution *SEPtr = &SE;
+		DependenceInfo *DIPtr = &DI;
+		DominatorTree *DTPtr = &DT;
 		const DataLayout &DL = F.getParent()->getDataLayout();
 
 		// Pass 1: hoist loop-invariant row-pointer loads (arr[fixed][*]) to
@@ -2740,13 +2712,8 @@ struct dfggenPass : public FunctionPass
 		// Validate loop body for unsupported patterns
 		for (BasicBlock *BB : mappingUnitMap[munitName].allBlocks) {
 			for (Instruction &I : *BB) {
-				if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-					Function *calledFn = CI->getCalledFunction();
-					if (!calledFn) {
-						if (auto *CE = dyn_cast<ConstantExpr>(CI->getCalledOperand()))
-							if (CE->getOpcode() == Instruction::BitCast)
-								calledFn = dyn_cast<Function>(CE->getOperand(0));
-					}
+				if (CallBase *CB = dyn_cast<CallBase>(&I)) {
+					Function *calledFn = resolveCalledFunction(CB);
 					if (calledFn && !calledFn->isIntrinsic() && calledFn->getName() != "please_map_me") {
 						errs() << "Warning: function call to '" << calledFn->getName()
 							   << "' found in loop body; this may cause issues in DFG generation\n";
@@ -2762,8 +2729,8 @@ struct dfggenPass : public FunctionPass
 			DFGPartPred *LoopDFG = new DFGPartPred(F.getName().str() + "_" + munitName, &loopNames, mappingUnitMap[munitName].lp);
 			LoopDFG->removeAGI = RemoveAGI;
 			LoopDFG->setKernelName(F.getName().str());
-			LoopDFG->SE = SE;
-			LoopDFG->DT = DT;
+			LoopDFG->SE = SEPtr;
+			LoopDFG->DT = DTPtr;
 
 			LoopDFG->setBBSuccBasicBlocks(BBSuccBasicBlocks);
 			LoopDFG->sizeArrMap = sizeArrMap;
@@ -2792,7 +2759,7 @@ struct dfggenPass : public FunctionPass
 			LLVM_DEBUG(dbgs() << "[Skeleton.cpp][traverseDefTree end]\n\n");
 
 			LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][addMemRecDepEdgesNew begin]\n");
-			LoopDFG->addMemRecDepEdgesNew(DI);
+			LoopDFG->addMemRecDepEdgesNew(DIPtr);
 			LLVM_DEBUG(dbgs() << "[Skeleton.cpp][addMemRecDepEdgesNew end]\n\n");
 
 
@@ -2881,21 +2848,29 @@ struct dfggenPass : public FunctionPass
 		errs() << "Error: " << e.what() << "\n";
 		return false;
 	  }
-	} //END OF runOnFunction
+} //END OF runMorpherDFGGen
 
-		void getAnalysisUsage(AnalysisUsage &AU) const override
-		{
-			AU.addRequired<DependenceAnalysisWrapperPass>();
-			AU.addRequired<LoopInfoWrapperPass>();
-			AU.addRequired<ScalarEvolutionWrapperPass>();
-			AU.addRequired<AAResultsWrapperPass>();
-			AU.addRequired<DominatorTreeWrapperPass>();
-			AU.addRequiredID(LoopSimplifyID);
-			AU.addRequiredID(LCSSAID);
-		}
-	};
+struct MorpherDFGGenPass : public PassInfoMixin<MorpherDFGGenPass>
+{
+	PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM)
+	{
+		LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
+		ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
+		DependenceInfo &DI = AM.getResult<DependenceAnalysis>(F);
+		DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
+
+		return runMorpherDFGGen(F, LI, SE, DI, DT)
+			? PreservedAnalyses::none()
+			: PreservedAnalyses::all();
+	}
+};
 
 } // namespace
 
-char dfggenPass::ID = 1;
-static RegisterPass<dfggenPass> X("skeleton", "SkeletonFunctionPass", false, false);
+FunctionPassManager createMorpherDFGGenPipeline() {
+	FunctionPassManager FPM;
+	FPM.addPass(LoopSimplifyPass());
+	FPM.addPass(LCSSAPass());
+	FPM.addPass(MorpherDFGGenPass());
+	return FPM;
+}

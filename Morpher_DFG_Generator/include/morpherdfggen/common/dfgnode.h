@@ -1,6 +1,10 @@
 #ifndef DFGNODE_H
 #define DFGNODE_H
 
+#include <map>
+#include <string>
+#include <vector>
+
 #include <morpherdfggen/common/edge.h>
 
 class CGRANode;

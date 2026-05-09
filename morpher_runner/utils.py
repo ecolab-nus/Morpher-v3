@@ -12,9 +12,57 @@ class BankSizeTooSmallError(RuntimeError):
     self.required_banksize = required_banksize
 
 
+def resolve_llvm_tool(tool_name):
+  """Resolve an LLVM tool name, optionally using a configured bin dir or suffix."""
+  bin_dir = os.environ.get("MORPHER_LLVM_BIN_DIR", "").strip()
+  suffix = os.environ.get("MORPHER_LLVM_SUFFIX", "").strip()
+
+  candidates = []
+  if suffix:
+    candidates.append("%s%s" % (tool_name, suffix))
+  candidates.append(tool_name)
+
+  if bin_dir:
+    for candidate in candidates:
+      path = os.path.join(bin_dir, candidate)
+      if os.path.isfile(path) and os.access(path, os.X_OK):
+        return path
+
+  return candidates[0]
+
+
+def resolve_llvm_lib_dir():
+  lib_dir = os.environ.get("MORPHER_LLVM_LIB_DIR", "").strip()
+  if lib_dir:
+    return lib_dir
+
+  bin_dir = os.environ.get("MORPHER_LLVM_BIN_DIR", "").strip()
+  if not bin_dir:
+    return ""
+
+  candidate = os.path.normpath(os.path.join(bin_dir, "..", "lib"))
+  if os.path.isdir(candidate):
+    return candidate
+  return ""
+
+
+def build_llvm_tool_env():
+  env = os.environ.copy()
+  lib_dir = resolve_llvm_lib_dir()
+  if not lib_dir:
+    return env
+
+  ld_library_path = env.get("LD_LIBRARY_PATH", "").strip()
+  entries = [entry for entry in ld_library_path.split(":") if entry]
+  if lib_dir not in entries:
+    entries.insert(0, lib_dir)
+  env["LD_LIBRARY_PATH"] = ":".join(entries)
+  return env
+
+
 def build_clang_ir_command(src_file, out_file, define_cgra_compiler=False, suppress_frontend_warnings=False, cwd=None):
   """Compile C/C++ source into LLVM IR with Morpher's expected non-vectorized flags."""
-  cmd_parts = ["clang"]
+  cmd_parts = [resolve_llvm_tool("clang")]
   if define_cgra_compiler:
     cmd_parts.extend(["-D", "CGRA_COMPILER"])
   cmd_parts.extend([
@@ -32,7 +80,7 @@ def build_clang_ir_command(src_file, out_file, define_cgra_compiler=False, suppr
       "-Wno-main-return-type",
     ])
   cmd_parts.extend([src_file, "-S", "-o", out_file])
-  return Command(argv=cmd_parts, cwd=cwd)
+  return Command(argv=cmd_parts, cwd=cwd, env=build_llvm_tool_env())
 
 
 def find_arrays_larger_than_bank(ir_file, banksize):
@@ -69,7 +117,14 @@ def suggest_larger_banksize(ir_file, banksize):
 
 def run_dfg_opt_with_diagnostics(opt_cmd_argv, kernel, banksize, numberofbanks, cwd=None):
   """Run DFG generation pass and print friendly memory-bank diagnostics."""
-  result = run_command(Command(argv=opt_cmd_argv, cwd=cwd, check=False, capture_output=True, text=True))
+  result = run_command(Command(
+    argv=opt_cmd_argv,
+    cwd=cwd,
+    check=False,
+    capture_output=True,
+    text=True,
+    env=build_llvm_tool_env(),
+  ))
   output = (result.stdout or "") + "\n" + (result.stderr or "")
   dfg_generation_error = "DFG generation error in" in output
 

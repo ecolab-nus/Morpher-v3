@@ -1,6 +1,5 @@
 import os
 import re
-import subprocess
 import time
 
 from morpher_runner.exec import Command
@@ -15,6 +14,8 @@ from morpher_runner.simd_packer import reindex_addr_trace
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import BankSizeTooSmallError
+from morpher_runner.utils import build_llvm_tool_env
+from morpher_runner.utils import resolve_llvm_tool
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
 
 
@@ -29,6 +30,7 @@ def count_trace_files(trace_dir, kernel):
 
 def build_ir_generation_commands(context):
   kernel = context.kernel
+  opt_tool = resolve_llvm_tool("opt")
   return [
     build_clang_ir_command(
       context.csourcefile,
@@ -39,65 +41,52 @@ def build_ir_generation_commands(context):
     ),
     Command(
       argv=[
-        "opt",
-        "-gvn",
-        "-mem2reg",
-        "-memdep",
-        "-memcpyopt",
-        "-lcssa",
-        "-loop-simplify",
-        "-licm",
-        "-loop-deletion",
-        "-indvars",
-        "-simplifycfg",
-        "-mergereturn",
-        "-indvars",
+        opt_tool,
+        "-passes=default<O2>",
         "%s.ll" % kernel,
         "-S",
         "-o",
         "%s_opt.ll" % kernel,
       ],
       cwd=context.dfg_gen_kernel,
+      env=build_llvm_tool_env(),
     ),
   ]
 
 
+def simd_packing_active_for_factor(config, unroll_factor):
+  return config.simd_enabled and unroll_factor >= config.simd_lanes
+
+
 def build_unroll_command(context, unroll_factor, remainder_policy):
   kernel = context.kernel
-  reduction_lanes = context.config.simd_lanes if context.config.simd_enabled else 1
-  reduction_policy = context.config.simd_reduction_policy if context.config.simd_enabled else "tree"
+  simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
+  reduction_lanes = context.config.simd_lanes if simd_active else 1
+  reduction_policy = context.config.simd_reduction_policy if simd_active else "tree"
+  opt_tool = resolve_llvm_tool("opt")
   return Command(
     argv=[
-      "opt",
-      "-load",
+      opt_tool,
+      "-load-pass-plugin",
       "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
-      "-morpher-loop-unroll",
-      "-morpher-unroll-fn",
+      "-passes=morpher-loop-unroll",
+      "--morpher-unroll-fn",
       kernel,
-      "-morpher-unroll-factor",
+      "--morpher-unroll-factor",
       str(unroll_factor),
-      "-morpher-remainder-policy",
+      "--morpher-remainder-policy",
       remainder_policy,
-      "-morpher-reduction-lanes",
+      "--morpher-reduction-lanes",
       str(reduction_lanes),
-      "-morpher-reduction-policy",
+      "--morpher-reduction-policy",
       reduction_policy,
-      "-simplifycfg",
-      "-loop-simplify",
-      "-lcssa",
-      "-instcombine",
-      "-licm",
-      "-gvn",
-      "-dce",
-      "-simplifycfg",
-      "-loop-simplify",
-      "-lcssa",
       "%s_opt.ll" % kernel,
       "-S",
       "-o",
       "%s_uf%d_opt.ll" % (kernel, unroll_factor),
     ],
     cwd=context.dfg_gen_kernel,
+    env=build_llvm_tool_env(),
   )
 
 
@@ -107,23 +96,23 @@ def build_dfg_pass_command(context, skeleton_ir=None):
   if skeleton_ir is None:
     skeleton_ir = "%s_opt.ll" % kernel
   cmd = [
-    "opt",
-    "-load",
+    resolve_llvm_tool("opt"),
+    "-load-pass-plugin",
     "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
-    "-fn",
+    "-passes=skeleton",
+    "--fn",
     kernel,
-    "-nobanks",
+    "--nobanks",
     str(config.numberofbanks),
-    "-banksize",
+    "--banksize",
     str(config.banksize),
-    "-skeleton",
-    skeleton_ir,
     "-S",
+    skeleton_ir,
     "-o",
     "%s_opt_instrument.ll" % kernel,
   ]
   if config.remove_agi:
-    cmd.append("-remove-agi")
+    cmd.append("--remove-agi")
   return cmd
 
 
@@ -207,10 +196,14 @@ def validate_dfg_outputs(context):
 
 def build_instrumentation_commands(context):
   kernel = context.kernel
+  clang_tool = resolve_llvm_tool("clang")
+  llvm_link_tool = resolve_llvm_tool("llvm-link")
+  llc_tool = resolve_llvm_tool("llc")
+  clangxx_tool = resolve_llvm_tool("clang++")
   commands = [
     Command(
       argv=[
-        "clang",
+        clang_tool,
         "-target",
         "i386-unknown-linux-gnu",
         "-c",
@@ -221,6 +214,7 @@ def build_instrumentation_commands(context):
         "instrumentation.ll",
       ],
       cwd=context.dfg_gen_kernel,
+      env=build_llvm_tool_env(),
     )
   ]
 
@@ -235,22 +229,24 @@ def build_instrumentation_commands(context):
     )
     commands.append(
       Command(
-        argv=["llvm-link", "%s_opt_instrument.ll" % kernel, "instrumentation.ll", "polybench.ll", "-o", "final.ll"],
+        argv=[llvm_link_tool, "%s_opt_instrument.ll" % kernel, "instrumentation.ll", "polybench.ll", "-o", "final.ll"],
         cwd=context.dfg_gen_kernel,
+        env=build_llvm_tool_env(),
       )
     )
   else:
     commands.append(
       Command(
-        argv=["llvm-link", "%s_opt_instrument.ll" % kernel, "instrumentation.ll", "-o", "final.ll"],
+        argv=[llvm_link_tool, "%s_opt_instrument.ll" % kernel, "instrumentation.ll", "-o", "final.ll"],
         cwd=context.dfg_gen_kernel,
+        env=build_llvm_tool_env(),
       )
     )
 
   commands.extend(
     [
-      Command(argv=["llc", "-filetype=obj", "final.ll", "-o", "final.o"], cwd=context.dfg_gen_kernel),
-      Command(argv=["clang++", "-m32", "final.o", "-o", "final"], cwd=context.dfg_gen_kernel),
+      Command(argv=[llc_tool, "-filetype=obj", "final.ll", "-o", "final.o"], cwd=context.dfg_gen_kernel, env=build_llvm_tool_env()),
+      Command(argv=[clangxx_tool, "-m32", "-no-pie", "final.o", "-o", "final"], cwd=context.dfg_gen_kernel, env=build_llvm_tool_env()),
     ]
   )
   return commands
@@ -258,14 +254,7 @@ def build_instrumentation_commands(context):
 
 def _default_unroll_factor(config):
   if config.auto_unroll_enabled:
-    factors = sorted(config.auto_unroll_factors, reverse=True)
-    if config.simd_enabled:
-      factors = [factor for factor in factors if factor >= config.simd_lanes]
-      if not factors:
-        factors = [config.simd_lanes]
-    return factors[0]
-  if config.simd_enabled:
-    return config.simd_lanes
+    return sorted(config.auto_unroll_factors, reverse=True)[0]
   return 1
 
 
@@ -277,13 +266,21 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
     unroll_factor = _default_unroll_factor(config)
   if remainder_policy is None:
     remainder_policy = config.auto_unroll_remainder_policy
+  simd_active = simd_packing_active_for_factor(config, unroll_factor)
 
   print("-----Running Morpher_DFG_Generator-----\n")
   if config.simd_enabled:
-    print(
-      "SIMD packing enabled: lanes=%d, pack_load_store=%s\n"
-      % (config.simd_lanes, "true" if config.simd_pack_load_store else "false")
-    )
+    if simd_active:
+      print(
+        "SIMD packing enabled for this candidate: lanes=%d, pack_load_store=%s\n"
+        % (config.simd_lanes, "true" if config.simd_pack_load_store else "false")
+      )
+    else:
+      print(
+        "SIMD hardware enabled, but this candidate is narrower than simd.lanes=%d; "
+        "mapping scalar lanes without SIMD packing.\n"
+        % config.simd_lanes
+      )
   if unroll_factor > 1:
     print(
       "Requested Morpher scalar loop unroll: factor=%d, remainder_policy=%s\n"
@@ -321,12 +318,12 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   mapper_xml = dfg_xml
   simd_mapping = None
   scalar_iter_reindex: "dict[int, int]" = {}
-  if config.remove_iter and not config.simd_enabled:
+  if config.remove_iter and not simd_active:
     pruned_xml = "%s/%s_noiter_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
     n, scalar_iter_reindex = prune_iter_control_xml(dfg_xml, pruned_xml)
     print("Iter-control prune (scalar): removed %d nodes\n" % n)
     mapper_xml = pruned_xml
-  if config.simd_enabled:
+  if simd_active:
     simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
       dfg_kernel.rstrip("/"),
       kernel,
@@ -382,13 +379,14 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   start_time = time.time()
   with open("%s/final_log.txt" % dfg_kernel.rstrip("/"), "w", encoding="utf-8") as stdout_log:
     with open("%s/final_err_log.txt" % dfg_kernel.rstrip("/"), "w", encoding="utf-8") as stderr_log:
-      result = subprocess.run(
-        ["./final"],
+      result = run_command(Command(
+        argv=["./final"],
         cwd=dfg_kernel,
         stdout=stdout_log,
         stderr=stderr_log,
         check=False,
         env=trace_env,
+      )
       )
   elapsed = time.time() - start_time
   trace_count = count_trace_files("%s/memtraces" % dfg_kernel.rstrip("/"), kernel)

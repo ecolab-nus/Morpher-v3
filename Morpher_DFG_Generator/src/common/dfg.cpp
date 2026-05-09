@@ -2,6 +2,7 @@
 
 #include "llvm/Analysis/CFG.h"
 #include <algorithm>
+#include <cmath>
 #include <queue>
 #include <ctime>
 #include <functional>
@@ -1182,14 +1183,14 @@ void DFG::addMemDepEdges(MemoryDependenceResults *MD)
 			LLVM_DEBUG(dbgs() << "Dependent :");
 			LLVM_DEBUG(it->dump());
 
-			if (mRes.isNonLocal())
-			{
-				if (auto CS = CallSite(it))
+				if (mRes.isNonLocal())
 				{
-				}
-				else
-				{
-					LLVM_DEBUG(dbgs() << "****** GET NON LOCAL MEM DEPENDENCIES ******\n");
+					if (isa<CallBase>(it))
+					{
+					}
+					else
+					{
+						LLVM_DEBUG(dbgs() << "****** GET NON LOCAL MEM DEPENDENCIES ******\n");
 
 					MD->getNonLocalPointerDependency(it, result);
 
@@ -2516,8 +2517,8 @@ bool DFG::MapCGRA_SMART(int XDim, int YDim, ArchType arch, int bTrack, int initM
 	std::string mapfileName = this->getName() + "_mapping.log";
 	mappingOutFile.open(mapfileName.c_str());
 	clock_t begin = clock();
-	int MII = ceil((float)NodeList.size() / ((float)XDim * (float)YDim));
-	int memMII = ceil((float)getMEMOpsToBePlaced() / ((float)YDim));
+	int MII = std::ceil((float)NodeList.size() / ((float)XDim * (float)YDim));
+	int memMII = std::ceil((float)getMEMOpsToBePlaced() / ((float)YDim));
 	findMaxRecDist();
 	conMatArr.push_back(getConMat());
 
@@ -2682,7 +2683,7 @@ void DFG::MapCGRA(int XDim, int YDim)
 {
 
 	//TODO : Add recurrence constrained MII
-	int MII = ceil((float)NodeList.size() / ((float)XDim * (float)YDim));
+	int MII = std::ceil((float)NodeList.size() / ((float)XDim * (float)YDim));
 	std::vector<ConnectedCGRANode> candidateCGRANodes;
 	dfgNode *temp;
 
@@ -3165,7 +3166,7 @@ void DFG::MapCGRA_EMS(int XDim, int YDim, std::string mapfileName)
 {
 	mappingOutFile.open(mapfileName.c_str());
 	clock_t begin = clock();
-	int MII = ceil((float)NodeList.size() / ((float)XDim * (float)YDim));
+	int MII = std::ceil((float)NodeList.size() / ((float)XDim * (float)YDim));
 	findMaxRecDist();
 	//	conMat = getConMat();
 	conMatArr.push_back(getConMat());
@@ -5893,7 +5894,7 @@ int DFG::printCongestionInfo()
 		}
 	}
 
-	int MII = (int)ceil((double)NodeList.size() / ((double)currCGRA->getXdim() * (double)currCGRA->getYdim()));
+	int MII = (int)std::ceil((double)NodeList.size() / ((double)currCGRA->getXdim() * (double)currCGRA->getYdim()));
 	std::map<int, std::map<int, int>> nodeMapEst;
 	std::map<int, int> totalNodeCountMapEst;
 
@@ -6258,7 +6259,8 @@ int DFG::nameNodes()
 					{
 						node->setFinalIns(Hy_LOAD);
 					}
-					if (node->getNode()->getType() == Type::getDoublePtrTy(node->getNode()->getContext()))
+					if (node->getNode()->getType() ==
+					    PointerType::get(Type::getDoubleTy(node->getNode()->getContext()), 0))
 					{
 						node->setFinalIns(Hy_LOAD);
 					}
@@ -6316,7 +6318,7 @@ int DFG::nameNodes()
 				TruncInst *TI = cast<TruncInst>(node->getNode());
 				//					node->setConstantVal(TI->getDestTy()->getIntegerBitWidth()/8);
 				double destBitWidthDbl = (double)(TI->getDestTy()->getIntegerBitWidth());
-				double bitMaskDbl = pow(2, destBitWidthDbl) - 1;
+				double bitMaskDbl = std::pow(2, destBitWidthDbl) - 1;
 				uint32_t bitMask = ((uint32_t)bitMaskDbl);
 				node->setConstantVal(bitMask);
 				node->setFinalIns(AND);
@@ -7053,7 +7055,7 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 	auto loopStartFn = F.getParent()->getOrInsertFunction(
 			"loopStart",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	builder.CreateCall(loopStartFn, {loopName});
 
@@ -7268,7 +7270,7 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 				//				builder.SetInsertPoint(loopHeader,++builder.GetInsertPoint());
 
 				Value *old = GEP->getPointerOperand();
-				Value *bitcastedPtr = builder.CreateBitCast(old, Type::getInt8PtrTy(Ctx));
+				Value *bitcastedPtr = builder.CreateBitCast(old, morpher::llvm_compat::getInt8PtrTy(Ctx));
 				int size = DL.getTypeAllocSize(ST);
 
 				(*sizeArrMap)[GEP->getPointerOperand()->getName().str()] = size;
@@ -7301,8 +7303,8 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 				auto printArrFunc = F.getParent()->getOrInsertFunction(
 						"printArr",
 						FunctionType::getVoidTy(Ctx),
-						Type::getInt8PtrTy(Ctx),
-						Type::getInt8PtrTy(Ctx),
+						morpher::llvm_compat::getInt8PtrTy(Ctx),
+						morpher::llvm_compat::getInt8PtrTy(Ctx),
 						Type::getInt32Ty(Ctx),
 						Type::getInt8Ty(Ctx),
 						Type::getInt32Ty(Ctx));
@@ -7356,7 +7358,7 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 					builder.SetInsertPoint(loopHeader, loopHeader->getFirstInsertionPt());
 
 					Value *old = GEP->getPointerOperand();
-					Value *bitcastedPtr = builder.CreateBitCast(old, Type::getInt8PtrTy(Ctx));
+					Value *bitcastedPtr = builder.CreateBitCast(old, morpher::llvm_compat::getInt8PtrTy(Ctx));
 					int size = DL.getTypeAllocSize(AT);
 
 					(*sizeArrMap)[GEP->getPointerOperand()->getName().str()] = size;
@@ -7378,8 +7380,8 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 					auto printArrFunc = F.getParent()->getOrInsertFunction(
 							"printArr",
 							FunctionType::getVoidTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
 							Type::getInt32Ty(Ctx),
 							Type::getInt8Ty(Ctx),
 							Type::getInt32Ty(Ctx));
@@ -7423,13 +7425,13 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 
 					Value *old = GEP->getPointerOperand();
 					Value *addr = GEP;
-					Value *bitcastedPtr = builder.CreateBitCast(old, Type::getInt8PtrTy(Ctx));
+					Value *bitcastedPtr = builder.CreateBitCast(old, morpher::llvm_compat::getInt8PtrTy(Ctx));
 					int size = DL.getTypeAllocSize(IT);
 
 					auto reportDynArrSize = F.getParent()->getOrInsertFunction(
 							"reportDynArrSize", FunctionType::getVoidTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
 							Type::getInt32Ty(Ctx),
 							Type::getInt32Ty(Ctx));
 
@@ -7478,8 +7480,8 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 						auto printArrFunc = F.getParent()->getOrInsertFunction(
 								"printArr",
 								FunctionType::getVoidTy(Ctx),
-								Type::getInt8PtrTy(Ctx),
-								Type::getInt8PtrTy(Ctx),
+								morpher::llvm_compat::getInt8PtrTy(Ctx),
+								morpher::llvm_compat::getInt8PtrTy(Ctx),
 								Type::getInt32Ty(Ctx),
 								Type::getInt8Ty(Ctx),
 								Type::getInt32Ty(Ctx));
@@ -7531,7 +7533,7 @@ void DFG::GEPInvestigate(Function &F, Loop *L, std::map<std::string, int> *sizeA
 			"printDynArrSize", FunctionType::getVoidTy(Ctx));
 
 	auto loopEndFn = F.getParent()->getOrInsertFunction(
-			"loopEnd", FunctionType::getVoidTy(Ctx), Type::getInt8PtrTy(Ctx));
+			"loopEnd", FunctionType::getVoidTy(Ctx), morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	//	for (int i = 0; i < loopExitInsVec.size(); ++i) {
 	//		builder.SetInsertPoint(loopExitInsVec[i]);
@@ -7578,7 +7580,7 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 	auto loopStartFn = F.getParent()->getOrInsertFunction(
 			"loopStart",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx));
+			morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	builder.CreateCall(loopStartFn, {loopName});
 
@@ -7793,7 +7795,7 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 				//				builder.SetInsertPoint(loopHeader,++builder.GetInsertPoint());
 
 				Value *old = GEP->getPointerOperand();
-				Value *bitcastedPtr = builder.CreateBitCast(old, Type::getInt8PtrTy(Ctx));
+				Value *bitcastedPtr = builder.CreateBitCast(old, morpher::llvm_compat::getInt8PtrTy(Ctx));
 				int size = DL.getTypeAllocSize(ST);
 
 				(*sizeArrMap)[GEP->getPointerOperand()->getName().str()] = size;
@@ -7826,8 +7828,8 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 				auto printArrFunc = F.getParent()->getOrInsertFunction(
 						"printArr",
 						FunctionType::getVoidTy(Ctx),
-						Type::getInt8PtrTy(Ctx),
-						Type::getInt8PtrTy(Ctx),
+						morpher::llvm_compat::getInt8PtrTy(Ctx),
+						morpher::llvm_compat::getInt8PtrTy(Ctx),
 						Type::getInt32Ty(Ctx),
 						Type::getInt8Ty(Ctx),
 						Type::getInt32Ty(Ctx));
@@ -7881,7 +7883,7 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 					builder.SetInsertPoint(loopHeader, loopHeader->getFirstInsertionPt());
 
 					Value *old = GEP->getPointerOperand();
-					Value *bitcastedPtr = builder.CreateBitCast(old, Type::getInt8PtrTy(Ctx));
+					Value *bitcastedPtr = builder.CreateBitCast(old, morpher::llvm_compat::getInt8PtrTy(Ctx));
 					int size = DL.getTypeAllocSize(AT);
 
 					(*sizeArrMap)[GEP->getPointerOperand()->getName().str()] = size;
@@ -7903,8 +7905,8 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 					auto printArrFunc = F.getParent()->getOrInsertFunction(
 							"printArr",
 							FunctionType::getVoidTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
 							Type::getInt32Ty(Ctx),
 							Type::getInt8Ty(Ctx),
 							Type::getInt32Ty(Ctx));
@@ -7948,13 +7950,13 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 
 					Value *old = GEP->getPointerOperand();
 					Value *addr = GEP;
-					Value *bitcastedPtr = builder.CreateBitCast(old, Type::getInt8PtrTy(Ctx));
+					Value *bitcastedPtr = builder.CreateBitCast(old, morpher::llvm_compat::getInt8PtrTy(Ctx));
 					int size = DL.getTypeAllocSize(IT);
 
 					auto reportDynArrSize = F.getParent()->getOrInsertFunction(
 							"reportDynArrSize", FunctionType::getVoidTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
-							Type::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
+							morpher::llvm_compat::getInt8PtrTy(Ctx),
 							Type::getInt32Ty(Ctx),
 							Type::getInt32Ty(Ctx));
 
@@ -8003,8 +8005,8 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 						auto printArrFunc = F.getParent()->getOrInsertFunction(
 								"printArr",
 								FunctionType::getVoidTy(Ctx),
-								Type::getInt8PtrTy(Ctx),
-								Type::getInt8PtrTy(Ctx),
+								morpher::llvm_compat::getInt8PtrTy(Ctx),
+								morpher::llvm_compat::getInt8PtrTy(Ctx),
 								Type::getInt32Ty(Ctx),
 								Type::getInt8Ty(Ctx),
 								Type::getInt32Ty(Ctx));
@@ -8056,7 +8058,7 @@ void DFG::GEPInvestigate(Function &F, std::map<std::string, int> *sizeArrMap)
 			"printDynArrSize", FunctionType::getVoidTy(Ctx));
 
 	auto loopEndFn = F.getParent()->getOrInsertFunction(
-			"loopEnd", FunctionType::getVoidTy(Ctx), Type::getInt8PtrTy(Ctx));
+			"loopEnd", FunctionType::getVoidTy(Ctx), morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	//	for (int i = 0; i < loopExitInsVec.size(); ++i) {
 	//		builder.SetInsertPoint(loopExitInsVec[i]);
@@ -9416,11 +9418,10 @@ int DFG::nonGEPLoadStorecheck()
 		int Size = DL.getTypeAllocSize(T);
 		LLVM_DEBUG(dbgs() << "Size=" << Size << ",");
 
-		if (PointerType *PT = dyn_cast<PointerType>(T))
-		{
-			LLVM_DEBUG(dbgs() << "ElementSize=" << DL.getTypeAllocSize(PT->getElementType()) << ",");
-			//			PT->is
-		}
+			if (Type *ValueType = morpher::llvm_compat::getLoadStoreValueType(node->getNode()))
+			{
+				LLVM_DEBUG(dbgs() << "ElementSize=" << DL.getTypeAllocSize(ValueType) << ",");
+			}
 
 		LLVM_DEBUG(dbgs() << "S/A/I/P=" << T->isStructTy() << "/");
 		LLVM_DEBUG(dbgs() << T->isArrayTy() << "/");
@@ -10737,9 +10738,8 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 					else
 					{
 						DataLayout DL = LDI->getParent()->getParent()->getParent()->getDataLayout();
-						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
-							PointerType *PT = cast<PointerType>(mem_ptrs[pointer]->getPointerOperand()->getType());
-							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+							if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+								array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(mem_ptrs[pointer]->getSourceElementType());
 						} else {
 							// Size of the loaded type (pointer or data element).
 							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(LDI->getType());
@@ -10771,9 +10771,8 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 					else
 					{
 						DataLayout DL = STI->getParent()->getParent()->getParent()->getDataLayout();
-						if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
-							PointerType *PT = cast<PointerType>(mem_ptrs[pointer]->getPointerOperand()->getType());
-							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+							if (mem_ptrs.find(pointer) != mem_ptrs.end()) {
+								array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(mem_ptrs[pointer]->getSourceElementType());
 						} else {
 							PointerType *PT = cast<PointerType>(STI->getValueOperand()->getType()->getPointerTo());
 							array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(STI->getValueOperand()->getType());
@@ -10805,8 +10804,7 @@ void DFG::SetBasePointers(std::unordered_set<Value *> &outer_vals,
 			else
 			{
 				DataLayout DL = GEP->getParent()->getParent()->getParent()->getDataLayout();
-				PointerType *PT = cast<PointerType>(GEP->getPointerOperand()->getType());
-				array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(PT->getElementType());
+					array_pointer_sizes[base_ptr_name] = DL.getTypeAllocSize(GEP->getSourceElementType());
 			}
 		}
 
@@ -10857,7 +10855,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 	auto loopStartFn = F.getParent()->getOrInsertFunction(
 			"loopStart",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx) //loopname
+			morpher::llvm_compat::getInt8PtrTy(Ctx) //loopname
 	);
 
 	//this should be called at the end of the loop
@@ -10868,16 +10866,16 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 	auto printArrFunc = F.getParent()->getOrInsertFunction(
 			"printArr",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
 			Type::getInt32Ty(Ctx),
 			Type::getInt8Ty(Ctx),
 			Type::getInt32Ty(Ctx));
 
 	auto reportDynArrSize = F.getParent()->getOrInsertFunction(
 			"reportDynArrSize", FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
-			Type::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
+			morpher::llvm_compat::getInt8PtrTy(Ctx),
 			Type::getInt32Ty(Ctx),
 			Type::getInt32Ty(Ctx));
 
@@ -10885,43 +10883,43 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			"printDynArrSize", FunctionType::getVoidTy(Ctx));
 
 	auto loopEndFn = F.getParent()->getOrInsertFunction(
-			"loopEnd", FunctionType::getVoidTy(Ctx), Type::getInt8PtrTy(Ctx));
+			"loopEnd", FunctionType::getVoidTy(Ctx), morpher::llvm_compat::getInt8PtrTy(Ctx));
 
 	//these should be called prior to the loop start/end to report all the variables that are being accessed in the loop
 	auto live_in_report_FN = F.getParent()->getOrInsertFunction(
 			"LiveInReport",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //variable name
-			Type::getInt8PtrTy(Ctx), //variable data
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable data
 			Type::getInt32Ty(Ctx) //size
 	);
 	auto live_in_report_FN2 = F.getParent()->getOrInsertFunction(
 			"LiveInReport2",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //variable name
-			Type::getInt32PtrTy(Ctx), //variable data
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
+			PointerType::get(Type::getInt32Ty(Ctx), 0), //variable data
 			Type::getInt32Ty(Ctx) //size
 	);
 
 	auto live_in_report_PtrTypeUsage = F.getParent()->getOrInsertFunction(
 			"LiveInReportPtrTypeUsage",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //variable name
-			Type::getInt8PtrTy(Ctx), //spm base address (as string)
-			Type::getInt8PtrTy(Ctx), //actual runtime pointer (GEP result, cast to i8*)
-			Type::getInt8PtrTy(Ctx), //actual array base pointer (root GlobalVariable, cast to i8*)
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //spm base address (as string)
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //actual runtime pointer (GEP result, cast to i8*)
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //actual array base pointer (root GlobalVariable, cast to i8*)
 			Type::getInt32Ty(Ctx)    //size
 	);
 
 	auto mem_access_report_FN = F.getParent()->getOrInsertFunction(
 			"MemAccessReport",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //loop name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //loop name
 			Type::getInt32Ty(Ctx),   //DFG node idx
-			Type::getInt8PtrTy(Ctx), //base pointer name
-			Type::getInt8PtrTy(Ctx), //spm base address (as string)
-			Type::getInt8PtrTy(Ctx), //actual runtime pointer
-			Type::getInt8PtrTy(Ctx), //actual array base pointer
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //base pointer name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //spm base address (as string)
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //actual runtime pointer
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //actual array base pointer
 			Type::getInt32Ty(Ctx),   //access size in bytes
 			Type::getInt8Ty(Ctx)     //is store
 	);
@@ -10929,22 +10927,22 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 	auto live_out_report_FN = F.getParent()->getOrInsertFunction(
 			"LiveOutReport",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //variable name
-			Type::getInt8PtrTy(Ctx), // variable data
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), // variable data
 			Type::getInt32Ty(Ctx) //size
 	);
 
 	auto live_in_report_intvar_FN = F.getParent()->getOrInsertFunction(
 			"LiveInReportIntermediateVar",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //variable name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
 			Type::getInt32Ty(Ctx) //variable data
 	);
 
 	auto live_out_report_intvar_FN = F.getParent()->getOrInsertFunction(
 			"LiveOutReportIntermediateVar",
 			FunctionType::getVoidTy(Ctx),
-			Type::getInt8PtrTy(Ctx), //variable name
+			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
 			Type::getInt32Ty(Ctx) //variable data
 	);
 
@@ -11047,8 +11045,8 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 					Value* rootBase = getGlobalBase(ptrs);
 					Value* ptr_spm_address_val = builder.CreateGlobalStringPtr(
 							std::to_string(spm_base_address[rootBase]));
-					Value* actual_ptr = builder.CreateBitCast(ptrs, Type::getInt8PtrTy(Ctx));
-					Value* array_base = builder.CreateBitCast(rootBase, Type::getInt8PtrTy(Ctx));
+					Value* actual_ptr = builder.CreateBitCast(ptrs, morpher::llvm_compat::getInt8PtrTy(Ctx));
+					Value* array_base = builder.CreateBitCast(rootBase, morpher::llvm_compat::getInt8PtrTy(Ctx));
 					builder.CreateCall(live_in_report_PtrTypeUsage,
 							{ptr_name_val, ptr_spm_address_val, actual_ptr, array_base, size_val});
 					isOLNodewithPtrTyUsage = true;
@@ -11060,7 +11058,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			if(isOLNodewithPtrTyUsage == true){isOLNodewithPtrTyUsage = false;}
 			else if(ptr->getType()->isPointerTy()){
 				LLVM_DEBUG(dbgs() << "Adding LiveInReport() call\n");
-				Value* bitcastedptr = builder.CreateBitCast(it->first, Type::getInt8PtrTy(Ctx));
+				Value* bitcastedptr = builder.CreateBitCast(it->first, morpher::llvm_compat::getInt8PtrTy(Ctx));
 				builder.CreateCall(live_in_report_FN,{ptr_name_val,bitcastedptr,size_val});
 			//	Value* bitcastedptr2 = builder.CreateBitCast(it->first, Type::getInt32PtrTy(Ctx));
 			//	builder.CreateCall(live_in_report_FN2,{ptr_name_val,bitcastedptr2,size_val2});
@@ -11144,7 +11142,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 
 			if(ptr->getType()->isPointerTy()){
 				LLVM_DEBUG(dbgs() << "Adding LiveOutReport() call\n");
-				Value* bitcastedptr = builder.CreateBitCast(it->first, Type::getInt8PtrTy(Ctx));
+				Value* bitcastedptr = builder.CreateBitCast(it->first, morpher::llvm_compat::getInt8PtrTy(Ctx));
 				builder.CreateCall(live_out_report_FN,{ptr_name_val,bitcastedptr,size_val});
 			}
 			else{
@@ -11240,8 +11238,8 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 		Value *nodeIdxVal = ConstantInt::get(Type::getInt32Ty(Ctx), node->getIdx());
 		Value *baseNameVal = builder.CreateGlobalStringPtr(baseName);
 		Value *baseAddrVal = builder.CreateGlobalStringPtr(std::to_string(baseIt->second));
-		Value *actualPtr = builder.CreateBitCast(pointer, Type::getInt8PtrTy(Ctx));
-		Value *arrayBase = builder.CreateBitCast(rootBase, Type::getInt8PtrTy(Ctx));
+		Value *actualPtr = builder.CreateBitCast(pointer, morpher::llvm_compat::getInt8PtrTy(Ctx));
+		Value *arrayBase = builder.CreateBitCast(rootBase, morpher::llvm_compat::getInt8PtrTy(Ctx));
 		Value *sizeVal = ConstantInt::get(Type::getInt32Ty(Ctx), accessSize);
 		Value *isStoreVal = ConstantInt::get(Type::getInt8Ty(Ctx), isStore ? 1 : 0);
 		builder.CreateCall(mem_access_report_FN,
@@ -11445,7 +11443,7 @@ int DFG::insertshiftGEPsCorrect(){
 				/* Fallback single stride (old behavior) for non-array GEPs or
 				 * ancestors that cannot be matched to a specific operand. */
 				int array_size = DL.getTypeAllocSize(GEP->getSourceElementType());
-				Type *T = cast<PointerType>(GEP->getPointerOperandType())->getElementType();
+				Type *T = GEP->getSourceElementType();
 				int no_of_elements = isa<ArrayType>(GEP->getSourceElementType()) ?
 						(int)cast<ArrayType>(T)->getNumElements() : 1;
 				int fallback_size = array_size / no_of_elements;

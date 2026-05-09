@@ -4,7 +4,7 @@ This document explains automation scripts and configuration behavior.
 
 ## `config/`
 
-## `default_config.yaml`
+## `default.yaml`
 
 Primary runtime config for integrated runs.
 

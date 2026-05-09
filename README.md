@@ -43,7 +43,8 @@ Additional documentation:
 
 ## Requirements
 
-- LLVM/Clang 10.0.0 tools on `PATH`: `clang`, `opt`, `llvm-link`, `llc`
+- LLVM/Clang 18 toolchain with `clang`, `opt`, `llvm-link`, `llc`
+- This branch targets LLVM 18 and is no longer treated as a multi-version compatibility branch
 - CMake + Make
 - Python 3 + pip
 - `gcc-multilib` / `g++-multilib` (32-bit instrumentation path)
@@ -52,14 +53,19 @@ Additional documentation:
 Example install on Ubuntu:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
+  sudo apt-get update
+  sudo apt-get install -y \
   build-essential cmake git python3 python3-pip \
-  clang-10 llvm-10 llvm-10-dev llvm-10-tools \
+  clang-18 llvm-18 llvm-18-dev llvm-18-tools lld-18 \
   gcc-multilib g++-multilib graphviz
 ```
 
-If your distro exposes versioned binaries (e.g. `clang-10`), ensure unversioned names (`clang`, `opt`, `llvm-link`, `llc`) are on your `PATH`.
+If your distro exposes versioned binaries, you can either place them on `PATH` or use:
+
+- `MORPHER_LLVM_BIN_DIR=/path/to/llvm/bin`
+- `MORPHER_LLVM_LIB_DIR=/path/to/llvm/lib` when the host has conflicting LLVM installs
+- `MORPHER_LLVM_DIR=/path/to/lib/cmake/llvm` for `build_all.sh`
+- `MORPHER_CMAKE_ARGS="..."` for extra CMake configure flags
 
 ## Setup
 
@@ -68,6 +74,9 @@ git clone https://github.com/pruhnuhv/Dataflow-arch-mapper.git
 cd Dataflow-arch-mapper
 python3 -m pip install --upgrade pip
 python3 -m pip install -r python_requirements.txt
+export MORPHER_LLVM_BIN_DIR=/usr/lib/llvm-18/bin
+export MORPHER_LLVM_LIB_DIR=/usr/lib/llvm-18/lib
+export MORPHER_LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
 bash build_all.sh
 ```
 
@@ -110,10 +119,10 @@ Pass a `.xml` file as the first argument to skip DFG generation and map a pre-ge
 python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]
 ```
 
-Defaults in XML mode: function derived from filename, config `config/default_config.yaml`, runmode `mapper_only`.
+Defaults in XML mode: function derived from filename, config `config/default.yaml`, runmode `mapper_only`.
 
 Notes:
-- Only `mapper_only` and `runall` are supported in XML mode.
+- XML mode supports `mapper_only`, `runall`, and `artifact_sim_only`.
 - In `memory_mode: auto`, a mem-alloc file is required: place `<kernel>_mem_alloc.txt` beside the XML or pass `--mem-alloc <path>`. Without one, use `config/xml_mapper_static.yaml`.
 
 ```bash
@@ -163,7 +172,7 @@ Sweeps a list of unroll factors and runs the full DFG-generation + mapping pipel
 | `auto_unroll.remainder_policy` | `preserve` | How to handle loops whose trip count is not a multiple of the unroll factor: `preserve` emits a remainder loop; `assume-multiple` skips it (faster, unsafe if not guaranteed) |
 | `auto_unroll.stop_on_degradation` | `true` | Stop searching early if effective II worsens |
 
-When `simd.enabled: true`, factors smaller than `simd.lanes` are automatically skipped because the SIMD packer requires at least one full vector width of unrolled iterations.
+When `simd.enabled: true`, factors smaller than `simd.lanes` are still legal. They run as scalar candidates on the SIMD-capable architecture, so the mapper can leave some SIMD lanes idle. SIMD packing only activates when `unroll_factor >= simd.lanes`.
 
 ### SIMD vectorization (`simd.*`)
 
@@ -171,7 +180,7 @@ After DFG generation, the SIMD packer rewrites the DFG XML: it identifies groups
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `simd.enabled` | `true` | Enable SIMD packing |
+| `simd.enabled` | `true` | Enable SIMD packing when a candidate is wide enough; narrower candidates still map as scalar |
 | `simd.lanes` | `8` | Number of scalar operations packed into one SIMD node |
 | `simd.pack_load_store` | `true` | Also pack memory (LOAD/STORE) nodes, not just compute nodes |
 | `simd.reduction_policy` | `packed-psum` | How associative reduction chains (e.g. loop-carried sums) are lowered when unrolling — see below |

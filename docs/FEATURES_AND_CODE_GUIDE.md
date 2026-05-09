@@ -22,6 +22,7 @@ The Python entrypoint `run_morpher.py` orchestrates these stages.
 - Dynamic memory-layout generation (`memory_mode: auto`)
 - Static architecture mapping (`memory_mode: static`)
 - Optional simulation (`enable_simulation`)
+- SIMD-capable mapping even when the selected unroll factor is narrower than the SIMD lane count
 - Batch benchmark execution with parallel workers
 - Cleanup and policy-check scripts for generated artifacts
 
@@ -99,7 +100,7 @@ Simulator folder (`hycube_simulator/benchmarks/<suite>/<kernel>/`):
 
 ## `config/`
 
-- `default_config.yaml`: default run config
+- `default.yaml`: default run config
 - `xml_mapper_static.yaml`: static-mode config useful for XML-only mapping
 
 ## `scripts/`

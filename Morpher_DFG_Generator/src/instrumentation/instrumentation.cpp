@@ -91,7 +91,7 @@ typedef struct{
 	std::string name;
 } AddrDataTuple;
 
-static std::map<uint32_t,AddrDataTuple> data;
+static std::map<uint32_t,AddrDataTuple> trace_data;
 
 
 typedef struct{
@@ -164,10 +164,10 @@ void printArr(const char* name, uint8_t* arr, int size, uint8_t io, uint32_t add
 			AddrDataTuple tuple;
 			tuple.name = str;
 			tuple.pre_data=arr[i];
-			data[addr+i]=tuple;
+			trace_data[addr+i]=tuple;
 		}
 		else{
-			data[addr+i].post_data=arr[i];
+			trace_data[addr+i].post_data=arr[i];
 		}
 		std::cout << (int)arr[i] << ",";
 	}
@@ -263,14 +263,14 @@ void outloopValueReport(uint32_t nodeIdx, uint32_t value, uint32_t addr, uint8_t
 			tuple.post_data = bytePtr[i];
 		}
 
-		data[addr+i]=tuple;
+		trace_data[addr+i]=tuple;
 	}
 }
 
 void PrintData(std::string ln){
 	std::map<uint32_t,AddrDataTuple>::iterator dataIt;
 	fprintf(currentFiles[ln],"addr,pre-run-data,post-run-data\n");
-	for (dataIt = data.begin(); dataIt != data.end(); ++dataIt) {
+	for (dataIt = trace_data.begin(); dataIt != trace_data.end(); ++dataIt) {
 		fprintf(currentFiles[ln],"%d,%d,%d\n",dataIt->first,dataIt->second.pre_data,dataIt->second.post_data);
 	}
 }
@@ -823,6 +823,5 @@ void LiveOutReportIntermediateVar(const char* varname, uint32_t value){
 //		data_morpher[varname_str].post_data[i] = value_ptr[i];
 	}
 }
-
 
 
