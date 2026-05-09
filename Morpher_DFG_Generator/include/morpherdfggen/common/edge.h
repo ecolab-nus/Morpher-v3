@@ -6,7 +6,7 @@
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
+/* #include "llvm/Transforms/IPO/PassManagerBuilder.h" */
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/CFGPrinter.h"
@@ -16,7 +16,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 
-#include "llvm/Transforms/Scalar.h"
+/* #include "llvm/Transforms/Scalar.h" */
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Statistic.h"

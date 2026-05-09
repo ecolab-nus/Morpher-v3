@@ -12,7 +12,7 @@
 
 #include "llvm/Transforms/Utils.h"
 
-#include "llvm/Transforms/Scalar.h"
+/* #include "llvm/Transforms/Scalar.h" */
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Statistic.h"
