@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
+import datetime
 import os
 import re
 import shutil
@@ -44,6 +45,7 @@ class RunResult:
     timeout: bool
     elapsed_sec: float
     log_file: Path
+    kernel_run_dir: Path
     run_tag: str
     failure_stage: str
     failure_reason: str
@@ -318,10 +320,10 @@ def parse_args() -> argparse.Namespace:
         help="Per benchmark timeout in seconds (0 = no timeout).",
     )
     parser.add_argument(
-        "--log-dir",
+        "--output-root",
         type=Path,
-        default=Path("benchmark_run_logs"),
-        help="Per-benchmark log directory, relative to --repo-root.",
+        default=Path("generated"),
+        help="Root output directory. Each kernel writes to <root>/<suite>/<kernel>/<timestamp>/. Relative to --repo-root.",
     )
     parser.add_argument(
         "--filter",
@@ -459,7 +461,7 @@ def run_one(
     config_rel: str,
     runmode: str,
     timeout_sec: int,
-    log_dir: Path,
+    output_root: Path,
     mapper_subfolder: str,
     run_tag_prefix: str,
 ) -> RunResult:
@@ -468,7 +470,13 @@ def run_one(
     run_tag = f"{idx:03d}_{source_stem}"
     if run_tag_prefix:
         run_tag = f"{sanitize_name(run_tag_prefix)}__{run_tag}"
-    log_file = log_dir / f"{idx:03d}_{safe}.log"
+
+    rel_parts = Path(spec.rel_source).parts  # (<suite>, <kernel>, <kernel>.c)
+    suite, kernel = rel_parts[0], rel_parts[1]
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    kernel_run_dir = output_root / suite / kernel / timestamp
+    kernel_run_dir.mkdir(parents=True, exist_ok=True)
+    log_file = kernel_run_dir / "log.txt"
 
     cmd = [
         sys.executable,
@@ -557,7 +565,7 @@ def run_one(
                     ii_source = "mapper_log"
 
     elapsed = round(time.time() - start, 2)
-    return RunResult(
+    result = RunResult(
         idx=idx,
         total=total,
         rel_source=spec.rel_source,
@@ -566,6 +574,7 @@ def run_one(
         timeout=timed_out,
         elapsed_sec=elapsed,
         log_file=log_file,
+        kernel_run_dir=kernel_run_dir,
         run_tag=run_tag,
         failure_stage=failure_stage,
         failure_reason=failure_reason,
@@ -576,6 +585,14 @@ def run_one(
         matches=matches,
         mismatches=mismatches,
     )
+
+    try:
+        shutil.copy2(repo_root / config_rel, kernel_run_dir / "config.yaml")
+    except OSError:
+        pass
+    write_csv([result], kernel_run_dir / "result.csv")
+
+    return result
 
 
 def write_csv(results: list[RunResult], out_csv: Path) -> None:
@@ -591,6 +608,7 @@ def write_csv(results: list[RunResult], out_csv: Path) -> None:
         "mismatches",
         "timeout",
         "elapsed_sec",
+        "run_dir",
         "log_file",
         "run_tag",
         "failure_stage",
@@ -614,6 +632,7 @@ def write_csv(results: list[RunResult], out_csv: Path) -> None:
                     "mismatches": r.mismatches,
                     "timeout": r.timeout,
                     "elapsed_sec": r.elapsed_sec,
+                    "run_dir": str(r.kernel_run_dir),
                     "log_file": str(r.log_file),
                     "run_tag": r.run_tag,
                     "failure_stage": r.failure_stage,
@@ -649,9 +668,8 @@ def main() -> int:
             print(f"{idx:03d} {spec.rel_source} :: {spec.function}")
         return 0
 
-    log_dir = (repo_root / args.log_dir).resolve()
+    output_root = (repo_root / args.output_root).resolve()
     output_csv = (repo_root / args.output_csv).resolve()
-    log_dir.mkdir(parents=True, exist_ok=True)
     total = len(selected)
     print(f"Launching {total} benchmarks with {args.jobs} parallel worker(s)...")
 
@@ -667,7 +685,7 @@ def main() -> int:
                 config_rel=args.config,
                 runmode=args.runmode,
                 timeout_sec=args.timeout_sec,
-                log_dir=log_dir,
+                output_root=output_root,
                 mapper_subfolder=mapper_subfolder,
                 run_tag_prefix=args.run_tag_prefix,
             ): idx
@@ -706,7 +724,7 @@ def main() -> int:
         for stage, count in sorted(stage_counts.items()):
             print(f"    {stage}: {count}")
     print(f"  csv: {output_csv}")
-    print(f"  logs: {log_dir}")
+    print(f"  output root: {output_root}")
     return 0 if failed == 0 else 1
 
 

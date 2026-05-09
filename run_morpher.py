@@ -1,10 +1,15 @@
 #!/usr/bin/env python
+import csv
+import datetime
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+import yaml
 
 from morpher_runner.context import build_context
 from morpher_runner.artifact_simulator import run_artifact_simulator
@@ -34,8 +39,11 @@ def _usage():
     "  python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runmode]\n"
     "  python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]\n\n"
     "Options:\n"
-    "  --run-tag <tag>    Write DFG/mapper/simulator artifacts under tagged output directories.\n"
-    "  --mem-alloc <path> Mem-alloc file for XML input mode.\n\n"
+    "  --run-tag <tag>        Write DFG/mapper/simulator artifacts under tagged output directories.\n"
+    "  --output-root <path>   Root for structured run output (default: generated).\n"
+    "                         Each run writes to <root>/<suite>/<kernel>/<timestamp>/.\n"
+    "                         Ignored when --run-tag is provided (batch mode).\n"
+    "  --mem-alloc <path>     Mem-alloc file for XML input mode.\n\n"
     "Run modes: runall, dfg_gen_only, mapper_only, sim_only, artifact_sim_only, runall_artifact_sim\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
@@ -46,6 +54,7 @@ def _parse_cli(argv):
   positional = []
   mem_alloc_path = None
   run_tag = ""
+  output_root = "generated"
 
   i = 0
   while i < len(argv):
@@ -54,6 +63,12 @@ def _parse_cli(argv):
       if i + 1 >= len(argv):
         raise RuntimeError("Missing value for --run-tag.\n\n%s" % _usage())
       run_tag = argv[i + 1]
+      i += 2
+      continue
+    if token == "--output-root":
+      if i + 1 >= len(argv):
+        raise RuntimeError("Missing value for --output-root.\n\n%s" % _usage())
+      output_root = argv[i + 1]
       i += 2
       continue
     if token == "--mem-alloc":
@@ -88,7 +103,7 @@ def _parse_cli(argv):
       )
 
     csource = "xml_inputs/%s/%s.c" % (function, function)
-    return csource, function, config, runmode, xml_path, mem_alloc_path, run_tag
+    return csource, function, config, runmode, xml_path, mem_alloc_path, run_tag, output_root
 
   if len(positional) < 2 or len(positional) > 4:
     raise RuntimeError("Invalid arguments.\n\n%s" % _usage())
@@ -99,7 +114,7 @@ def _parse_cli(argv):
   function = positional[1]
   config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
   runmode = positional[3] if len(positional) >= 4 else "runall"
-  return csource, function, config, runmode, None, None, run_tag
+  return csource, function, config, runmode, None, None, run_tag, output_root
 
 
 def _resolve_mem_alloc_for_xml(xml_path, kernel, explicit_mem_alloc):
@@ -342,15 +357,108 @@ def main(
       print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
 
 
-if __name__ == "__main__":
+def _maybe_setup_kernel_run_dir(csource, is_direct, output_root):
+  """Return (kernel_run_dir, timestamp) for direct invocations of structured benchmarks, else (None, None)."""
+  if not is_direct:
+    return None, None
+  parts = csource.replace("\\", "/").split("/")
+  if len(parts) != 3 or parts[2] != parts[1] + ".c":
+    return None, None
+  suite, kernel = parts[0], parts[1]
+  timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+  root = Path(output_root)
+  if not root.is_absolute():
+    root = Path.cwd() / root
+  kernel_run_dir = root / suite / kernel / timestamp
+  kernel_run_dir.mkdir(parents=True, exist_ok=True)
+  return kernel_run_dir, timestamp
+
+
+def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag, status, rc, elapsed):
+  """Write result.csv and copy config.yaml into kernel_run_dir."""
+  achieved_ii = None
+  ii_mapper_status = None
   try:
-    csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag = _parse_cli(sys.argv[1:])
+    with open(config_path, "r", encoding="utf-8") as f:
+      cfg = yaml.safe_load(f)
+    mapper_subfolder = cfg.get("mapper_subfolder", "")
+    parts = csource.replace("\\", "/").split("/")
+    appfolder = "/".join(parts[:2])
+    result_txt = (
+      Path.cwd() / "workspace" / "morpher_runs" / run_tag
+      / "mapper" / mapper_subfolder / appfolder / "result.txt"
+    )
+    if result_txt.exists():
+      lines = [l.strip() for l in result_txt.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
+      if lines:
+        m = _RESULT_LINE_II_RE.search(lines[-1])
+        if m:
+          achieved_ii = int(m.group(1))
+          ii_mapper_status = m.group(2)
+  except Exception:
+    pass
+
+  fields = ["benchmark", "function", "status", "return_code", "achieved_ii", "ii_mapper_status", "elapsed_sec", "run_dir"]
+  with (kernel_run_dir / "result.csv").open("w", newline="", encoding="utf-8") as f:
+    w = csv.DictWriter(f, fieldnames=fields)
+    w.writeheader()
+    w.writerow({
+      "benchmark": csource,
+      "function": function,
+      "status": status,
+      "return_code": rc,
+      "achieved_ii": achieved_ii if achieved_ii is not None else "",
+      "ii_mapper_status": ii_mapper_status if ii_mapper_status is not None else "",
+      "elapsed_sec": round(elapsed, 2),
+      "run_dir": str(kernel_run_dir),
+    })
+
+  try:
+    shutil.copy2(config_path, kernel_run_dir / "config.yaml")
+  except OSError:
+    pass
+
+
+if __name__ == "__main__":
+  _kernel_run_dir = None
+  _csource = _function = _config = _run_tag = None
+  _start = None
+  _status = "ok"
+  _rc = 0
+  _inner_exc = None
+
+  try:
+    csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag, output_root = _parse_cli(sys.argv[1:])
+    _csource, _function, _config = csource, function, config
+
+    is_direct = not run_tag
+    _kernel_run_dir, auto_timestamp = _maybe_setup_kernel_run_dir(csource, is_direct, output_root)
+    if auto_timestamp:
+      run_tag = auto_timestamp
+    _run_tag = run_tag
+
+    _start = time.time()
     main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag)
+
   except subprocess.CalledProcessError as e:
-    cmd = e.cmd if isinstance(e.cmd, str) else " ".join(e.cmd)
-    print("Error: external command failed with exit code %d." % e.returncode)
-    print("Failed command: %s" % cmd)
-    sys.exit(e.returncode if e.returncode else 1)
+    _status = "failed"
+    _rc = e.returncode if e.returncode else 1
+    _inner_exc = e
   except RuntimeError as e:
-    print("Error: %s" % e)
-    sys.exit(1)
+    _status = "failed"
+    _rc = 1
+    _inner_exc = e
+  finally:
+    if _kernel_run_dir is not None and _csource is not None:
+      _elapsed = (time.time() - _start) if _start else 0.0
+      _write_run_artifacts(_kernel_run_dir, _csource, _function, _config, _run_tag, _status, _rc, _elapsed)
+      print("\nRun artifacts: %s" % _kernel_run_dir)
+
+  if _inner_exc is not None:
+    if isinstance(_inner_exc, subprocess.CalledProcessError):
+      cmd = _inner_exc.cmd if isinstance(_inner_exc.cmd, str) else " ".join(_inner_exc.cmd)
+      print("Error: external command failed with exit code %d." % _inner_exc.returncode)
+      print("Failed command: %s" % cmd)
+    else:
+      print("Error: %s" % _inner_exc)
+    sys.exit(_rc)

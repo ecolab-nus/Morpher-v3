@@ -1,0 +1,89 @@
+suites:
+  edge_mem_arch_sweep:
+    description: Sweep edge-memory HyCUBE variants across scalar/SIMD, unroll, AGI-removal, and iterator-pruning combinations.
+    base_config: config/default.yaml
+    runmode: runall
+    jobs: 4
+    timeout_sec: 600
+    common_overrides:
+      mapper_preset: balanced
+      enable_simulation: true
+      validation_mode: functional
+      spm_mode: "off"
+    arches:
+      - hycube_edgePEMEMs.json
+      - hycube_edgePEMEMs_noRouter.json
+      - hycube_edgePEMEMs_3sides.json
+      - hycube_edgePEMEMs_3sides_noRouter.json
+      - hycube_edgePEMEMs_4regf.json
+    variants:
+      - name: scalar
+        description: Scalar DFG, no SIMD packing, no auto-unroll.
+        base_config: config/scalar.yaml
+        overrides:
+          auto_unroll:
+            enabled: false
+            factors: [1]
+          simd:
+            enabled: false
+            lanes: 4
+      - name: unroll_scalar
+        description: Scalar DFG with Morpher auto-unroll enabled.
+        base_config: config/scalar.yaml
+        overrides:
+          auto_unroll:
+            enabled: true
+            factors: [1, 2, 4, 8]
+            remainder_policy: preserve
+            stop_on_degradation: true
+          simd:
+            enabled: false
+            lanes: 4
+      - name: unroll_simd4
+        description: SIMD-4 packing with Morpher auto-unroll, AGI removal, and iterator pruning.
+        base_config: config/simd4_noiter.yaml
+        overrides:
+          remove_agi: true
+          remove_iter: true
+          auto_unroll:
+            enabled: true
+            factors: [4, 8]
+            remainder_policy: preserve
+            stop_on_degradation: true
+          simd:
+            enabled: true
+            lanes: 4
+            pack_load_store: true
+            reduction_policy: packed-psum
+      - name: unroll_simd4_keep_iter
+        description: SIMD-4 packing with Morpher auto-unroll and AGI removal, but iterator structure preserved.
+        base_config: config/simd4_noiter.yaml
+        overrides:
+          remove_agi: true
+          remove_iter: false
+          auto_unroll:
+            enabled: true
+            factors: [4, 8]
+            remainder_policy: preserve
+            stop_on_degradation: true
+          simd:
+            enabled: true
+            lanes: 4
+            pack_load_store: true
+            reduction_policy: packed-psum
+      - name: unroll_simd4_keep_agi_iter
+        description: SIMD-4 packing with Morpher auto-unroll, preserving both AGI and iterator structure.
+        base_config: config/simd4_noiter.yaml
+        overrides:
+          remove_agi: false
+          remove_iter: false
+          auto_unroll:
+            enabled: true
+            factors: [4, 8]
+            remainder_policy: preserve
+            stop_on_degradation: true
+          simd:
+            enabled: true
+            lanes: 4
+            pack_load_store: true
+            reduction_policy: packed-psum
