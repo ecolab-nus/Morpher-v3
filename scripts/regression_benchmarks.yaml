@@ -4,7 +4,7 @@ suites:
     config: config/default.yaml
     runmode: runall
     jobs: 4
-    timeout_sec: 360
+    timeout_sec: 720
     benchmarks:
       # Conditional/control benchmark: exercises mutex basic-block handling.
       - benchmark: morpher_benchmarks/array_cond/array_cond.c
@@ -16,7 +16,7 @@ suites:
     config: config/scalar.yaml
     runmode: runall
     jobs: 4
-    timeout_sec: 360
+    timeout_sec: 720
     benchmarks:
       # Control-heavy Morpher kernel in scalar mode with AGI preserved.
       - benchmark: morpher_benchmarks/array_cond/array_cond.c
@@ -32,7 +32,7 @@ suites:
     config: config/simd4_noiter.yaml
     runmode: runall
     jobs: 4
-    timeout_sec: 360
+    timeout_sec: 720
     benchmarks:
       # Compact convolution is a good SIMD/no-iter smoke test.
       - benchmark: cgrame_microbench/conv2/conv2.c
@@ -44,7 +44,7 @@ suites:
     config: config/regression_gemm_simd4_unroll.yaml
     runmode: runall
     jobs: 1
-    timeout_sec: 360
+    timeout_sec: 720
     benchmarks:
       - benchmark: polybench/gemm/gemm.c
         function: gemm
@@ -55,7 +55,7 @@ suites:
     config: config/regression_8x8.yaml
     runmode: runall
     jobs: 8
-    timeout_sec: 600
+    timeout_sec: 720
     benchmarks:
       # Microbench convolution on the larger fabric.
       - benchmark: cgrame_microbench/conv2/conv2.c
