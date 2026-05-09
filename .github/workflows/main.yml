@@ -26,11 +26,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
+          cache-dependency-path: python_requirements.txt
+
+      - name: Cache LLVM 18
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: /usr/lib/llvm-18
+          key: llvm-18-apt-ubuntu-22.04
 
       - name: Install LLVM and Clang 18
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18"
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 18
+          sudo apt-get install -y llvm-18-dev
+
+      - name: Link LLVM 18 tools into PATH
+        run: |
+          sudo ln -sf /usr/lib/llvm-18/bin/clang /usr/bin/clang
+          sudo ln -sf /usr/lib/llvm-18/bin/opt /usr/bin/opt
 
       - name: Install system dependencies
         run: |
