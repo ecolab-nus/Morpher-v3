@@ -49,6 +49,7 @@ jobs:
           sudo ln -sf /usr/lib/llvm-18/bin/clang /usr/bin/clang
           sudo ln -sf /usr/lib/llvm-18/bin/opt /usr/bin/opt
           echo "MORPHER_LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> $GITHUB_ENV
+          echo "MORPHER_LLVM_BIN_DIR=/usr/lib/llvm-18/bin" >> $GITHUB_ENV
 
       - name: Install system dependencies
         run: |
