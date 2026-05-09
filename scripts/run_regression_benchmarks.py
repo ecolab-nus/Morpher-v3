@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import csv
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -123,7 +122,6 @@ def run_all_command(
     dry_run: bool,
 ) -> tuple[list[str], Path]:
     output_dir = output_dir if output_dir.is_absolute() else repo_root / output_dir
-    log_dir = output_dir / "logs"
     output_csv = output_dir / "results.csv"
 
     def display_path(path: Path) -> str:
@@ -145,8 +143,6 @@ def run_all_command(
         str(jobs),
         "--timeout-sec",
         str(timeout_sec),
-        "--log-dir",
-        display_path(log_dir),
         "--output-csv",
         display_path(output_csv),
     ]
@@ -227,7 +223,6 @@ def main() -> int:
     output_dir = args.output_dir or Path("generated") / "morpher_runs" / "regression" / args.suite
     resolved_output_dir = output_dir if output_dir.is_absolute() else repo_root / output_dir
     if not args.dry_run:
-        shutil.rmtree(resolved_output_dir / "logs", ignore_errors=True)
         try:
             (resolved_output_dir / "results.csv").unlink()
         except FileNotFoundError:
