@@ -41,6 +41,8 @@ PACKABLE_MEMORY_OPS = {
   "OSTOREB",
 }
 
+ASSOCIATIVE_REDUCTION_OPS = {"ADD", "AND", "OR", "XOR"}
+
 
 @dataclass(frozen=True)
 class SimdPackReport:
@@ -64,6 +66,7 @@ class SimdMapping:
   reindex: dict  # pre_idx -> post_idx for all surviving nodes
   simd_groups: dict  # post_idx -> [pre_idx_lane0, ..., pre_idx_laneL-1]
   simd_splat_groups: frozenset = frozenset()  # post_idx values whose lane0 addr should be replicated.
+  simd_reduced_store_groups: frozenset = frozenset()  # post_idx values collapsed from lane stores to one scalar trace.
 
 
 def _read_wrapped_xml(path: Path) -> ET.Element:
@@ -174,6 +177,14 @@ def _is_packable_op(op: str | None, pack_load_store: bool) -> bool:
   return False
 
 
+def _vector_op_name(op: str | None) -> str | None:
+  if op is None:
+    return None
+  if op.startswith("V"):
+    return op
+  return "V%s" % op
+
+
 def _is_store_op(op: str | None) -> bool:
   return op in {
     "STORE",
@@ -201,6 +212,7 @@ def _candidate_groups(
   nodes: list[ET.Element],
   lanes: int,
   pack_load_store: bool,
+  scalar_broadcast: bool,
 ) -> dict[tuple[int, int], list[ET.Element]]:
   groups: dict[tuple[int, int], list[ET.Element]] = {}
   for node in nodes:
@@ -222,10 +234,35 @@ def _candidate_groups(
         continue
       if not _compatible_node_metadata(chunk):
         continue
+      if not scalar_broadcast and _requires_scalar_broadcast(chunk):
+        continue
       candidates[(key[0], chunk_idx)] = chunk
   _add_phi_cmerge_candidates(candidates, nodes, lanes)
   _add_packed_output_store_candidates(candidates, nodes, lanes)
   return candidates
+
+
+def _requires_scalar_broadcast(group_nodes: list[ET.Element]) -> bool:
+  if not group_nodes:
+    return False
+  op = _child_text(group_nodes[0], "OP")
+  if _is_load_op(op) or _is_store_op(op):
+    return False
+
+  arity = min((len(_input_refs(node)) for node in group_nodes), default=0)
+  for input_pos in range(arity):
+    ref_type = (_input_refs(group_nodes[0])[input_pos].attrib.get("type") or "").strip()
+    if ref_type in {"P", "PS"}:
+      continue
+    lane_refs = []
+    for node in group_nodes:
+      refs = _input_refs(node)
+      if input_pos >= len(refs):
+        return False
+      lane_refs.append(_ref_idx(refs[input_pos]))
+    if lane_refs and len(set(lane_refs)) == 1:
+      return True
+  return False
 
 
 def _input_refs(node: ET.Element) -> list[ET.Element]:
@@ -327,6 +364,57 @@ def _add_packed_output_store_candidates(
     next_key += 1
     candidates[key] = store_nodes
     existing.update(_node_idx(node) for node in store_nodes)
+
+
+def _find_vred_store_groups(
+  packable: dict[tuple[int, int], list[ET.Element]],
+  replacement: dict[int, int],
+  vector_ops: "set[str]",
+) -> dict[int, dict[str, object]]:
+  if "VRED" not in vector_ops:
+    return {}
+
+  pack_group_by_rep = {
+    _node_idx(group_nodes[0]): group_nodes
+    for group_nodes in packable.values()
+  }
+  vred_groups = {}
+  for store_rep, store_group_nodes in pack_group_by_rep.items():
+    store_op = _child_text(store_group_nodes[0], "OP")
+    if store_op not in {"STORE", "STOREH", "STOREB", "OSTORE", "OSTOREH", "OSTOREB"}:
+      continue
+
+    reduce_op = store_group_nodes[0].attrib.get("simd_reduce_op")
+    reduce_base = store_group_nodes[0].attrib.get("simd_reduce_base")
+    if not reduce_op or not reduce_base:
+      continue
+    if any(
+      node.attrib.get("simd_reduce_op") != reduce_op
+      or node.attrib.get("simd_reduce_base") != reduce_base
+      for node in store_group_nodes
+    ):
+      continue
+
+    producer_reps = set()
+    for store_node in store_group_nodes:
+      refs = _input_refs(store_node)
+      if not refs:
+        producer_reps = set()
+        break
+      producer_reps.add(replacement.get(_ref_idx(refs[0]), _ref_idx(refs[0])))
+    if len(producer_reps) != 1:
+      continue
+
+    producer_rep = next(iter(producer_reps))
+    if producer_rep == store_rep or producer_rep not in pack_group_by_rep:
+      continue
+
+    vred_groups[store_rep] = {
+      "producer_rep": producer_rep,
+      "reduce_op": reduce_op,
+      "reduce_base": reduce_base,
+    }
+  return vred_groups
 
 
 def _build_replacement(packable: dict[tuple[int, int], list[ET.Element]]) -> dict[int, int]:
@@ -538,7 +626,8 @@ def pack_simd_xml(
   output_xml: str | Path,
   *,
   lanes: int,
-  pack_load_store: bool = True,
+  vector_ops: frozenset[str] | set[str] | tuple[str, ...],
+  scalar_broadcast: bool = False,
   prune_scalar_lane_outputs: bool = False,
   prune_iter_control: bool = False,
 ) -> SimdPackReport:
@@ -551,9 +640,10 @@ def pack_simd_xml(
 
   nodes = list(dfg.findall("Node"))
   input_nodes = len(nodes)
-  candidates = _candidate_groups(nodes, lanes, pack_load_store)
+  candidates = _candidate_groups(nodes, lanes, True, scalar_broadcast)
   packable = _prune_packable_groups(candidates)
   replacement = _build_replacement(packable)
+  vred_store_groups = _find_vred_store_groups(packable, replacement, set(vector_ops))
   pack_group_by_rep = {
     _node_idx(group_nodes[0]): group_nodes
     for group_nodes in packable.values()
@@ -582,12 +672,32 @@ def pack_simd_xml(
       - removed
     )
   if prune_scalar_lane_outputs or prune_iter_control:
+    # Bases that surviving nodes still write to must remain in the trace.
+    # The VRED rewrite (below) re-bases the rep OSTORE to its simd_reduce_base
+    # — usually the same name as the pruned lane OSTOREs — so filtering that
+    # name out of the trace would leave the simulator with no expected values
+    # at the post-VRED store location.
+    surviving_idx = {
+      _node_idx(node)
+      for node in nodes
+      if _node_idx(node) not in (removed | artifact_pruned)
+    }
+    surviving_bases: set = set()
+    for node in nodes:
+      if _node_idx(node) not in surviving_idx:
+        continue
+      base = _base_pointer_name(node)
+      if base:
+        surviving_bases.add(base)
+      reduce_base = node.attrib.get("simd_reduce_base")
+      if reduce_base:
+        surviving_bases.add(reduce_base)
     artifact_vars_pruned = {
       name
       for node in nodes
       if _node_idx(node) in artifact_pruned
       for name in [_base_pointer_name(node)]
-      if name
+      if name and name not in surviving_bases
     }
 
   removed_or_pruned = removed | artifact_pruned
@@ -598,23 +708,65 @@ def pack_simd_xml(
   simd_groups = {}
   splat_reps = _splat_load_reps(packable)
   simd_splat_groups = set()
+  simd_reduced_store_groups = set()
   for group_nodes in packable.values():
     rep_pre_idx = _node_idx(group_nodes[0])
     rep_post_idx = reindex[rep_pre_idx]
     simd_groups[rep_post_idx] = [_node_idx(n) for n in group_nodes]
     if rep_pre_idx in splat_reps:
       simd_splat_groups.add(rep_post_idx)
+    if rep_pre_idx in vred_store_groups:
+      simd_reduced_store_groups.add(rep_post_idx)
 
   for node in nodes:
     dfg.remove(node)
 
   rep_ids = {replacement_idx for replacement_idx in replacement.values()}
+  vector_ops = set(vector_ops)
+  synthetic_vred_nodes: list[tuple[ET.Element, int, int, int]] = []
+  reindexed_nodes_by_old_idx: dict[int, ET.Element] = {}
   for node in remaining_nodes:
     old_idx = _node_idx(node)
     node.set("idx", str(reindex[old_idx]))
+    reindexed_nodes_by_old_idx[old_idx] = node
     if old_idx in rep_ids:
-      node.set("simd_packed", "true")
-      node.set("simd_lanes", str(lanes))
+      if old_idx in vred_store_groups:
+        op_elem = node.find("OP")
+        reduce_base = str(vred_store_groups[old_idx]["reduce_base"])
+        if op_elem is not None:
+          op_elem.text = "OSTORE"
+        base_elem = node.find("BasePointerName")
+        if base_elem is None:
+          base_elem = ET.SubElement(node, "BasePointerName")
+        base_elem.text = reduce_base
+        base_elem.set("size", base_elem.attrib.get("size", "4"))
+        # Mark simd_packed / simd_lanes.  The scalar DFG fed the partial-sum
+        # buffer through a standalone OSTORE that inherited multi-lane width
+        # from its (vectorized) reduction-tree input, so every lane slot in
+        # the buffer was populated.  That standalone OSTORE is pruned by
+        # _prunable_external_control_nodes (OSTORE isn't an artifact root),
+        # so the rewritten rep OSTORE must broadcast the reduced scalar to
+        # all lane slots, otherwise downstream offsets (4, 8, ...) stay zero.
+        node.set("simd_packed", "true")
+        node.set("simd_lanes", str(lanes))
+        node.attrib.pop("simd_reduce_base", None)
+        node.set("simd_reduce_consumer", "true")
+      else:
+        op_elem = node.find("OP")
+        scalar_op = _child_text(node, "OP")
+        if not _is_ostore_op(scalar_op):
+          vector_op = _vector_op_name(scalar_op)
+          if vector_op not in vector_ops:
+            raise RuntimeError(
+              "Architecture SIMD capability does not expose required vector op '%s' for packed scalar op '%s'."
+              % (vector_op, scalar_op)
+            )
+          if op_elem is not None:
+            op_elem.text = vector_op
+        node.set("simd_packed", "true")
+        node.set("simd_lanes", str(lanes))
+        if scalar_op in ASSOCIATIVE_REDUCTION_OPS:
+          node.set("simd_reduce_op", scalar_op)
     _rewrite_refs(node, old_idx, "Inputs", "Input", replacement, reindex)
     output_source_refs = None
     if old_idx in pack_group_by_rep:
@@ -630,14 +782,74 @@ def pack_simd_xml(
       source_refs=output_source_refs,
     )
     _rewrite_refs(node, old_idx, "RecParents", "RecParent", replacement, reindex)
+
+    if old_idx in vred_store_groups:
+      vred_meta = vred_store_groups[old_idx]
+      producer_rep = vred_meta["producer_rep"]
+      reduce_op = vred_meta["reduce_op"]
+      if producer_rep not in reindex:
+        raise RuntimeError("VRED producer representative missing from SIMD reindex map.")
+      synthetic_vred_nodes.append((node, old_idx, producer_rep, reduce_op))
     dfg.append(node)
 
-  dfg.set("count", str(len(remaining_nodes)))
+  next_idx = len(remaining_nodes)
+  for store_node, store_old_idx, producer_rep, reduce_op in synthetic_vred_nodes:
+    store_new_idx = reindex[store_old_idx]
+    vred_idx = next_idx
+    next_idx += 1
+
+    inputs = store_node.find("Inputs")
+    if inputs is not None:
+      for ref in list(inputs):
+        if ref.tag != "Input":
+          continue
+        inputs.remove(ref)
+      ET.SubElement(inputs, "Input", idx=str(vred_idx), type="I1")
+
+    producer_node = reindexed_nodes_by_old_idx.get(producer_rep)
+    if producer_node is not None:
+      outputs = producer_node.find("Outputs")
+      if outputs is not None:
+        for ref in list(outputs):
+          if ref.tag != "Output":
+            continue
+          if ref.attrib.get("idx") == str(store_new_idx):
+            outputs.remove(ref)
+        ET.SubElement(outputs, "Output", idx=str(vred_idx), nextiter="0", type="I1")
+
+    sample_group = pack_group_by_rep[producer_rep]
+    sample_node = sample_group[0]
+    producer_asap = int(sample_node.attrib.get("ASAP", store_node.attrib.get("ASAP", "0")))
+    producer_alap = int(sample_node.attrib.get("ALAP", store_node.attrib.get("ALAP", "0")))
+    store_asap = int(store_node.attrib.get("ASAP", str(producer_asap + 1)))
+    store_alap = int(store_node.attrib.get("ALAP", str(max(producer_alap + 1, store_asap))))
+    vred_asap = max(producer_asap + 1, min(store_asap, producer_alap + 1))
+    vred_alap = max(vred_asap, min(store_alap, producer_alap + 1))
+    vred_node = ET.Element(
+      "Node",
+      idx=str(vred_idx),
+      ASAP=str(vred_asap),
+      ALAP=str(vred_alap),
+      BB=sample_node.attrib.get("BB", store_node.attrib.get("BB", "")),
+      simd_packed="true",
+      simd_lanes=str(lanes),
+      simd_reduce_op=str(reduce_op),
+    )
+    op_elem = ET.SubElement(vred_node, "OP")
+    op_elem.text = "VRED"
+    vred_inputs = ET.SubElement(vred_node, "Inputs")
+    ET.SubElement(vred_inputs, "Input", idx=str(reindex[producer_rep]), type="I1")
+    vred_outputs = ET.SubElement(vred_node, "Outputs")
+    ET.SubElement(vred_outputs, "Output", idx=str(store_new_idx), nextiter="0", type="I1")
+    ET.SubElement(vred_node, "RecParents")
+    dfg.append(vred_node)
+
+  dfg.set("count", str(next_idx))
   _write_unwrapped_xml(root, output_path)
 
   report = SimdPackReport(
     input_nodes=input_nodes,
-    output_nodes=len(remaining_nodes),
+    output_nodes=next_idx,
     packed_groups=len(packable),
     packed_nodes_removed=len(removed),
     artifact_nodes_pruned=len(artifact_pruned),
@@ -647,6 +859,7 @@ def pack_simd_xml(
     reindex=dict(reindex),
     simd_groups=simd_groups,
     simd_splat_groups=frozenset(simd_splat_groups),
+    simd_reduced_store_groups=frozenset(simd_reduced_store_groups),
   )
 
 
@@ -779,11 +992,27 @@ def remap_addr_trace(
     n_iters = max((len(e) for e in lane_entries), default=0)
     interleaved = []
     for i in range(n_iters):
+      if post_idx in mapping.simd_reduced_store_groups:
+        if lane_entries and i < len(lane_entries[0]):
+          interleaved.append(lane_entries[0][i])
+        continue
       if post_idx in mapping.simd_splat_groups:
         first_lane = lane_entries[0]
         if i < len(first_lane):
-          interleaved.extend([first_lane[i]] * len(pre_indices))
-          continue
+          # The static (base, gep_offset, const) signature can match across
+          # lanes that nonetheless touch different addresses at runtime (the
+          # offset is supplied implicitly by the simulator's stride or by a
+          # dynamic input).  Verify against the actual lane entries before
+          # replicating lane 0 — otherwise we discard real per-lane data.
+          current_entries = [
+            lane_e[i]
+            for lane_e in lane_entries
+            if i < len(lane_e)
+          ]
+          if len(current_entries) <= 1 or _is_splat_lane_entries(current_entries):
+            interleaved.extend([first_lane[i]] * len(pre_indices))
+            continue
+          # Fall through to the interleave path below.
       current_entries = [
         lane_e[i]
         for lane_e in lane_entries

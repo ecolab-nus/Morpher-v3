@@ -69,20 +69,24 @@ static uint32_t laneAt(const Value &value, size_t lane) {
 }
 
 static uint32_t evalBinary(uint32_t a, uint32_t b, const std::string &op) {
-  if (op == "ADD" || op == "GEPADD") return a + b;
-  if (op == "SUB") return a - b;
-  if (op == "MUL" || op == "GEPSCALE") return a * b;
-  if (op == "DIV") return b == 0 ? 0 : a / b;
-  if (op == "LS" || op == "GEPLEFTSHIFT") return a << b;
-  if (op == "RS" || op == "ARS") return a >> b;
-  if (op == "AND") return a & b;
-  if (op == "OR") return a | b;
-  if (op == "XOR") return a ^ b;
-  if (op == "CMP") return a == b ? 1 : 0;
-  if (op == "CLT") return a < b ? 1 : 0;
-  if (op == "CGT") return a > b ? 1 : 0;
-  if (op == "CMERGE") return a != 0 ? a : b;
-  if (op == "SELECT") return a != 0 ? a : b;
+  std::string baseOp = op;
+  if (baseOp.size() > 1 && baseOp[0] == 'V') {
+    baseOp = baseOp.substr(1);
+  }
+  if (baseOp == "ADD" || baseOp == "GEPADD") return a + b;
+  if (baseOp == "SUB") return a - b;
+  if (baseOp == "MUL" || baseOp == "GEPSCALE") return a * b;
+  if (baseOp == "DIV") return b == 0 ? 0 : a / b;
+  if (baseOp == "LS" || baseOp == "GEPLEFTSHIFT") return a << b;
+  if (baseOp == "RS" || baseOp == "ARS") return a >> b;
+  if (baseOp == "AND") return a & b;
+  if (baseOp == "OR") return a | b;
+  if (baseOp == "XOR") return a ^ b;
+  if (baseOp == "CMP") return a == b ? 1 : 0;
+  if (baseOp == "CLT") return a < b ? 1 : 0;
+  if (baseOp == "CGT") return a > b ? 1 : 0;
+  if (baseOp == "CMERGE") return a != 0 ? a : b;
+  if (baseOp == "SELECT") return a != 0 ? a : b;
   return a;
 }
 
@@ -90,7 +94,11 @@ Value unaryOp(const Value &a, const std::string &op) {
   if (!a.isValid()) {
     return Value::invalid();
   }
-  if (op == "SEXT") {
+  std::string baseOp = op;
+  if (baseOp.size() > 1 && baseOp[0] == 'V') {
+    baseOp = baseOp.substr(1);
+  }
+  if (baseOp == "SEXT") {
     // Sign-extend 32-bit value — identity for uint32_t storage; caller interprets signed.
     return a;
   }

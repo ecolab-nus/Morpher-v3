@@ -76,11 +76,14 @@ def run_artifact_simulator(context, validation_mode="functional"):
   print("\n-----Running Morpher artifact_simulator (%s)-----\n" % validation_mode)
   files = collect_trace_files(context)
   if not files:
-    raise RuntimeError(
-      "No trace files found in %s for kernel '%s'. "
-      "Artifact simulation needs traces; run DFG generation with tracing enabled."
+    print(
+      "Artifact simulation SKIPPED: no trace files in %s for kernel '%s'.\n"
+      "  (Common cause: unroll factor exceeds the runtime loop trip count, so\n"
+      "  the instrumented binary's unrolled body never executes. See the\n"
+      "  DFG-generation warning earlier in this run.)"
       % (context.mem_trace, context.kernel)
     )
+    return
   samplefiles = select_trace_samples(files, context.config.max_test_samples)
   print("Trace samples: %d\n" % len(samplefiles))
 

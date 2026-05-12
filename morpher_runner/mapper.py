@@ -2,6 +2,8 @@ import os
 import shlex
 import sys
 import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from morpher_runner.context import resolve_arch_template_path as resolve_shared_arch_template_path
 from morpher_runner.exec import Command
@@ -26,6 +28,18 @@ def mem_alloc_path(context):
   return os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % context.kernel)
 
 
+def _staged_dfg_contains_vector_ops(context):
+  dfg_path = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel)
+  if not os.path.isfile(dfg_path):
+    return False
+  root = ET.fromstring("<Root>\n%s\n</Root>" % Path(dfg_path).read_text(encoding="utf-8"))
+  for op_elem in root.findall(".//OP"):
+    op_text = (op_elem.text or "").strip()
+    if op_text.startswith("V"):
+      return True
+  return False
+
+
 def build_mapper_commands(context):
   config = context.config
   kernel = context.kernel
@@ -35,6 +49,11 @@ def build_mapper_commands(context):
 
   template_arch = resolve_arch_template_path(context)
   mem_alloc = mem_alloc_path(context)
+  context.selected_simd_artifact_only = (
+    getattr(context, "selected_simd_artifact_only", False)
+    or _staged_dfg_contains_vector_ops(context)
+  )
+  emit_binary = config.enable_simulation and not context.selected_simd_artifact_only
   mapper_common_args = [
     "-d",
     "%s_PartPredDFG.xml" % kernel,
@@ -61,7 +80,7 @@ def build_mapper_commands(context):
     "--print_dfg",
     "1" if config.print_dfg else "0",
     "--emit_binary",
-    "1" if config.enable_simulation else "0",
+    "1" if emit_binary else "0",
     "--sa_seed",
     str(config.sa_seed),
     "--sa_restarts",
@@ -142,6 +161,8 @@ def run_mapper(context):
 
   commands, mapper_arch = build_mapper_commands(context)
   print("Arch used by mapper: %s\n" % mapper_arch)
+  if getattr(context, "selected_simd_artifact_only", False):
+    print("Vectorized DFG selected: skipping legacy binary emission for this mapper run.\n")
   total = len(commands)
   for idx, cmd in enumerate(commands, start=1):
     if config.memory_mode == "auto" and total == 2:
@@ -159,6 +180,6 @@ def run_mapper(context):
     elapsed = time.time() - start
     print("  done (%.2f sec)\n" % elapsed)
 
-  if config.enable_simulation:
+  if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):
     remove_glob(context.simulator_kernel, "*.bin")
     copy_glob(context.mapper_kernel, "*.bin", context.simulator_kernel, required=True)

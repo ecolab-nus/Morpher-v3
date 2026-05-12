@@ -194,10 +194,10 @@ def _run_auto_unroll(context):
 
   print("\n-----Running Morpher auto-unroll search-----\n")
   print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
-  if config.simd_enabled:
+  if config.arch_simd_enabled:
     print(
-      "SIMD packing activates only for candidates with unroll_factor >= simd.lanes=%d."
-      % config.simd_lanes
+      "Architecture-driven SIMD packing activates only for candidates with unroll_factor >= SIMD_WIDTH=%d."
+      % config.arch_simd_width
     )
   print("Remainder policy: %s" % config.auto_unroll_remainder_policy)
   print(
@@ -206,7 +206,7 @@ def _run_auto_unroll(context):
 
   for factor in factors:
     print("== Auto-unroll candidate factor %d ==\n" % factor)
-    if config.simd_enabled and not simd_packing_active_for_factor(config, factor):
+    if config.arch_simd_enabled and not simd_packing_active_for_factor(config, factor):
       print(
         "Candidate factor %d will map as scalar on the SIMD-capable architecture.\n"
         % factor

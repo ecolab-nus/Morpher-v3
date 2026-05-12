@@ -15,8 +15,3 @@ auto_unroll:
   factors: [4, 8]
   remainder_policy: preserve
   stop_on_degradation: true
-simd:
-  enabled: true
-  lanes: 4
-  pack_load_store: true
-  reduction_policy: packed-psum

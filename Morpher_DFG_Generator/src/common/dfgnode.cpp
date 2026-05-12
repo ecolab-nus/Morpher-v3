@@ -23,12 +23,32 @@ static int readIntMetadata(Instruction *ins, const char *name, int defaultValue)
 	return defaultValue;
 }
 
+static std::string readStringMetadata(Instruction *ins, const char *name)
+{
+	if (!ins)
+	{
+		return "";
+	}
+	MDNode *md = ins->getMetadata(name);
+	if (!md || md->getNumOperands() == 0)
+	{
+		return "";
+	}
+	if (auto *mds = dyn_cast<MDString>(md->getOperand(0)))
+	{
+		return mds->getString().str();
+	}
+	return "";
+}
+
 dfgNode::dfgNode(Instruction *ins, DFG* parent){
 	this->Node = ins;
 	this->BB = ins->getParent();
 	this->Parent = parent;
 	this->simdGroup = readIntMetadata(ins, "morpher.simd.group", -1);
 	this->simdLanes = readIntMetadata(ins, "morpher.simd.lanes", 1);
+	this->simdReduceOp = readStringMetadata(ins, "morpher.simd.reduce_op");
+	this->simdReduceBase = readStringMetadata(ins, "morpher.simd.reduce_base");
 
 	for (int i = 0; i < ins->getNumOperands(); ++i) {
 		if(ConstantInt *CI = dyn_cast<ConstantInt>(ins->getOperand(i))){

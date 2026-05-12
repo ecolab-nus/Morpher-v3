@@ -13,6 +13,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/LoopSimplify.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 
 using namespace llvm;
@@ -62,9 +64,34 @@ void setIntMetadata(Instruction &I, StringRef Name, unsigned Value) {
   I.setMetadata(Name, MDNode::get(Ctx, MD));
 }
 
+void setStringMetadata(Instruction &I, StringRef Name, StringRef Value) {
+  LLVMContext &Ctx = I.getContext();
+  Metadata *MD = MDString::get(Ctx, Value);
+  I.setMetadata(Name, MDNode::get(Ctx, MD));
+}
+
 void setSIMDMetadata(Instruction &I, unsigned Group, unsigned Lanes) {
   setIntMetadata(I, "morpher.simd.group", Group);
   setIntMetadata(I, "morpher.simd.lanes", Lanes);
+}
+
+StringRef reductionOpcodeName(unsigned Opcode) {
+  switch (Opcode) {
+  case Instruction::Add:
+    return "ADD";
+  case Instruction::Sub:
+    return "SUB";
+  case Instruction::Mul:
+    return "MUL";
+  case Instruction::And:
+    return "AND";
+  case Instruction::Or:
+    return "OR";
+  case Instruction::Xor:
+    return "XOR";
+  default:
+    return "UNKNOWN";
+  }
 }
 
 void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
@@ -388,12 +415,6 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
   if (!Preheader || !Latch)
     return false;
 
-  SmallVector<BasicBlock *, 4> ExitBlocks;
-  L->getExitBlocks(ExitBlocks);
-  if (ExitBlocks.size() != 1)
-    return false;
-  BasicBlock *Exit = ExitBlocks[0];
-
   int PreheaderIdx = Phi->getBasicBlockIndex(Preheader);
   int LatchIdx = Phi->getBasicBlockIndex(Latch);
   if (PreheaderIdx < 0 || LatchIdx < 0)
@@ -476,6 +497,7 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
       EntryBuilder.CreateAlloca(Phi->getType(), LaneCount,
                                 PhiName + ".morpher.vecout");
   unsigned StoreGroup = NextGroup++;
+  SmallVector<StoreInst *, 16> VectorStores;
   for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
     Value *LaneIdx = ConstantInt::get(Type::getInt32Ty(Ctx), Lane);
     Value *Slot = BodyBuilder.CreateInBoundsGEP(Phi->getType(), VectorOut,
@@ -484,22 +506,22 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
     StoreInst *Store = BodyBuilder.CreateStore(LaneOutputs[Lane], Slot);
     Store->setVolatile(true);
     setSIMDMetadata(*Store, StoreGroup, Lanes);
+    VectorStores.push_back(Store);
   }
 
-  Instruction *ExitInsert = Exit->getTerminator();
-  for (Instruction &I : *Exit) {
-    if (!isa<PHINode>(&I)) {
-      ExitInsert = &I;
-      break;
-    }
-  }
-  IRBuilder<> ExitBuilder(ExitInsert);
+  IRBuilder<> ExitBuilder(Latch->getTerminator());
   Value *Combined = LaneOutputs[0];
   for (unsigned Lane = 1; Lane < LaneOutputs.size(); ++Lane)
     Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
                                  Combined, LaneOutputs[Lane], "morpher.psum.final");
   Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
                                Init, Combined, "morpher.psum.final.init");
+  StringRef ReduceOpName = reductionOpcodeName(ReductionOpcode);
+  StringRef ReduceBaseName = Combined->hasName() ? Combined->getName() : "morpher.psum.final.init";
+  for (StoreInst *Store : VectorStores) {
+    setStringMetadata(*Store, "morpher.simd.reduce_op", ReduceOpName);
+    setStringMetadata(*Store, "morpher.simd.reduce_base", ReduceBaseName);
+  }
 
   for (Use *U : ExternalBackedgeUses)
     U->set(Combined);
@@ -557,6 +579,12 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
     Loop *TargetLoop = nullptr;
     findAnnotatedLoopMarker(F, LI, TargetLoop);
 
+    // UnrollLoop(PreserveLCSSA=true) assumes the input loop is already in a
+    // simplified / LCSSA-friendly form. Some of our benchmark IR still carries
+    // direct loop live-outs, so canonicalize here before mutating the loop.
+    simplifyLoop(TargetLoop, &DT, &LI, &SE, &AC, nullptr, false);
+    formLCSSARecursively(*TargetLoop, DT, &LI, &SE);
+
     unsigned TripCount = SE.getSmallConstantTripCount(TargetLoop);
     if (TripCount != 0 && MorpherUnrollFactor >= TripCount) {
       report_fatal_error(
@@ -587,6 +615,8 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
     if (Result == LoopUnrollResult::FullyUnrolled)
       report_fatal_error("Morpher annotated loop was fully unrolled away");
+
+    formLCSSARecursively(*TargetLoop, DT, &LI, &SE);
 
     expandReductionsForSIMD(TargetLoop, MorpherReductionLanes,
                             MorpherReductionPolicy);

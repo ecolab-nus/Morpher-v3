@@ -55,13 +55,18 @@ static bool parsePeCoords(const std::string &key, int &x, int &y) {
   std::smatch m;
   static const std::regex memRe(R"(PE_MEM_X(\d+)_Y(\d+))");
   static const std::regex peRe(R"(PE_X(\d+)\|_Y(\d+)\|)");
-  if (std::regex_search(key, m, memRe) || std::regex_search(key, m, peRe)) {
+  static const std::regex typedPeRe(R"(PE_[A-Z0-9]+_X(\d+)\|_Y(\d+)\|)");
+  if (std::regex_search(key, m, memRe)
+      || std::regex_search(key, m, peRe)
+      || std::regex_search(key, m, typedPeRe)) {
     x = std::stoi(m[1].str());
     y = std::stoi(m[2].str());
     return true;
   }
   static const std::regex fallbackRe(R"(PE_X(\d+)_Y(\d+))");
-  if (!std::regex_search(key, m, fallbackRe)) {
+  static const std::regex typedFallbackRe(R"(PE_[A-Z0-9]+_X(\d+)_Y(\d+))");
+  if (!std::regex_search(key, m, fallbackRe)
+      && !std::regex_search(key, m, typedFallbackRe)) {
     return false;
   }
   x = std::stoi(m[1].str());

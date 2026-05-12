@@ -103,6 +103,12 @@ DFGGraph DFGGraph::parse(const std::string &path) {
     if (node.simdLanes < 1) {
       node.simdLanes = 1;
     }
+    const char *reduceOp = elem->Attribute("simd_reduce_op");
+    if (reduceOp) {
+      node.simdReduceOp = reduceOp;
+    }
+    const char *reduceConsumer = elem->Attribute("simd_reduce_consumer");
+    node.simdReduceConsumer = reduceConsumer && std::string(reduceConsumer) == "true";
 
     XMLElement *base = elem->FirstChildElement("BasePointerName");
     if (base && base->GetText()) {

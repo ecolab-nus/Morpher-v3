@@ -9768,7 +9768,7 @@ void DFG::printNewDFGXML()
 		//	for (int i = 0; i < maxASAPLevel; ++i) {
 		//		for(dfgNode* node : asaplevelNodeList[i]){
 		xmlFile << "<Node idx=\"" << node->getIdx() << "\"";
-		xmlFile << "ASAP=\"" << node->getASAPnumber() << "\"";
+		xmlFile << " ASAP=\"" << node->getASAPnumber() << "\"";
 
 		//		    if(node->getNameType() == "OutLoopLOAD") {
 		//		    	xmlFile << "OutLoopLOAD=\"1\"";
@@ -9785,10 +9785,10 @@ void DFG::printNewDFGXML()
 		//		    }
 
 		//		    xmlFile << "BB=\"" << node->BB->getName().str() << "\"";
-		xmlFile << "BB=\"" << nodeBBModified[node] << "\"";
+		xmlFile << " BB=\"" << nodeBBModified[node] << "\"";
 		if (node->hasConstantVal())
 		{
-			xmlFile << "CONST=\"" << node->getConstantVal() << "\"";
+			xmlFile << " CONST=\"" << node->getConstantVal() << "\"";
 		}
 		xmlFile << ">\n";
 

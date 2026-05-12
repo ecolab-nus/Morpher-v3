@@ -9,6 +9,8 @@ namespace ArtifactSim {
 struct PEConfig {
     bool hasMem = false;
     int memLatency = 1;
+    int simdWidth = 1;
+    bool scalarBroadcast = false;
     std::set<std::string> supportedOps;
 };
 

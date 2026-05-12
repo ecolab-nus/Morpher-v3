@@ -1612,13 +1612,19 @@ void DFGPartPred::printNewDFGXML() {
 		//		    }
 
 		//		    xmlFile << "BB=\"" << node->BB->getName().str() << "\"";
-		xmlFile << "BB=\"" << nodeBBModified[node] << "\"";
+		xmlFile << " BB=\"" << nodeBBModified[node] << "\"";
 		if(node->hasConstantVal()){
-			xmlFile << "CONST=\"" << node->getConstantVal() << "\"";
+			xmlFile << " CONST=\"" << node->getConstantVal() << "\"";
 		}
 		if(node->getSimdGroup() >= 0 && node->getSimdLanes() > 1){
 			xmlFile << " simd_group=\"" << node->getSimdGroup() << "\"";
 			xmlFile << " simd_lanes=\"" << node->getSimdLanes() << "\"";
+		}
+		if(!node->getSimdReduceOp().empty()){
+			xmlFile << " simd_reduce_op=\"" << node->getSimdReduceOp() << "\"";
+		}
+		if(!node->getSimdReduceBase().empty()){
+			xmlFile << " simd_reduce_base=\"" << node->getSimdReduceBase() << "\"";
 		}
 		xmlFile << ">\n";
 

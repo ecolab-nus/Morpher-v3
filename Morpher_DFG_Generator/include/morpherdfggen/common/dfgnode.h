@@ -101,6 +101,8 @@ class dfgNode{
 			std::string array_base_pointer = "NOT_A_MEM_OP";
 			int simdGroup = -1;
 			int simdLanes = 1;
+			std::string simdReduceOp = "";
+			std::string simdReduceBase = "";
 
 
 
@@ -284,6 +286,8 @@ class dfgNode{
 			std::string getArrBasePtr(){return array_base_pointer;}
 			int getSimdGroup(){return simdGroup;}
 			int getSimdLanes(){return simdLanes;}
+			std::string getSimdReduceOp(){return simdReduceOp;}
+			std::string getSimdReduceBase(){return simdReduceBase;}
 			void setSimdInfo(int group, int lanes){
 				simdGroup = group;
 				simdLanes = lanes;

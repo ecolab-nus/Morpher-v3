@@ -2,10 +2,33 @@
 
 #include <algorithm>
 #include <iostream>
+#include <stdexcept>
 #include <unordered_set>
 #include <utility>
 
 namespace ArtifactSim {
+
+static uint32_t reduceLaneValues(const std::vector<uint32_t> &lanes, const std::string &op) {
+  if (lanes.empty()) {
+    return 0;
+  }
+  uint32_t acc = lanes.front();
+  for (size_t i = 1; i < lanes.size(); ++i) {
+    const uint32_t value = lanes[i];
+    if (op == "ADD") {
+      acc += value;
+    } else if (op == "AND") {
+      acc &= value;
+    } else if (op == "OR") {
+      acc |= value;
+    } else if (op == "XOR") {
+      acc ^= value;
+    } else {
+      throw std::runtime_error("unsupported VRED reduction op: " + op);
+    }
+  }
+  return acc;
+}
 
 SimulatorBase::SimulatorBase(DFGGraph graph, Mapping mapping, MemAlloc alloc,
                              TraceImage trace, SimOptions options)
@@ -109,14 +132,26 @@ std::vector<uint32_t> SimulatorBase::memoryAddresses(const DFGNode &node) {
   auto externalIt = trace_.externalAddresses.find(node.idx);
   if (externalIt != trace_.externalAddresses.end()) {
     size_t lanes = node.simdPacked ? static_cast<size_t>(node.simdLanes) : 1;
+    // VRED-reduced stores collapse all SIMD lanes into one trace entry per
+    // CGRA iter (see simd_packer.remap_addr_trace's simd_reduced_store_groups
+    // handling), so only 1 cursor step per call regardless of simd_lanes.
+    size_t cursorStep = node.simdReduceConsumer ? 1 : lanes;
     size_t &cursor = externalAddressOffsets_[node.idx];
-    if (cursor + lanes <= externalIt->second.size()) {
-      std::vector<uint32_t> addresses;
-      addresses.reserve(lanes);
-      for (size_t lane = 0; lane < lanes; ++lane) {
-        addresses.push_back(externalIt->second[cursor++]);
+    if (cursor + cursorStep <= externalIt->second.size()) {
+      // For VRED-reduced stores the host trace records the lane-0 partial
+      // result address (e.g. .morpher.vecout), not the CGRA-side accumulator
+      // (e.g. morpher.psum.final.init).  Advance the cursor so shouldStop()
+      // can detect completion, but fall through to compute the DFG base.
+      if (node.simdReduceConsumer) {
+        cursor += cursorStep;
+      } else {
+        std::vector<uint32_t> addresses;
+        addresses.reserve(lanes);
+        for (size_t lane = 0; lane < lanes; ++lane) {
+          addresses.push_back(externalIt->second[cursor++]);
+        }
+        return addresses;
       }
-      return addresses;
     }
   }
 
@@ -154,7 +189,11 @@ std::vector<uint32_t> SimulatorBase::memoryAddresses(const DFGNode &node) {
   }
 
   if (!explicitOffset && node.mem.base != "loopstart" && node.mem.base != "loopend") {
-    offset = implicitOffsets_[node.mem.base];
+    // Reduction stores accumulate into a single slot across CGRA iterations,
+    // so they must not advance the implicit per-base offset cursor.
+    if (!node.simdReduceConsumer) {
+      offset = implicitOffsets_[node.mem.base];
+    }
   }
 
   size_t lanes = node.simdPacked ? static_cast<size_t>(node.simdLanes) : 1;
@@ -162,7 +201,8 @@ std::vector<uint32_t> SimulatorBase::memoryAddresses(const DFGNode &node) {
   for (size_t lane = 0; lane < lanes; ++lane) {
     addresses.push_back(base + offset + static_cast<uint32_t>(lane * node.mem.sizeBytes));
   }
-  if (!explicitOffset && node.mem.base != "loopstart" && node.mem.base != "loopend") {
+  if (!explicitOffset && node.mem.base != "loopstart" && node.mem.base != "loopend"
+      && !node.simdReduceConsumer) {
     implicitOffsets_[node.mem.base] += static_cast<uint32_t>(lanes * node.mem.sizeBytes);
   }
   return addresses;
@@ -228,6 +268,18 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
     if (!data.isValid()) {
       return Value::invalid();
     }
+    if (node.simdReduceConsumer && data.isVector()) {
+      // The VRED reduces the SIMD lanes; the OSTORE writes that scalar to the
+      // partial-sum buffer.  The reduction is per-iteration, not cross-
+      // iteration: each iter overwrites the slot.  When the rewritten OSTORE
+      // is still simd_packed, broadcast the reduced scalar to every lane slot
+      // (mirroring the pruned scalar-reduction OSTORE's lane-wise stores).
+      const uint32_t scalar = data.vector()[0];
+      for (uint32_t addr : addresses) {
+        trace_.initial.store(addr, node.mem.sizeBytes, Value(scalar));
+      }
+      return Value(scalar);
+    }
     if (node.simdPacked || data.isVector()) {
       lanes = node.simdPacked ? static_cast<size_t>(node.simdLanes) : data.lanes();
       for (size_t lane = 0; lane < lanes; ++lane) {
@@ -264,6 +316,27 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
       return data;
     }
     return secondDataInput(node);
+  }
+
+  if (node.op == "VRED") {
+    Value data = inputByType(node, "I1");
+    if (!data.isValid()) {
+      data = firstDataInput(node);
+    }
+    if (!data.isValid()) {
+      return Value::invalid();
+    }
+    std::vector<uint32_t> lanes;
+    if (data.isVector()) {
+      lanes = data.vector();
+    } else {
+      lanes = std::vector<uint32_t>(std::max(node.simdLanes, 1), data.scalar());
+    }
+    const std::string reduceOp = node.simdReduceOp.empty() ? "ADD" : node.simdReduceOp;
+    const uint32_t reduced = reduceLaneValues(lanes, reduceOp);
+    std::vector<uint32_t> out(std::max(node.simdLanes, 1), 0);
+    out[0] = reduced;
+    return Value(std::move(out));
   }
 
   Value a = inputByType(node, "I1");

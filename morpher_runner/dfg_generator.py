@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
 
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
@@ -17,6 +18,63 @@ from morpher_runner.utils import BankSizeTooSmallError
 from morpher_runner.utils import build_llvm_tool_env
 from morpher_runner.utils import resolve_llvm_tool
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
+
+
+MEMORY_OP_PREFIXES = (
+  "LOAD",
+  "STORE",
+  "OLOAD",
+  "OSTORE",
+  "VLOAD",
+  "VSTORE",
+  "VOLOAD",
+  "VOSTORE",
+)
+
+
+def _read_unwrapped_xml(path):
+  text = open(path, "r", encoding="utf-8").read()
+  return ET.fromstring("<Root>\n%s\n</Root>" % text)
+
+
+def _classify_staged_dfg_nodes(xml_path):
+  root = _read_unwrapped_xml(xml_path)
+  dfg = root.find("DFG")
+  if dfg is None:
+    raise RuntimeError("DFG XML missing <DFG> root in %s" % xml_path)
+
+  counts = {
+    "total": 0,
+    "scalar_compute": 0,
+    "vector_compute": 0,
+    "memory_ops": 0,
+  }
+  for node in dfg.findall("Node"):
+    counts["total"] += 1
+    op_elem = node.find("OP")
+    op = (op_elem.text or "").strip() if op_elem is not None and op_elem.text else ""
+    if not op:
+      continue
+    if op.startswith(MEMORY_OP_PREFIXES):
+      counts["memory_ops"] += 1
+    elif op.startswith("V"):
+      counts["vector_compute"] += 1
+    else:
+      counts["scalar_compute"] += 1
+  return counts
+
+
+def _print_staged_dfg_summary(xml_path):
+  counts = _classify_staged_dfg_nodes(xml_path)
+  print(
+    "Staged DFG summary: total_nodes=%d, scalar_compute=%d, vector_compute=%d, memory_ops=%d\n"
+    % (
+      counts["total"],
+      counts["scalar_compute"],
+      counts["vector_compute"],
+      counts["memory_ops"],
+    )
+  )
 
 
 def count_trace_files(trace_dir, kernel):
@@ -55,14 +113,14 @@ def build_ir_generation_commands(context):
 
 
 def simd_packing_active_for_factor(config, unroll_factor):
-  return config.simd_enabled and unroll_factor >= config.simd_lanes
+  return config.arch_simd_enabled and unroll_factor >= config.arch_simd_width
 
 
 def build_unroll_command(context, unroll_factor, remainder_policy):
   kernel = context.kernel
   simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
-  reduction_lanes = context.config.simd_lanes if simd_active else 1
-  reduction_policy = context.config.simd_reduction_policy if simd_active else "tree"
+  reduction_lanes = context.config.arch_simd_width if simd_active else 1
+  reduction_policy = "packed-psum" if simd_active else "tree"
   opt_tool = resolve_llvm_tool("opt")
   return Command(
     argv=[
@@ -267,19 +325,22 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   if remainder_policy is None:
     remainder_policy = config.auto_unroll_remainder_policy
   simd_active = simd_packing_active_for_factor(config, unroll_factor)
+  context.selected_simd_enabled = simd_active
+  context.selected_simd_width = config.arch_simd_width if simd_active else 1
+  context.selected_simd_artifact_only = simd_active
 
   print("-----Running Morpher_DFG_Generator-----\n")
-  if config.simd_enabled:
+  if config.arch_simd_enabled:
     if simd_active:
       print(
-        "SIMD packing enabled for this candidate: lanes=%d, pack_load_store=%s\n"
-        % (config.simd_lanes, "true" if config.simd_pack_load_store else "false")
+        "Architecture-driven SIMD packing enabled for this candidate: width=%d, scalar_broadcast=%s\n"
+        % (config.arch_simd_width, "true" if config.arch_scalar_broadcast else "false")
       )
     else:
       print(
-        "SIMD hardware enabled, but this candidate is narrower than simd.lanes=%d; "
+        "SIMD hardware enabled, but this candidate is narrower than SIMD_WIDTH=%d; "
         "mapping scalar lanes without SIMD packing.\n"
-        % config.simd_lanes
+        % config.arch_simd_width
       )
   if unroll_factor > 1:
     print(
@@ -327,13 +388,14 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
     simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
       dfg_kernel.rstrip("/"),
       kernel,
-      config.simd_lanes,
+      config.arch_simd_width,
     )
     report, simd_mapping = pack_simd_xml(
       dfg_xml,
       simd_xml,
-      lanes=config.simd_lanes,
-      pack_load_store=config.simd_pack_load_store,
+      lanes=config.arch_simd_width,
+      vector_ops=config.arch_vector_ops,
+      scalar_broadcast=config.arch_scalar_broadcast,
       prune_scalar_lane_outputs=config.remove_agi,
       prune_iter_control=config.remove_iter,
     )
@@ -356,6 +418,8 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
     packed_name = os.path.join(context.mapper_kernel, os.path.basename(mapper_xml))
     if packed_name != staged_xml:
       os.replace(packed_name, staged_xml)
+  staged_xml = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel)
+  _print_staged_dfg_summary(staged_xml)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 
@@ -394,6 +458,14 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   if result.returncode != 0:
     printable_code = result.returncode if result.returncode >= 0 else (128 + (-result.returncode))
     print("Warning: instrumented binary ./final exited with code %d; simulation traces will not be available." % printable_code)
+  elif trace_count == 0 and unroll_factor > 1:
+    print(
+      "Warning: 0 trace files generated despite a clean instrumented run.\n"
+      "  The unroll factor (%d) likely exceeds the runtime loop trip count: the\n"
+      "  unrolled body never executes, only the scalar remainder. Lower\n"
+      "  `auto_unroll.factors` (e.g. [4] or [2]) or use a larger benchmark.\n"
+      "  Downstream simulation will be skipped." % unroll_factor
+    )
   else:
     trace_zero = "%s/memtraces/%s_trace_0.txt" % (dfg_kernel.rstrip("/"), kernel)
     if os.path.isfile(trace_zero):

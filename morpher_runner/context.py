@@ -47,10 +47,12 @@ def _print_deprecation_warning(config_dict):
     deprecated_keys.append("json_arch")
   if "json_arch_before_memupdate" in config_dict:
     deprecated_keys.append("json_arch_before_memupdate")
+  if "simd" in config_dict:
+    deprecated_keys.append("simd")
   if deprecated_keys:
     print(
       "Warning: deprecated config keys in use (%s). "
-      "Please migrate to memory_mode + arch_template_json."
+      "Please migrate to memory_mode + arch_template_json, and move SIMD capability into the architecture JSON."
       % ", ".join(deprecated_keys)
     )
 
@@ -276,6 +278,141 @@ def infer_arch_spm_config(morpher_home, mapper_home, arch_template_json):
   return len(wrapper_names), bank_size
 
 
+VECTOR_OP_PREFIX = "V"
+VECTOR_MEMORY_OP_PREFIXES = ("VLOAD", "VSTORE", "VOLOAD", "VOSTORE")
+
+
+@dataclass(frozen=True)
+class ArchSimdConfig:
+  enabled: bool
+  width: int
+  scalar_broadcast: bool
+  vector_ops: frozenset
+
+
+def infer_arch_simd_config(morpher_home, mapper_home, arch_template_json):
+  arch_path = resolve_arch_template_path(morpher_home, mapper_home, arch_template_json)
+  with open(arch_path, "r", encoding="utf-8") as stream:
+    arch_data = json.load(stream)
+
+  arch_root = arch_data.get("ARCH")
+  if not isinstance(arch_root, dict):
+    raise RuntimeError("Architecture JSON %s is missing top-level ARCH object." % arch_path)
+
+  cgra_root = arch_root.get("CGRA")
+  if not isinstance(cgra_root, dict):
+    raise RuntimeError("Architecture JSON %s is missing ARCH.CGRA." % arch_path)
+
+  cgra_submods = cgra_root.get("SUBMODS")
+  if not isinstance(cgra_submods, list):
+    raise RuntimeError("Architecture JSON %s is missing ARCH.CGRA.SUBMODS list." % arch_path)
+
+  grid_entry = None
+  for entry in cgra_submods:
+    if isinstance(entry, dict) and str(entry.get("PATTERN", "")).strip().upper() == "GRID":
+      grid_entry = entry
+      break
+  if grid_entry is None:
+    raise RuntimeError("Architecture JSON %s has no CGRA GRID submodule pattern." % arch_path)
+
+  mods = grid_entry.get("MODS", [])
+  if not isinstance(mods, list):
+    raise RuntimeError("Architecture JSON %s has invalid GRID MODS list." % arch_path)
+
+  def _module_desc(mod_type):
+    desc = arch_root.get(mod_type)
+    if not isinstance(desc, dict):
+      raise RuntimeError("Architecture JSON %s is missing ARCH.%s." % (arch_path, mod_type))
+    return desc
+
+  def _fu_type_for_pe(mod_type):
+    pe_desc = _module_desc(mod_type)
+    submods = pe_desc.get("SUBMODS", {})
+    if not isinstance(submods, dict):
+      return None
+    for candidate in submods.keys():
+      if str(candidate).startswith("FU"):
+        return str(candidate)
+    return None
+
+  widths = set()
+  broadcasts = set()
+  vector_ops = set()
+  simd_compute_tiles = 0
+
+  for mod in mods:
+    if not isinstance(mod, dict):
+      continue
+    mod_type = str(mod.get("MOD", "PE")).strip()
+    if not mod_type.startswith("PE"):
+      continue
+
+    pe_desc = _module_desc(mod_type)
+    width = pe_desc.get("SIMD_WIDTH")
+    if width is None:
+      width = 1
+    try:
+      width = int(width)
+    except (TypeError, ValueError):
+      raise RuntimeError("ARCH.%s.SIMD_WIDTH must be an integer." % mod_type)
+    if width < 1:
+      raise RuntimeError("ARCH.%s.SIMD_WIDTH must be >= 1." % mod_type)
+    if width == 1:
+      continue
+
+    fu_type = _fu_type_for_pe(mod_type)
+    if not fu_type:
+      raise RuntimeError("ARCH.%s must contain a FU submodule when SIMD_WIDTH > 1." % mod_type)
+    fu_desc = _module_desc(fu_type)
+    ops = fu_desc.get("OPS", {})
+    if not isinstance(ops, dict):
+      raise RuntimeError("ARCH.%s.OPS must be a mapping." % fu_type)
+    tile_vector_ops = {
+      str(op_name).strip()
+      for op_name in ops.keys()
+      if str(op_name).strip().startswith(VECTOR_OP_PREFIX)
+    }
+    if not tile_vector_ops:
+      raise RuntimeError(
+        "ARCH.%s declares SIMD_WIDTH=%d but ARCH.%s.OPS exposes no vector op names."
+        % (mod_type, width, fu_type)
+      )
+
+    vector_ops.update(tile_vector_ops)
+    compute_vector_ops = {
+      op_name for op_name in tile_vector_ops
+      if not op_name.startswith(VECTOR_MEMORY_OP_PREFIXES)
+    }
+    if not compute_vector_ops:
+      continue
+
+    widths.add(width)
+    broadcasts.add(bool(pe_desc.get("SCALAR_BROADCAST", fu_desc.get("SCALAR_BROADCAST", False))))
+    simd_compute_tiles += 1
+
+  if not simd_compute_tiles:
+    return ArchSimdConfig(
+      enabled=False,
+      width=1,
+      scalar_broadcast=False,
+      vector_ops=frozenset(),
+    )
+
+  if len(widths) != 1:
+    raise RuntimeError(
+      "Architecture JSON %s uses mixed SIMD widths across compute PEs (%s). "
+      "This flow currently requires one uniform SIMD width."
+      % (arch_path, ", ".join(str(width) for width in sorted(widths)))
+    )
+
+  return ArchSimdConfig(
+    enabled=True,
+    width=next(iter(widths)),
+    scalar_broadcast=(len(broadcasts) == 1 and True in broadcasts),
+    vector_ops=frozenset(sorted(vector_ops)),
+  )
+
+
 @dataclass
 class RunnerConfig:
   memory_mode: str
@@ -313,36 +450,10 @@ class RunnerConfig:
   auto_unroll_factors: list
   auto_unroll_remainder_policy: str
   auto_unroll_stop_on_degradation: bool
-  simd_enabled: bool
-  simd_lanes: int
-  simd_pack_load_store: bool
-  simd_reduction_policy: str
-
-  @staticmethod
-  def _parse_simd(config_dict):
-    simd_cfg = config_dict.get("simd", {})
-    if simd_cfg is None:
-      simd_cfg = {}
-    if isinstance(simd_cfg, bool):
-      simd_cfg = {"enabled": simd_cfg}
-    if not isinstance(simd_cfg, dict):
-      raise RuntimeError("Config key 'simd' must be a mapping or boolean.")
-
-    enabled = bool(simd_cfg.get("enabled", False))
-    try:
-      lanes = int(simd_cfg.get("lanes", 1))
-    except (TypeError, ValueError):
-      raise RuntimeError("simd.lanes must be an integer.")
-    if lanes < 1:
-      raise RuntimeError("simd.lanes must be >= 1.")
-    if enabled and lanes <= 1:
-      raise RuntimeError("simd.lanes must be > 1 when simd.enabled=true.")
-
-    pack_load_store = bool(simd_cfg.get("pack_load_store", True))
-    reduction_policy = str(simd_cfg.get("reduction_policy", "tree")).strip().lower()
-    if reduction_policy not in ("tree", "packed-psum"):
-      raise RuntimeError("simd.reduction_policy must be one of: tree, packed-psum.")
-    return enabled, lanes, pack_load_store, reduction_policy
+  arch_simd_enabled: bool
+  arch_simd_width: int
+  arch_scalar_broadcast: bool
+  arch_vector_ops: frozenset
 
   @staticmethod
   def _parse_auto_unroll(config_dict):
@@ -390,12 +501,6 @@ class RunnerConfig:
     arch_template_json = _resolve_arch_template_json(config_dict, memory_mode)
     mapper_preset, mapper_tuning = _parse_mapper_preset(config_dict)
     (
-      simd_enabled,
-      simd_lanes,
-      simd_pack_load_store,
-      simd_reduction_policy,
-    ) = cls._parse_simd(config_dict)
-    (
       auto_unroll_enabled,
       auto_unroll_factors,
       auto_unroll_remainder_policy,
@@ -421,6 +526,7 @@ class RunnerConfig:
     inferred_ydim = None
     inferred_numberofbanks = None
     inferred_banksize = None
+    arch_simd = ArchSimdConfig(False, 1, False, frozenset())
     try:
       inferred_xdim, inferred_ydim = infer_arch_dims(morpher_home, mapper_home, arch_template_json)
     except RuntimeError:
@@ -435,6 +541,7 @@ class RunnerConfig:
     except RuntimeError:
       if "numberofbanks" not in config_dict or "banksize" not in config_dict:
         raise
+    arch_simd = infer_arch_simd_config(morpher_home, mapper_home, arch_template_json)
 
     xdim = config_dict.get("xdim", inferred_xdim)
     ydim = config_dict.get("ydim", inferred_ydim)
@@ -511,10 +618,10 @@ class RunnerConfig:
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_remainder_policy=auto_unroll_remainder_policy,
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
-      simd_enabled=simd_enabled,
-      simd_lanes=simd_lanes,
-      simd_pack_load_store=simd_pack_load_store,
-      simd_reduction_policy=simd_reduction_policy,
+      arch_simd_enabled=arch_simd.enabled,
+      arch_simd_width=arch_simd.width,
+      arch_scalar_broadcast=arch_simd.scalar_broadcast,
+      arch_vector_ops=arch_simd.vector_ops,
       proximity_sort=mapper_tuning["proximity_sort"],
     )
 
@@ -536,6 +643,9 @@ class RunnerContext:
   mapper_kernel: str
   simulator_kernel: str
   mem_trace: str
+  selected_simd_enabled: bool = False
+  selected_simd_width: int = 1
+  selected_simd_artifact_only: bool = False
 
   @property
   def totalsize(self):

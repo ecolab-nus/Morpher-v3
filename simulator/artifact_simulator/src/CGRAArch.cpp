@@ -18,6 +18,20 @@ static std::set<std::string> opsFromJson(const json &opsObj) {
     return result;
 }
 
+static int simdWidthFromJson(const json &moduleObj) {
+    if (!moduleObj.contains("SIMD_WIDTH")) {
+        return 1;
+    }
+    return moduleObj["SIMD_WIDTH"].get<int>();
+}
+
+static bool scalarBroadcastFromJson(const json &moduleObj) {
+    if (!moduleObj.contains("SCALAR_BROADCAST")) {
+        return false;
+    }
+    return moduleObj["SCALAR_BROADCAST"].get<bool>();
+}
+
 CGRAArch CGRAArch::parse(const std::string &jsonPath) {
     std::ifstream f(jsonPath);
     if (!f.is_open()) {
@@ -32,6 +46,10 @@ CGRAArch CGRAArch::parse(const std::string &jsonPath) {
     // In the JSON, OPS values are the latency (1 for FU, 2 for FU_MEM).
     std::set<std::string> fuOps, fuMemOps;
     int fuMemLatency = 2;
+    int peSimdWidth = 1;
+    int peMemSimdWidth = 1;
+    bool peScalarBroadcast = false;
+    bool peMemScalarBroadcast = false;
     if (arch.contains("FU") && arch["FU"].contains("OPS")) {
         fuOps = opsFromJson(arch["FU"]["OPS"]);
     }
@@ -42,6 +60,14 @@ CGRAArch CGRAArch::parse(const std::string &jsonPath) {
         if (!opsObj.empty()) {
             fuMemLatency = opsObj.begin().value().get<int>();
         }
+    }
+    if (arch.contains("PE")) {
+        peSimdWidth = simdWidthFromJson(arch["PE"]);
+        peScalarBroadcast = scalarBroadcastFromJson(arch["PE"]);
+    }
+    if (arch.contains("PE_MEM")) {
+        peMemSimdWidth = simdWidthFromJson(arch["PE_MEM"]);
+        peMemScalarBroadcast = scalarBroadcastFromJson(arch["PE_MEM"]);
     }
 
     // Find the GRID pattern inside CGRA.SUBMODS.
@@ -67,6 +93,8 @@ CGRAArch CGRAArch::parse(const std::string &jsonPath) {
         for (int x = 0; x < result.xdim; ++x) {
             result.pe[y][x].hasMem = false;
             result.pe[y][x].memLatency = 1;
+            result.pe[y][x].simdWidth = peSimdWidth;
+            result.pe[y][x].scalarBroadcast = peScalarBroadcast;
             result.pe[y][x].supportedOps = fuOps;
         }
     }
@@ -83,6 +111,8 @@ CGRAArch CGRAArch::parse(const std::string &jsonPath) {
             bool isMem = (modType == "PE_MEM");
             result.pe[y][x].hasMem = isMem;
             result.pe[y][x].memLatency = isMem ? fuMemLatency : 1;
+            result.pe[y][x].simdWidth = isMem ? peMemSimdWidth : peSimdWidth;
+            result.pe[y][x].scalarBroadcast = isMem ? peMemScalarBroadcast : peScalarBroadcast;
             result.pe[y][x].supportedOps = isMem ? fuMemOps : fuOps;
         }
     }

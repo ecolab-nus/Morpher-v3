@@ -30,6 +30,8 @@ struct DFGNode {
   uint32_t constValue = 0;
   bool simdPacked = false;
   int simdLanes = 1;
+  std::string simdReduceOp;
+  bool simdReduceConsumer = false;
   MemoryAccess mem;
   std::vector<EdgeRef> inputs;
   std::vector<EdgeRef> outputs;
