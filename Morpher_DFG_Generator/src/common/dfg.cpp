@@ -10443,6 +10443,12 @@ static std::string traceBaseArrayNameImpl(Value *V, std::unordered_set<const Val
 		if (PHI->getNumIncomingValues() > 0)
 			result = traceBaseArrayNameImpl(PHI->getIncomingValue(0), visited, depth + 1);
 	}
+	else if (Argument *Arg = dyn_cast<Argument>(V))
+	{
+		result = Arg->hasName()
+			? Arg->getName().str()
+			: ("_arg" + std::to_string(Arg->getArgNo()));
+	}
 	else
 	{
 		result = V->getName().str();

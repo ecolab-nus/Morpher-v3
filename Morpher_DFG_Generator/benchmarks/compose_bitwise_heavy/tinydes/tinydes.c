@@ -1,8 +1,8 @@
 #define SIZE 64
 
-unsigned int PLAINTEXT[SIZE];
-unsigned int KEY[SIZE];
-unsigned int CIPHERTEXT[SIZE];
+int PLAINTEXT[SIZE];
+int KEY[SIZE];
+int CIPHERTEXT[SIZE];
 
 __attribute__((noinline))
 void tinydes() {
@@ -11,8 +11,8 @@ void tinydes() {
         please_map_me();
         #endif
 
-        unsigned int val = PLAINTEXT[i];
-        unsigned int rotated = (val << 3) | (val >> (32 - 3));
+        int val = PLAINTEXT[i];
+        int rotated = (val << 3) | (val >> (32 - 3));
         CIPHERTEXT[i] = rotated ^ KEY[i];
     }
 }

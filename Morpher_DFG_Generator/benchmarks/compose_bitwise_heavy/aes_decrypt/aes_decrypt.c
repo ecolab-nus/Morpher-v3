@@ -712,7 +712,7 @@ cf_dec c_name(set_key)(const byte in_key[], const word n_bytes, const enum aes_k
 #endif
 
 __attribute__((annotate("in_blk:128,out_blk:128,cx:128")))
-cf_dec c_name(encrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *cx)
+cf_dec c_name(aes_encrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *cx)
 {   word        locals(b0, b1);
     word rnd;
 
@@ -809,10 +809,6 @@ for(rnd1 = 0;  rnd1 < cx->Nrnd - 2; ++rnd1)
 
     for(rnd = 0; rnd < trip_count ; ++rnd)
         {
-#ifdef CGRA_COMPILER
-	please_map_me();
-#endif
-
 			b1[0]= kp_tab[0+rnd*nc] ^
 	       (     ft_tab[bval(fwd_var(b0,0,0),rf1(0,0))]   ^
 	    		   upr(ft_tab[bval(fwd_var(b0,1,0),rf1(1,0))],1)   ^
@@ -897,9 +893,10 @@ for(rnd1 = 0;  rnd1 < cx->Nrnd - 2; ++rnd1)
 
 
 __attribute__((annotate("in_blk:128,out_blk:128,cx:128")))
-cf_dec c_name(decrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *cx)
+cf_dec c_name(aes_decrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *cx)
 {   word        locals(b0, b1);
     const word  *kp = cx->d_key;
+    word        rnd;
 
 #if !defined(ONE_TABLE) && !defined(FOUR_TABLES)
     word        f2, f4, f8, f9; 
@@ -908,6 +905,24 @@ cf_dec c_name(decrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *c
     if(!(cx->mode & 0x02)) return aes_bad;
 
     state_in(b0, in_blk, kp); kp += nc;
+
+#define stage_dec_round(r) do { \
+        kp_tab[0 + (r) * nc] = cx->d_key[4 + (r) * nc + 0]; \
+        kp_tab[1 + (r) * nc] = cx->d_key[4 + (r) * nc + 1]; \
+        kp_tab[2 + (r) * nc] = cx->d_key[4 + (r) * nc + 2]; \
+        kp_tab[3 + (r) * nc] = cx->d_key[4 + (r) * nc + 3]; \
+    } while(0)
+    stage_dec_round(0);
+    stage_dec_round(1);
+    stage_dec_round(2);
+    stage_dec_round(3);
+    stage_dec_round(4);
+    stage_dec_round(5);
+    stage_dec_round(6);
+    stage_dec_round(7);
+    stage_dec_round(8);
+#undef stage_dec_round
+    kp = cx->d_key + 4 + 9 * nc;
 
 #if defined(UNROLL)
 
@@ -945,9 +960,12 @@ cf_dec c_name(decrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *c
 
         for(rnd = 0; rnd < cx->Nrnd - 1; ++rnd)
         {
+#ifdef CGRA_COMPILER
+            please_map_me();
+#endif
 
-            round(inv_rnd, b1, b0, kp); 
-            l_copy(b0, b1); kp += nc;
+            round(inv_rnd, b1, b0, &kp_tab[rnd * nc]); 
+            l_copy(b0, b1);
         }
 
         round(inv_lrnd, b0, b1, kp);
@@ -956,4 +974,31 @@ cf_dec c_name(decrypt)(const byte in_blk[], byte out_blk[], const c_name(aes) *c
 
     state_out(out_blk, b0);
     return aes_good;
+}
+
+int main()
+{
+    byte key[16];
+    byte plaintext[16];
+    byte ciphertext[16];
+    byte out_blk[16];
+    c_name(aes) cx;
+    int i;
+
+    for(i = 0; i < 16; ++i)
+    {
+        key[i] = (byte)(0x10 + i * 3);
+        plaintext[i] = (byte)(0x20 + i * 5);
+        ciphertext[i] = 0;
+        out_blk[i] = 0;
+    }
+
+    if(c_name(set_key)(key, 16, both, &cx) != aes_good)
+        return 1;
+    if(c_name(aes_encrypt)(plaintext, ciphertext, &cx) != aes_good)
+        return 2;
+    if(c_name(aes_decrypt)(ciphertext, out_blk, &cx) != aes_good)
+        return 3;
+
+    return out_blk[0] != plaintext[0] ? 4 : 0;
 }

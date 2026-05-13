@@ -149,8 +149,7 @@ short Sinewave[N_WAVE-N_WAVE/4] = {
   optimization suited to a particluar DSP processor.
   Scaling ensures that result remains 16-bit.
 */
-//inline short FIX_MPY(short a, short b)
-short FIX_MPY(short a, short b)
+__attribute__((always_inline)) static inline short FIX_MPY(short a, short b)
 {
 	/* shift right one less bit (i.e. 15-1) */
 	int c = ((int)a * (int)b) >> 14;
@@ -448,7 +447,7 @@ void filter(int startF, int endF, fixed* real, fixed* imag, int N){
 } 
 
 
-main(){
+void main(){
 	const int N = 128;
         fixed real[N], imag[N];
         int     i;
@@ -482,4 +481,3 @@ fix_fft(real,imag,0,0);
 
 
 }
-

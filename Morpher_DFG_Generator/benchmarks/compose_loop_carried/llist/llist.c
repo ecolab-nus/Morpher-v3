@@ -1,59 +1,45 @@
-#include <stdio.h>
-#include <stdlib.h>
-
 #define SIZE 64
-#define TARGET -1
+#define TARGET 137
 
-typedef struct Node {
-    int data;
-    struct Node* next;
-} Node;
-
-Node* head  = NULL;
+int node_data[SIZE];
+int node_next[SIZE];
+int head_idx = 0;
+int llist_result = 0;
 
 __attribute__((noinline))
-int llist(Node* hd, int target) {
-    while (hd) {
-        #ifdef CGRA_COMPILER
-        please_map_me();
-        #endif
-        if (hd->data == target) {
-            return 1;
-        } else {
-            hd = hd->next;
-        }
-    }
-    return -1;
+int llist(int target)
+{
+  int idx = head_idx;
+  int found = 0;
+
+  for (int step = 0; step < SIZE; step++) {
+#ifdef CGRA_COMPILER
+    please_map_me();
+#endif
+    int active = idx >= 0;
+    int safe_idx = active ? idx : 0;
+    int value = node_data[safe_idx];
+    int next = node_next[safe_idx];
+    found |= active && (value == target);
+    idx = active ? next : -1;
+  }
+
+  return found;
 }
 
-void create_list() {
-    Node* curr = NULL;
-    for (int i = SIZE - 1; i >= 0; i--) {
-        Node* new_node = (Node*)malloc(sizeof(Node));
-        new_node->data = (i * 13) % 256;
-        new_node->next = curr;
-        curr = new_node;
-    }
-    head = curr;
+static void init_list()
+{
+  for (int i = 0; i < SIZE; i++) {
+    node_data[i] = (i * 13) & 255;
+    node_next[i] = i + 1;
+  }
+  node_data[37] = TARGET;
+  node_next[SIZE - 1] = -1;
 }
 
-void free_list(Node* hd) {
-    while (hd) {
-        Node* temp = hd;
-        hd = hd->next;
-        free(temp);
-    }
-}
-
-int main() {
-    create_list();
-
-    int result = llist(head, TARGET);
-    // if (result == 1) {
-    //     printf("Found %d in the list.\n", TARGET);
-    // } else {
-    //     printf("%d not found in the list.\n", TARGET);
-    // }
-    free_list(head);
-    return 0;
+int main()
+{
+  init_list();
+  llist_result = llist(TARGET);
+  return llist_result != 1;
 }

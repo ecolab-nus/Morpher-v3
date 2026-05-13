@@ -28,6 +28,7 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/Debug.h"
@@ -155,6 +156,8 @@ static void ValidateSupportedArrayDimensions(Function &F)
 		{
 			GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I);
 			if (!GEP)
+				continue;
+			if (isa<StructType>(GEP->getSourceElementType()))
 				continue;
 
 			unsigned effectiveArrayDims = getEffectiveArrayDims(GEP);
@@ -1138,7 +1141,8 @@ void printFileOutMappingUnitVars(Function &F,
 					}
 
 					unsigned effectiveArrayDims = getEffectiveArrayDims(GEP);
-					if (effectiveArrayDims > 2)
+					bool isStructFieldAccess = isa<StructType>(GEP->getSourceElementType());
+					if (!isStructFieldAccess && effectiveArrayDims > 2)
 					{
 						std::string displayName = ptrName.empty() ? std::string("<unnamed>") : ptrName;
 						DFG_CHECK(false, "UnsupportedArrayDimensions",
@@ -1147,7 +1151,7 @@ void printFileOutMappingUnitVars(Function &F,
 							"'; Morpher currently supports only up to 2D arrays");
 					}
 					unsigned pointerDepth = getPointerDepth(GEP->getPointerOperandType());
-					if (pointerDepth > 2)
+					if (!isStructFieldAccess && pointerDepth > 2)
 					{
 						std::string displayName = ptrName.empty() ? std::string("<unnamed>") : ptrName;
 						DFG_CHECK(false, "UnsupportedArrayDimensions",
@@ -1849,9 +1853,14 @@ void ParseSizeAttr(Function &F, std::map<std::string, int> *sizeArrMap)
 		{
 			auto e = cast<ConstantStruct>(a->getOperand(i));
 
-			if (auto fn = dyn_cast<Function>(e->getOperand(0)->getOperand(0)))
+			auto *annotatedValue = e->getOperand(0)->stripPointerCasts();
+			if (auto fn = dyn_cast<Function>(annotatedValue))
 			{
-				auto anno = cast<ConstantDataArray>(cast<GlobalVariable>(e->getOperand(1)->getOperand(0))->getOperand(0))->getAsCString();
+				auto *annotationGlobal = dyn_cast<GlobalVariable>(e->getOperand(1)->stripPointerCasts());
+				if (!annotationGlobal)
+					continue;
+				auto *annotationData = cast<ConstantDataArray>(annotationGlobal->getOperand(0));
+				auto anno = annotationData->getAsCString();
 				fn->addFnAttr("size", anno); // <-- add function annotation here
 			}
 		}
@@ -1912,6 +1921,99 @@ void RemoveSelectLeafs(Function &F)
 			}
 		}
 	}
+}
+
+static bool ExpandConstantFunnelShifts(Function &F)
+{
+	bool changed = false;
+	SmallVector<IntrinsicInst *, 8> funnelShifts;
+	for (BasicBlock &BB : F)
+		for (Instruction &I : BB)
+			if (auto *II = dyn_cast<IntrinsicInst>(&I))
+				if (II->getIntrinsicID() == Intrinsic::fshl ||
+				    II->getIntrinsicID() == Intrinsic::fshr)
+					funnelShifts.push_back(II);
+
+	for (IntrinsicInst *II : funnelShifts)
+	{
+		auto *intTy = dyn_cast<IntegerType>(II->getType());
+		auto *shiftAmount = dyn_cast<ConstantInt>(II->getArgOperand(2));
+		if (!intTy || !shiftAmount)
+			continue;
+
+		unsigned bitWidth = intTy->getBitWidth();
+		uint64_t amount = shiftAmount->getZExtValue() % bitWidth;
+		Value *replacement = nullptr;
+		IRBuilder<> builder(II);
+		if (amount == 0)
+		{
+			replacement = II->getIntrinsicID() == Intrinsic::fshl
+				? II->getArgOperand(0)
+				: II->getArgOperand(1);
+		}
+		else if (II->getIntrinsicID() == Intrinsic::fshl)
+		{
+			Value *left = builder.CreateShl(II->getArgOperand(0), amount);
+			Value *right = builder.CreateLShr(II->getArgOperand(1), bitWidth - amount);
+			replacement = builder.CreateOr(left, right);
+		}
+		else
+		{
+			Value *left = builder.CreateLShr(II->getArgOperand(0), amount);
+			Value *right = builder.CreateShl(II->getArgOperand(1), bitWidth - amount);
+			replacement = builder.CreateOr(left, right);
+		}
+
+		II->replaceAllUsesWith(replacement);
+		II->eraseFromParent();
+		changed = true;
+	}
+	return changed;
+}
+
+static bool ExpandIntegerMinMaxIntrinsics(Function &F)
+{
+	bool changed = false;
+	SmallVector<IntrinsicInst *, 8> minMaxes;
+	for (BasicBlock &BB : F)
+		for (Instruction &I : BB)
+			if (auto *II = dyn_cast<IntrinsicInst>(&I))
+				if (II->getIntrinsicID() == Intrinsic::smax ||
+				    II->getIntrinsicID() == Intrinsic::smin ||
+				    II->getIntrinsicID() == Intrinsic::umax ||
+				    II->getIntrinsicID() == Intrinsic::umin)
+					minMaxes.push_back(II);
+
+	for (IntrinsicInst *II : minMaxes)
+	{
+		IRBuilder<> builder(II);
+		Value *lhs = II->getArgOperand(0);
+		Value *rhs = II->getArgOperand(1);
+		CmpInst::Predicate pred;
+		switch (II->getIntrinsicID())
+		{
+		case Intrinsic::smax:
+			pred = CmpInst::ICMP_SGT;
+			break;
+		case Intrinsic::smin:
+			pred = CmpInst::ICMP_SLT;
+			break;
+		case Intrinsic::umax:
+			pred = CmpInst::ICMP_UGT;
+			break;
+		case Intrinsic::umin:
+			pred = CmpInst::ICMP_ULT;
+			break;
+		default:
+			continue;
+		}
+		Value *cmp = builder.CreateICmp(pred, lhs, rhs);
+		Value *replacement = builder.CreateSelect(cmp, lhs, rhs);
+		II->replaceAllUsesWith(replacement);
+		II->eraseFromParent();
+		changed = true;
+	}
+	return changed;
 }
 
 void InsertORtoSingularConditionalBB(Function &F)
@@ -2704,6 +2806,8 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
 
 			ReplaceCMPs(F);
+			ExpandConstantFunnelShifts(F);
+			ExpandIntegerMinMaxIntrinsics(F);
 			RemoveSelectLeafs(F);
 			InsertORtoSingularConditionalBB(F);
 			ParseSizeAttr(F, &sizeArrMap);
