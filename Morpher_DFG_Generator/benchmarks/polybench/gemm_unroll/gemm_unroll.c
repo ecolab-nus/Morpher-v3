@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#define N_VAL 10
+#define N_VAL 130
 
 volatile int *N;
 volatile int *a;

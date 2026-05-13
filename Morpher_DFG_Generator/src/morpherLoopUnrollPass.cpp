@@ -10,12 +10,14 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
+#include <map>
 
 using namespace llvm;
 
@@ -29,9 +31,9 @@ static cl::opt<unsigned> MorpherUnrollFactor(
     "morpher-unroll-factor", cl::init(1),
     cl::desc("Scalar unroll factor for the Morpher annotated loop"));
 
-static cl::opt<std::string> MorpherRemainderPolicy(
-    "morpher-remainder-policy", cl::init("preserve"),
-    cl::desc("Remainder policy: preserve or assume-multiple"));
+static cl::opt<bool> MorpherFuseInnermostLoops(
+    "morpher-fuse-innermost-loops", cl::init(false),
+    cl::desc("Run LLVM loop-flattening before Morpher unroll to fuse legal inner loop nests"));
 
 static cl::opt<unsigned> MorpherReductionLanes(
     "morpher-reduction-lanes", cl::init(1),
@@ -559,6 +561,403 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   return Changed;
 }
 
+bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
+  BasicBlock *Header = L->getHeader();
+  BasicBlock *Latch = L->getLoopLatch();
+  BasicBlock *Preheader = L->getLoopPreheader();
+  BasicBlock *ExitBlock = L->getExitBlock();
+  if (!Header || !Latch || !Preheader || !ExitBlock)
+    return false;
+  if (L->getBlocks().size() != 1 || Header != Latch)
+    return false;
+
+  for (Instruction &I : *Header) {
+    if (auto *CB = dyn_cast<CallBase>(&I)) {
+      if (isPleaseMapMe(CB))
+        continue;
+      return false;
+    }
+  }
+
+  struct AccessGroup {
+    Type *ValueType = nullptr;
+    SmallVector<LoadInst *, 4> Loads;
+    SmallVector<StoreInst *, 4> Stores;
+  };
+
+  std::map<Value *, AccessGroup> Groups;
+  std::map<Value *, Value *> UnderlyingObj;
+
+  for (Instruction &I : *Header) {
+    if (auto *LI = dyn_cast<LoadInst>(&I)) {
+      if (LI->isVolatile() || LI->isAtomic())
+        continue;
+      Type *Ty = LI->getType();
+      if (!Ty->isIntegerTy())
+        continue;
+      Value *Ptr = LI->getPointerOperand();
+      if (!L->isLoopInvariant(Ptr))
+        continue;
+      AccessGroup &Group = Groups[Ptr];
+      if (!Group.ValueType)
+        Group.ValueType = Ty;
+      if (Group.ValueType != Ty)
+        continue;
+      Group.Loads.push_back(LI);
+      UnderlyingObj[Ptr] = getUnderlyingObject(Ptr, 0);
+      continue;
+    }
+    if (auto *SI = dyn_cast<StoreInst>(&I)) {
+      if (SI->isVolatile() || SI->isAtomic())
+        continue;
+      Type *Ty = SI->getValueOperand()->getType();
+      if (!Ty->isIntegerTy())
+        continue;
+      Value *Ptr = SI->getPointerOperand();
+      if (!L->isLoopInvariant(Ptr))
+        continue;
+      AccessGroup &Group = Groups[Ptr];
+      if (!Group.ValueType)
+        Group.ValueType = Ty;
+      if (Group.ValueType != Ty)
+        continue;
+      Group.Stores.push_back(SI);
+      UnderlyingObj[Ptr] = getUnderlyingObject(Ptr, 0);
+    }
+  }
+
+  bool Changed = false;
+  for (auto &Entry : Groups) {
+    Value *Ptr = Entry.first;
+    AccessGroup &Group = Entry.second;
+    if (Group.Loads.size() != 1 || Group.Stores.size() != 1 || !Group.ValueType)
+      continue;
+
+    LoadInst *LoopLoad = Group.Loads.front();
+    StoreInst *LoopStore = Group.Stores.front();
+    if (LoopLoad->getParent() != Header || LoopStore->getParent() != Header)
+      continue;
+    if (!DT.dominates(LoopLoad, LoopStore))
+      continue;
+    if (LoopStore->getValueOperand() == LoopLoad)
+      continue;
+
+    Value *Obj = UnderlyingObj[Ptr];
+    bool ConflictingAccess = false;
+    for (Instruction &I : *Header) {
+      Value *OtherPtr = nullptr;
+      if (auto *LI = dyn_cast<LoadInst>(&I))
+        OtherPtr = LI->getPointerOperand();
+      else if (auto *SI = dyn_cast<StoreInst>(&I))
+        OtherPtr = SI->getPointerOperand();
+      if (!OtherPtr || OtherPtr == Ptr)
+        continue;
+      if (getUnderlyingObject(OtherPtr, 0) == Obj) {
+        ConflictingAccess = true;
+        break;
+      }
+    }
+    if (ConflictingAccess)
+      continue;
+
+    IRBuilder<> PreBuilder(Preheader->getTerminator());
+    LoadInst *InitLoad = PreBuilder.CreateLoad(Group.ValueType, Ptr,
+                                               Ptr->hasName() ? Ptr->getName() + ".morpher.reduc.init" : "morpher.reduc.init");
+
+    Instruction *PhiInsertPt = &*Header->getFirstInsertionPt();
+    PHINode *AccPhi = PHINode::Create(Group.ValueType, 2, "morpher.reduc.acc", PhiInsertPt);
+    AccPhi->addIncoming(InitLoad, Preheader);
+
+    LoopLoad->replaceAllUsesWith(AccPhi);
+
+    Value *StoreValue = LoopStore->getValueOperand();
+    if (StoreValue == AccPhi)
+      continue;
+    AccPhi->addIncoming(StoreValue, Latch);
+
+    Instruction *ExitInsertPt = &*ExitBlock->getFirstInsertionPt();
+    IRBuilder<> ExitBuilder(ExitInsertPt);
+    ExitBuilder.CreateStore(StoreValue, Ptr);
+
+    LoopStore->eraseFromParent();
+    LoopLoad->eraseFromParent();
+
+    errs() << "Morpher memory reduction scalarization: ptr="
+           << Ptr->getName() << " loop_header=" << Header->getName() << "\n";
+    Changed = true;
+  }
+
+  return Changed;
+}
+
+void requireUnrollFactorSmallerThanKnownTrip(Loop *L, ScalarEvolution &SE,
+                                             unsigned Factor,
+                                             StringRef LoopName) {
+  unsigned TripCount = SE.getSmallConstantTripCount(L);
+  if (TripCount != 0 && Factor >= TripCount) {
+    report_fatal_error("Morpher " + LoopName +
+                       " unroll factor must be smaller than the known loop trip count");
+  }
+
+  unsigned MaxTripCount = SE.getSmallConstantMaxTripCount(L);
+  if (MaxTripCount != 0 && Factor >= MaxTripCount) {
+    report_fatal_error("Morpher " + LoopName +
+                       " unroll factor must be smaller than the known max loop trip count");
+  }
+}
+
+void canonicalizeLoopForUnroll(Loop *L, LoopInfo &LI, ScalarEvolution &SE,
+                               DominatorTree &DT, AssumptionCache &AC) {
+  // Unroll utilities with PreserveLCSSA=true assume simplified / LCSSA-friendly
+  // input. Some benchmark IR carries direct live-outs, so canonicalize locally.
+  simplifyLoop(L, &DT, &LI, &SE, &AC, nullptr, false);
+  formLCSSARecursively(*L, DT, &LI, &SE);
+}
+
+bool unrollAnnotatedLoop(Loop *TargetLoop, LoopInfo &LI, ScalarEvolution &SE,
+                         DominatorTree &DT, AssumptionCache &AC) {
+  if (MorpherUnrollFactor <= 1)
+    return false;
+
+  canonicalizeLoopForUnroll(TargetLoop, LI, SE, DT, AC);
+  requireUnrollFactorSmallerThanKnownTrip(TargetLoop, SE, MorpherUnrollFactor,
+                                          "inner");
+
+  annotateLoopInstructionsForSIMD(TargetLoop, MorpherUnrollFactor);
+
+  UnrollLoopOptions ULO;
+  ULO.Count = MorpherUnrollFactor;
+  ULO.Force = true;
+  ULO.Runtime = true;
+  ULO.AllowExpensiveTripCount = true;
+  ULO.UnrollRemainder = false;
+  ULO.ForgetAllSCEV = true;
+
+  LoopUnrollResult Result =
+      UnrollLoop(TargetLoop, ULO, &LI, &SE, &DT, &AC, nullptr, nullptr, true);
+
+  if (Result == LoopUnrollResult::Unmodified)
+    report_fatal_error("LLVM could not unroll the Morpher annotated loop");
+
+  if (Result == LoopUnrollResult::FullyUnrolled)
+    report_fatal_error("Morpher annotated loop was fully unrolled away");
+
+  formLCSSARecursively(*TargetLoop, DT, &LI, &SE);
+  return true;
+}
+
+ConstantInt *getConstantIncoming(PHINode *Phi, BasicBlock *IncomingBlock) {
+  int Idx = Phi->getBasicBlockIndex(IncomingBlock);
+  if (Idx < 0)
+    return nullptr;
+  return dyn_cast<ConstantInt>(Phi->getIncomingValue(Idx));
+}
+
+bool blockHasOnlyAllowedPhi(BasicBlock *BB, PHINode *Allowed) {
+  for (PHINode &Phi : BB->phis())
+    if (&Phi != Allowed)
+      return false;
+  return true;
+}
+
+bool valuesInBlockDoNotEscapeExceptPhi(BasicBlock *BB, PHINode *AllowedPhi) {
+  for (Instruction &I : *BB) {
+    if (I.isTerminator())
+      continue;
+    for (User *U : I.users()) {
+      auto *UserI = dyn_cast<Instruction>(U);
+      if (UserI && UserI == AllowedPhi)
+        continue;
+      if (!UserI || UserI->getParent() != BB)
+        return false;
+    }
+  }
+  return true;
+}
+
+bool hasInvariantAddressLoadStorePair(Loop *L) {
+  std::map<Value *, bool> HasLoad;
+  std::map<Value *, bool> HasStore;
+  for (BasicBlock *BB : L->blocks()) {
+    for (Instruction &I : *BB) {
+      if (auto *LI = dyn_cast<LoadInst>(&I)) {
+        if (LI->isVolatile() || LI->isAtomic())
+          continue;
+        Value *Ptr = LI->getPointerOperand();
+        if (L->isLoopInvariant(Ptr))
+          HasLoad[Ptr] = true;
+        continue;
+      }
+      if (auto *SI = dyn_cast<StoreInst>(&I)) {
+        if (SI->isVolatile() || SI->isAtomic())
+          continue;
+        Value *Ptr = SI->getPointerOperand();
+        if (L->isLoopInvariant(Ptr))
+          HasStore[Ptr] = true;
+      }
+    }
+  }
+
+  for (const auto &Entry : HasLoad)
+    if (Entry.second && HasStore[Entry.first])
+      return true;
+  return false;
+}
+
+void replacePhiIncomingBlock(BasicBlock *BB, BasicBlock *OldBlock,
+                             BasicBlock *NewBlock) {
+  for (PHINode &Phi : BB->phis()) {
+    for (unsigned I = 0; I < Phi.getNumIncomingValues(); ++I)
+      if (Phi.getIncomingBlock(I) == OldBlock)
+        Phi.setIncomingBlock(I, NewBlock);
+  }
+}
+
+bool flattenAnnotatedInnermostLoop(Function &F, LoopInfo &LI,
+                                   ScalarEvolution &SE) {
+  Loop *InnerLoop = nullptr;
+  findAnnotatedLoopMarker(F, LI, InnerLoop);
+  if (!InnerLoop)
+    return false;
+  if (!InnerLoop->getSubLoops().empty()) {
+    errs() << "Morpher loop fusion skipped: annotated loop is not innermost\n";
+    return false;
+  }
+
+  Loop *OuterLoop = InnerLoop->getParentLoop();
+  if (!OuterLoop) {
+    errs() << "Morpher loop fusion skipped: annotated loop has no direct parent\n";
+    return false;
+  }
+  if (OuterLoop->getSubLoops().size() != 1 ||
+      OuterLoop->getSubLoops().front() != InnerLoop) {
+    errs() << "Morpher loop fusion skipped: parent loop is not a perfect one-child nest\n";
+    return false;
+  }
+  if (InnerLoop->getBlocks().size() != 1) {
+    errs() << "Morpher loop fusion skipped: inner loop is not single-block canonical\n";
+    return false;
+  }
+
+  BasicBlock *OuterHeader = OuterLoop->getHeader();
+  BasicBlock *OuterPreheader = OuterLoop->getLoopPreheader();
+  BasicBlock *OuterLatch = OuterLoop->getLoopLatch();
+  BasicBlock *OuterExit = OuterLoop->getExitBlock();
+  BasicBlock *InnerHeader = InnerLoop->getHeader();
+  BasicBlock *InnerPreheader = InnerLoop->getLoopPreheader();
+  BasicBlock *InnerLatch = InnerLoop->getLoopLatch();
+  BasicBlock *InnerExit = InnerLoop->getExitBlock();
+
+  if (!OuterHeader || !OuterPreheader || !OuterLatch || !OuterExit ||
+      !InnerHeader || !InnerPreheader || !InnerLatch || !InnerExit) {
+    errs() << "Morpher loop fusion skipped: missing canonical loop blocks\n";
+    return false;
+  }
+  if (InnerHeader != InnerLatch || InnerPreheader != OuterHeader ||
+      InnerExit != OuterLatch) {
+    errs() << "Morpher loop fusion skipped: unsupported parent/inner CFG shape\n";
+    return false;
+  }
+  if (hasInvariantAddressLoadStorePair(InnerLoop)) {
+    errs() << "Morpher loop fusion skipped: inner-loop invariant memory recurrence "
+           << "must remain on the original reduction loop\n";
+    return false;
+  }
+  unsigned OuterTrip = SE.getSmallConstantTripCount(OuterLoop);
+  unsigned InnerTrip = SE.getSmallConstantTripCount(InnerLoop);
+  if (OuterTrip == 0 || InnerTrip == 0) {
+    errs() << "Morpher loop fusion skipped: parent/inner trip count is not a known constant\n";
+    return false;
+  }
+
+  PHINode *OuterIV = OuterLoop->getInductionVariable(SE);
+  PHINode *InnerIV = InnerLoop->getInductionVariable(SE);
+  if (!OuterIV || !InnerIV || !OuterIV->getType()->isIntegerTy() ||
+      OuterIV->getType() != InnerIV->getType()) {
+    errs() << "Morpher loop fusion skipped: could not identify compatible induction variables\n";
+    return false;
+  }
+  if (!valuesInBlockDoNotEscapeExceptPhi(OuterLatch, OuterIV)) {
+    errs() << "Morpher loop fusion skipped: parent latch values escape beyond the parent IV\n";
+    return false;
+  }
+  if (!blockHasOnlyAllowedPhi(OuterHeader, OuterIV) ||
+      !blockHasOnlyAllowedPhi(InnerHeader, InnerIV)) {
+    errs() << "Morpher loop fusion skipped: extra loop header PHIs are unsupported\n";
+    return false;
+  }
+  ConstantInt *OuterStart = getConstantIncoming(OuterIV, OuterPreheader);
+  ConstantInt *InnerStart = getConstantIncoming(InnerIV, OuterHeader);
+  if (!OuterStart || !InnerStart) {
+    errs() << "Morpher loop fusion skipped: induction variables do not have constant starts\n";
+    return false;
+  }
+
+  uint64_t Product64 = uint64_t(OuterTrip) * uint64_t(InnerTrip);
+  Type *IVTy = OuterIV->getType();
+  unsigned BitWidth = IVTy->getIntegerBitWidth();
+  if (Product64 >= (BitWidth >= 64 ? UINT64_MAX : (uint64_t(1) << BitWidth))) {
+    errs() << "Morpher loop fusion skipped: flattened trip count overflows IV type\n";
+    return false;
+  }
+
+  PHINode *FlatIV = PHINode::Create(IVTy, 2, "morpher.flat.iv",
+                                    &*OuterHeader->begin());
+  FlatIV->addIncoming(ConstantInt::get(IVTy, 0), OuterPreheader);
+
+  IRBuilder<> HeaderBuilder(&*OuterHeader->getFirstInsertionPt());
+  Value *InnerTripC = ConstantInt::get(IVTy, InnerTrip);
+  Value *OuterQuot = HeaderBuilder.CreateUDiv(FlatIV, InnerTripC,
+                                              "morpher.flat.outer.quot");
+  Value *OuterScaled = HeaderBuilder.CreateMul(OuterQuot, InnerTripC,
+                                               "morpher.flat.outer.scaled");
+  Value *InnerOffset = HeaderBuilder.CreateSub(FlatIV, OuterScaled,
+                                               "morpher.flat.inner.offset");
+  Value *OuterValue = OuterStart->isZero()
+                          ? OuterQuot
+                          : HeaderBuilder.CreateAdd(OuterQuot, OuterStart,
+                                                    "morpher.flat.outer");
+  Value *InnerValue = InnerStart->isZero()
+                          ? InnerOffset
+                          : HeaderBuilder.CreateAdd(InnerOffset, InnerStart,
+                                                    "morpher.flat.inner");
+
+  OuterIV->replaceAllUsesWith(OuterValue);
+  InnerIV->replaceAllUsesWith(InnerValue);
+  if (OuterIV->use_empty())
+    OuterIV->eraseFromParent();
+  if (InnerIV->use_empty())
+    InnerIV->eraseFromParent();
+
+  BranchInst *OldInnerBranch = dyn_cast<BranchInst>(InnerHeader->getTerminator());
+  if (!OldInnerBranch || !OldInnerBranch->isConditional()) {
+    errs() << "Morpher loop fusion skipped: inner latch is not conditional\n";
+    return false;
+  }
+
+  IRBuilder<> LatchBuilder(OldInnerBranch);
+  Value *FlatNext = LatchBuilder.CreateAdd(
+      FlatIV, ConstantInt::get(IVTy, 1), "morpher.flat.next");
+  Value *Done = LatchBuilder.CreateICmpEQ(
+      FlatNext, ConstantInt::get(IVTy, Product64), "morpher.flat.done");
+  FlatIV->addIncoming(FlatNext, InnerHeader);
+
+  replacePhiIncomingBlock(OuterExit, OuterLatch, InnerHeader);
+  OldInnerBranch->eraseFromParent();
+  BranchInst::Create(OuterExit, OuterHeader, Done, InnerHeader);
+
+  Instruction *OuterLatchTerm = OuterLatch->getTerminator();
+  OuterLatchTerm->eraseFromParent();
+  IRBuilder<> DeadLatchBuilder(OuterLatch);
+  DeadLatchBuilder.CreateUnreachable();
+
+  errs() << "Morpher loop fusion: function=" << F.getName()
+         << " outer_trip=" << OuterTrip
+         << " inner_trip=" << InnerTrip
+         << " flattened_trip=" << Product64 << "\n";
+  return true;
+}
+
 static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
                                  DominatorTree &DT, AssumptionCache &AC) {
     if (MorpherUnrollFactor <= 1)
@@ -567,10 +966,6 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
     if (!MorpherUnrollFn.empty() && F.getName() != MorpherUnrollFn)
       return false;
 
-    if (MorpherRemainderPolicy != "preserve" &&
-        MorpherRemainderPolicy != "assume-multiple") {
-      report_fatal_error("morpher-remainder-policy must be preserve or assume-multiple");
-    }
     if (MorpherReductionPolicy != "tree" &&
         MorpherReductionPolicy != "packed-psum") {
       report_fatal_error("morpher-reduction-policy must be tree or packed-psum");
@@ -578,45 +973,9 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
     Loop *TargetLoop = nullptr;
     findAnnotatedLoopMarker(F, LI, TargetLoop);
-
-    // UnrollLoop(PreserveLCSSA=true) assumes the input loop is already in a
-    // simplified / LCSSA-friendly form. Some of our benchmark IR still carries
-    // direct loop live-outs, so canonicalize here before mutating the loop.
-    simplifyLoop(TargetLoop, &DT, &LI, &SE, &AC, nullptr, false);
-    formLCSSARecursively(*TargetLoop, DT, &LI, &SE);
-
-    unsigned TripCount = SE.getSmallConstantTripCount(TargetLoop);
-    if (TripCount != 0 && MorpherUnrollFactor >= TripCount) {
-      report_fatal_error(
-          "Morpher unroll factor must be smaller than the known loop trip count");
-    }
-
-    unsigned MaxTripCount = SE.getSmallConstantMaxTripCount(TargetLoop);
-    if (MaxTripCount != 0 && MorpherUnrollFactor >= MaxTripCount) {
-      report_fatal_error(
-          "Morpher unroll factor must be smaller than the known max loop trip count");
-    }
-
-    annotateLoopInstructionsForSIMD(TargetLoop, MorpherUnrollFactor);
-
-    UnrollLoopOptions ULO;
-    ULO.Count = MorpherUnrollFactor;
-    ULO.Force = true;
-    ULO.Runtime = MorpherRemainderPolicy == "preserve";
-    ULO.AllowExpensiveTripCount = true;
-    ULO.UnrollRemainder = false;
-    ULO.ForgetAllSCEV = true;
-
-    LoopUnrollResult Result =
-        UnrollLoop(TargetLoop, ULO, &LI, &SE, &DT, &AC, nullptr, nullptr, true);
-
-    if (Result == LoopUnrollResult::Unmodified)
-      report_fatal_error("LLVM could not unroll the Morpher annotated loop");
-
-    if (Result == LoopUnrollResult::FullyUnrolled)
-      report_fatal_error("Morpher annotated loop was fully unrolled away");
-
-    formLCSSARecursively(*TargetLoop, DT, &LI, &SE);
+    bool Changed = false;
+    scalarizeInvariantAddressReductionForLoop(TargetLoop, DT);
+    Changed |= unrollAnnotatedLoop(TargetLoop, LI, SE, DT, AC);
 
     expandReductionsForSIMD(TargetLoop, MorpherReductionLanes,
                             MorpherReductionPolicy);
@@ -624,10 +983,12 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
     errs() << "Morpher loop unroll: function=" << F.getName()
            << " factor=" << MorpherUnrollFactor
-           << " remainder_policy=" << MorpherRemainderPolicy
+           << " fuse_innermost_loops="
+           << (MorpherFuseInnermostLoops ? "true" : "false")
+           << " remainder_policy=preserve"
            << " reduction_lanes=" << MorpherReductionLanes
            << " reduction_policy=" << MorpherReductionPolicy << "\n";
-    return true;
+    return Changed;
   }
 struct MorpherLoopUnrollPass : public PassInfoMixin<MorpherLoopUnrollPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
@@ -642,10 +1003,26 @@ struct MorpherLoopUnrollPass : public PassInfoMixin<MorpherLoopUnrollPass> {
   }
 };
 
+struct MorpherLoopFlattenPass : public PassInfoMixin<MorpherLoopFlattenPass> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+    if (!MorpherFuseInnermostLoops)
+      return PreservedAnalyses::all();
+    if (!MorpherUnrollFn.empty() && F.getName() != MorpherUnrollFn)
+      return PreservedAnalyses::all();
+
+    LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
+    ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
+    return flattenAnnotatedInnermostLoop(F, LI, SE) ? PreservedAnalyses::none()
+                                                    : PreservedAnalyses::all();
+  }
+};
+
 } // namespace
 
 FunctionPassManager createMorpherLoopUnrollPipeline() {
   FunctionPassManager FPM;
+  if (MorpherFuseInnermostLoops)
+    FPM.addPass(MorpherLoopFlattenPass());
   FPM.addPass(MorpherLoopUnrollPass());
   return FPM;
 }

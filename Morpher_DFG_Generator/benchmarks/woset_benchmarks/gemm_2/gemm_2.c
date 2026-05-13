@@ -2,7 +2,7 @@
 #include <stdio.h>
 
 
-#define SIZE  8
+#define SIZE  256
 int n = SIZE;
 int A[SIZE][SIZE], B[SIZE][SIZE], C[SIZE][SIZE];
 int i,j;

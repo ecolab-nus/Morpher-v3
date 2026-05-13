@@ -450,7 +450,7 @@ class RunnerConfig:
   replicate_data: bool
   auto_unroll_enabled: bool
   auto_unroll_factors: list
-  auto_unroll_remainder_policy: str
+  auto_unroll_fuse_innermost_loops: bool
   auto_unroll_stop_on_degradation: bool
   arch_simd_enabled: bool
   arch_simd_width: int
@@ -483,14 +483,22 @@ class RunnerConfig:
       if parsed not in factors:
         factors.append(parsed)
 
-    remainder_policy = str(auto_cfg.get("remainder_policy", "preserve")).strip().lower()
-    if remainder_policy not in ("preserve", "assume-multiple"):
+    if "remainder_policy" in auto_cfg:
       raise RuntimeError(
-        "auto_unroll.remainder_policy must be one of: preserve, assume-multiple."
+        "auto_unroll.remainder_policy has been removed. Morpher always preserves "
+        "remainders; size benchmarks so mapped loop trip counts are legal multiples "
+        "of the desired unroll/SIMD factor."
       )
 
+    if "outer_factor" in auto_cfg:
+      raise RuntimeError(
+        "auto_unroll.outer_factor has been removed. Morpher now attempts legal "
+        "innermost loop fusion with auto_unroll.fuse_innermost_loops instead."
+      )
+    fuse_innermost_loops = bool(auto_cfg.get("fuse_innermost_loops", True))
+
     stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", True))
-    return enabled, factors, remainder_policy, stop_on_degradation
+    return enabled, factors, fuse_innermost_loops, stop_on_degradation
 
   @classmethod
   def from_yaml(cls, config_path):
@@ -505,7 +513,7 @@ class RunnerConfig:
     (
       auto_unroll_enabled,
       auto_unroll_factors,
-      auto_unroll_remainder_policy,
+      auto_unroll_fuse_innermost_loops,
       auto_unroll_stop_on_degradation,
     ) = cls._parse_auto_unroll(config_dict)
     _print_deprecation_warning(config_dict)
@@ -620,7 +628,7 @@ class RunnerConfig:
       replicate_data=bool(config_dict.get("replicate_data", False)),
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
-      auto_unroll_remainder_policy=auto_unroll_remainder_policy,
+      auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
       arch_simd_enabled=arch_simd.enabled,
       arch_simd_width=arch_simd.width,

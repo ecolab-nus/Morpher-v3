@@ -25,12 +25,12 @@ int mvt() {
 }
 
 int main() {
-    int n_val = 8;
+    int n_val = 66;
     volatile int N_storage = n_val;
-    static int A_flat[64];
-    static int *A_rows[8];
-    static int x2_data[8];
-    static int y2_data[8];
+    static int A_flat[66 * 66];
+    static int *A_rows[66];
+    static int x2_data[66];
+    static int y2_data[66];
     N = &N_storage;
 
     for (int ii = 0; ii < n_val; ii++) {

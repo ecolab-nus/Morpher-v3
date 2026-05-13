@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <limits.h>
 
-#define N_STATES   4
+#define N_STATES   256
 #define N_OBS      8
 
 // Flattened input observation sequence

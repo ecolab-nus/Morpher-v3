@@ -2,7 +2,7 @@
 #include <stdio.h>
 
 
-#define SIZE  8
+#define SIZE  64
 int A[SIZE][SIZE], B[SIZE][SIZE], C[SIZE][SIZE];
 
 __attribute__((noinline))
@@ -39,5 +39,4 @@ for (i=0;i<SIZE; i++)
 
 return 0;
 }
-
 

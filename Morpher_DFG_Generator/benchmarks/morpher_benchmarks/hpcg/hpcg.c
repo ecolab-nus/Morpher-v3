@@ -1,5 +1,5 @@
 #include <stdio.h>
-#define SIZE 4
+#define SIZE 64
 
 int n = SIZE;
 

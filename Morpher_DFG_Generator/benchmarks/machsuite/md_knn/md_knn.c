@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define nAtoms        16
-#define maxNeighbors   4
+#define nAtoms        64
+#define maxNeighbors  64
 
 int32_t position_x[nAtoms];
 int32_t position_y[nAtoms];

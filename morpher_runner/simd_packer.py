@@ -367,6 +367,7 @@ def _add_packed_output_store_candidates(
 
 
 def _find_vred_store_groups(
+  nodes: list[ET.Element],
   packable: dict[tuple[int, int], list[ET.Element]],
   replacement: dict[int, int],
   vector_ops: "set[str]",
@@ -378,6 +379,7 @@ def _find_vred_store_groups(
     _node_idx(group_nodes[0]): group_nodes
     for group_nodes in packable.values()
   }
+  by_idx = {_node_idx(node): node for node in nodes}
   vred_groups = {}
   for store_rep, store_group_nodes in pack_group_by_rep.items():
     store_op = _child_text(store_group_nodes[0], "OP")
@@ -409,10 +411,47 @@ def _find_vred_store_groups(
     if producer_rep == store_rep or producer_rep not in pack_group_by_rep:
       continue
 
+    final_store = None
+    final_add = None
+    init_load = None
+    for node in nodes:
+      if _base_pointer_name(node) != reduce_base or not _is_ostore_op(_child_text(node, "OP")):
+        continue
+      refs = _input_refs(node)
+      if len(refs) != 1:
+        continue
+      add_node = by_idx.get(_ref_idx(refs[0]))
+      if add_node is None or _child_text(add_node, "OP") != reduce_op:
+        continue
+      add_inputs = _input_refs(add_node)
+      if len(add_inputs) != 2:
+        continue
+      init_candidate = None
+      reduce_input_idx = None
+      for add_ref in add_inputs:
+        candidate = by_idx.get(_ref_idx(add_ref))
+        if candidate is not None and _is_oload_op(_child_text(candidate, "OP")):
+          init_candidate = candidate
+        else:
+          reduce_input_idx = _ref_idx(add_ref)
+      if init_candidate is None or reduce_input_idx is None:
+        continue
+      final_store = node
+      final_add = add_node
+      init_load = init_candidate
+      break
+
+    if final_store is None or final_add is None or init_load is None:
+      continue
+
     vred_groups[store_rep] = {
       "producer_rep": producer_rep,
       "reduce_op": reduce_op,
       "reduce_base": reduce_base,
+      "final_store_idx": _node_idx(final_store),
+      "final_add_idx": _node_idx(final_add),
+      "init_load_idx": _node_idx(init_load),
+      "scalar_reduce_idx": int(reduce_input_idx),
     }
   return vred_groups
 
@@ -643,7 +682,7 @@ def pack_simd_xml(
   candidates = _candidate_groups(nodes, lanes, True, scalar_broadcast)
   packable = _prune_packable_groups(candidates)
   replacement = _build_replacement(packable)
-  vred_store_groups = _find_vred_store_groups(packable, replacement, set(vector_ops))
+  vred_store_groups = _find_vred_store_groups(nodes, packable, replacement, set(vector_ops))
   pack_group_by_rep = {
     _node_idx(group_nodes[0]): group_nodes
     for group_nodes in packable.values()
@@ -673,6 +712,20 @@ def pack_simd_xml(
       - removed
     )
     artifact_pruned |= iter_pruned
+  vred_tail_keep = set()
+  vred_extra_prune = set()
+  for store_rep, meta in vred_store_groups.items():
+    vred_tail_keep.update({
+      int(meta["init_load_idx"]),
+      int(meta["final_add_idx"]),
+      int(meta["final_store_idx"]),
+    })
+    vred_extra_prune.update({
+      int(store_rep),
+      int(meta["scalar_reduce_idx"]),
+    })
+  artifact_pruned -= vred_tail_keep
+  artifact_pruned |= vred_extra_prune
   if prune_scalar_lane_outputs or prune_iter_control:
     # Bases that surviving nodes still write to must remain in the trace.
     # The VRED rewrite (below) re-bases the rep OSTORE to its simd_reduce_base
@@ -692,7 +745,7 @@ def pack_simd_xml(
       if base:
         surviving_bases.add(base)
       reduce_base = node.attrib.get("simd_reduce_base")
-      if reduce_base:
+      if reduce_base and _node_idx(node) in vred_store_groups:
         surviving_bases.add(reduce_base)
     artifact_vars_pruned = {
       name
@@ -731,6 +784,8 @@ def pack_simd_xml(
   simd_reduced_store_groups = set()
   for group_nodes in packable.values():
     rep_pre_idx = _node_idx(group_nodes[0])
+    if rep_pre_idx not in reindex:
+      continue
     rep_post_idx = reindex[rep_pre_idx]
     simd_groups[rep_post_idx] = [_node_idx(n) for n in group_nodes]
     if rep_pre_idx in splat_reps:
@@ -743,35 +798,22 @@ def pack_simd_xml(
 
   rep_ids = {replacement_idx for replacement_idx in replacement.values()}
   vector_ops = set(vector_ops)
-  synthetic_vred_nodes: list[tuple[ET.Element, int, int, int]] = []
   reindexed_nodes_by_old_idx: dict[int, ET.Element] = {}
+  vred_final_store_ids = {
+    int(meta["final_store_idx"])
+    for meta in vred_store_groups.values()
+  }
   for node in remaining_nodes:
     old_idx = _node_idx(node)
     node.set("idx", str(reindex[old_idx]))
     reindexed_nodes_by_old_idx[old_idx] = node
+    if old_idx in vred_final_store_ids:
+      node.attrib.pop("CONST", None)
+      node.set("simd_packed", "true")
+      node.set("simd_lanes", str(lanes))
+      node.set("simd_reduce_consumer", "true")
     if old_idx in rep_ids:
-      if old_idx in vred_store_groups:
-        op_elem = node.find("OP")
-        reduce_base = str(vred_store_groups[old_idx]["reduce_base"])
-        if op_elem is not None:
-          op_elem.text = "OSTORE"
-        base_elem = node.find("BasePointerName")
-        if base_elem is None:
-          base_elem = ET.SubElement(node, "BasePointerName")
-        base_elem.text = reduce_base
-        base_elem.set("size", base_elem.attrib.get("size", "4"))
-        # Mark simd_packed / simd_lanes.  The scalar DFG fed the partial-sum
-        # buffer through a standalone OSTORE that inherited multi-lane width
-        # from its (vectorized) reduction-tree input, so every lane slot in
-        # the buffer was populated.  That standalone OSTORE is pruned by
-        # _prunable_external_control_nodes (OSTORE isn't an artifact root),
-        # so the rewritten rep OSTORE must broadcast the reduced scalar to
-        # all lane slots, otherwise downstream offsets (4, 8, ...) stay zero.
-        node.set("simd_packed", "true")
-        node.set("simd_lanes", str(lanes))
-        node.attrib.pop("simd_reduce_base", None)
-        node.set("simd_reduce_consumer", "true")
-      else:
+      if old_idx not in vred_store_groups:
         op_elem = node.find("OP")
         scalar_op = _child_text(node, "OP")
         if not _is_ostore_op(scalar_op):
@@ -802,29 +844,27 @@ def pack_simd_xml(
       source_refs=output_source_refs,
     )
     _rewrite_refs(node, old_idx, "RecParents", "RecParent", replacement, reindex)
-
-    if old_idx in vred_store_groups:
-      vred_meta = vred_store_groups[old_idx]
-      producer_rep = vred_meta["producer_rep"]
-      reduce_op = vred_meta["reduce_op"]
-      if producer_rep not in reindex:
-        raise RuntimeError("VRED producer representative missing from SIMD reindex map.")
-      synthetic_vred_nodes.append((node, old_idx, producer_rep, reduce_op))
     dfg.append(node)
 
   next_idx = len(remaining_nodes)
-  for store_node, store_old_idx, producer_rep, reduce_op in synthetic_vred_nodes:
-    store_new_idx = reindex[store_old_idx]
+  for store_rep, vred_meta in vred_store_groups.items():
+    producer_rep = int(vred_meta["producer_rep"])
+    reduce_op = str(vred_meta["reduce_op"])
+    final_add_idx = int(vred_meta["final_add_idx"])
+    if producer_rep not in reindex:
+      raise RuntimeError("VRED producer representative missing from SIMD reindex map.")
+    if final_add_idx not in reindex:
+      raise RuntimeError("VRED final ADD missing from SIMD reindex map.")
+    final_add_node = reindexed_nodes_by_old_idx.get(final_add_idx)
+    if final_add_node is None:
+      raise RuntimeError("VRED final ADD node missing after SIMD packing.")
     vred_idx = next_idx
     next_idx += 1
 
-    inputs = store_node.find("Inputs")
-    if inputs is not None:
-      for ref in list(inputs):
-        if ref.tag != "Input":
-          continue
-        inputs.remove(ref)
-      ET.SubElement(inputs, "Input", idx=str(vred_idx), type="I1")
+    inputs = final_add_node.find("Inputs")
+    if inputs is None:
+      inputs = ET.SubElement(final_add_node, "Inputs")
+    ET.SubElement(inputs, "Input", idx=str(vred_idx), type="I2")
 
     producer_node = reindexed_nodes_by_old_idx.get(producer_rep)
     if producer_node is not None:
@@ -833,26 +873,24 @@ def pack_simd_xml(
         for ref in list(outputs):
           if ref.tag != "Output":
             continue
-          if ref.attrib.get("idx") == str(store_new_idx):
+          if ref.attrib.get("idx") == str(reindex[final_add_idx]):
             outputs.remove(ref)
         ET.SubElement(outputs, "Output", idx=str(vred_idx), nextiter="0", type="I1")
 
     sample_group = pack_group_by_rep[producer_rep]
     sample_node = sample_group[0]
-    producer_asap = int(sample_node.attrib.get("ASAP", store_node.attrib.get("ASAP", "0")))
-    producer_alap = int(sample_node.attrib.get("ALAP", store_node.attrib.get("ALAP", "0")))
-    store_asap = int(store_node.attrib.get("ASAP", str(producer_asap + 1)))
-    store_alap = int(store_node.attrib.get("ALAP", str(max(producer_alap + 1, store_asap))))
-    vred_asap = max(producer_asap + 1, min(store_asap, producer_alap + 1))
-    vred_alap = max(vred_asap, min(store_alap, producer_alap + 1))
+    producer_asap = int(sample_node.attrib.get("ASAP", final_add_node.attrib.get("ASAP", "0")))
+    producer_alap = int(sample_node.attrib.get("ALAP", final_add_node.attrib.get("ALAP", "0")))
+    add_asap = int(final_add_node.attrib.get("ASAP", str(producer_asap + 1)))
+    add_alap = int(final_add_node.attrib.get("ALAP", str(max(producer_alap + 1, add_asap))))
+    vred_asap = max(producer_asap + 1, min(add_asap, producer_alap + 1))
+    vred_alap = max(vred_asap, min(add_alap, producer_alap + 1))
     vred_node = ET.Element(
       "Node",
       idx=str(vred_idx),
       ASAP=str(vred_asap),
       ALAP=str(vred_alap),
-      BB=sample_node.attrib.get("BB", store_node.attrib.get("BB", "")),
-      simd_packed="true",
-      simd_lanes=str(lanes),
+      BB=sample_node.attrib.get("BB", final_add_node.attrib.get("BB", "")),
       simd_reduce_op=str(reduce_op),
     )
     op_elem = ET.SubElement(vred_node, "OP")
@@ -860,7 +898,7 @@ def pack_simd_xml(
     vred_inputs = ET.SubElement(vred_node, "Inputs")
     ET.SubElement(vred_inputs, "Input", idx=str(reindex[producer_rep]), type="I1")
     vred_outputs = ET.SubElement(vred_node, "Outputs")
-    ET.SubElement(vred_outputs, "Output", idx=str(store_new_idx), nextiter="0", type="I1")
+    ET.SubElement(vred_outputs, "Output", idx=str(reindex[final_add_idx]), nextiter="0", type="I2")
     ET.SubElement(vred_node, "RecParents")
     dfg.append(vred_node)
 

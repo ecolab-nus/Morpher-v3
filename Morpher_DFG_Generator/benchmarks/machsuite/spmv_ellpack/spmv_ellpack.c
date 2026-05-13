@@ -6,8 +6,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define N   16
-#define L    8
+#define N   64
+#define L   64
 
 int32_t nzval[N*L];
 int32_t cols[N*L];

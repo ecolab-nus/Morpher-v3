@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#define SIZE 40
+#define SIZE 64
 unsigned char msg[SIZE];
 unsigned int out[SIZE];
 

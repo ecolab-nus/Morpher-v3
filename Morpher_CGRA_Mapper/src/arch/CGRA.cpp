@@ -1548,7 +1548,7 @@ std::unordered_map<int, AffinePattern> parseAGISubgraph(const std::string &path)
 		std::vector<std::pair<int, bool>> inputs;  // (idx, isLocal)
 		std::vector<std::pair<int, bool>> outputs;
 	};
-	std::unordered_map<int, AgiNode> nodes;
+	std::map<int, AgiNode> nodes;
 	for (tinyxml2::XMLElement *n = root->FirstChildElement("Node"); n; n = n->NextSiblingElement("Node")) {
 		int localIdx = -1;
 		if (n->QueryIntAttribute("localIdx", &localIdx) != tinyxml2::XML_SUCCESS)
@@ -1581,7 +1581,7 @@ std::unordered_map<int, AffinePattern> parseAGISubgraph(const std::string &path)
 		nodes[localIdx] = std::move(an);
 	}
 
-	for (auto &kv : nodes) {
+	for (const auto &kv : nodes) {
 		const AgiNode &add = kv.second;
 		// Expect a GEPADD at the boundary: AGI op encoded as "ADD" or
 		// "GEPADD" with at least one externalIdx Output (the LD/ST).

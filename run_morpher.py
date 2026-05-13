@@ -194,14 +194,16 @@ def _run_auto_unroll(context):
 
   print("\n-----Running Morpher auto-unroll search-----\n")
   print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
+  if config.auto_unroll_fuse_innermost_loops:
+    print("Innermost loop fusion: enabled where LLVM can prove legality")
   if config.arch_simd_enabled:
     print(
       "Architecture-driven SIMD packing activates only for candidates with unroll_factor >= SIMD_WIDTH=%d."
       % config.arch_simd_width
     )
-  print("Remainder policy: %s" % config.auto_unroll_remainder_policy)
+  print("Remainder policy: preserve (fixed)")
   print(
-    "Score: II / unroll_factor. Lower is better; this approximates II * loop_iters / unroll_factor.\n"
+    "Score: II / unroll_factor. Lower is better; this approximates normalized mapped work.\n"
   )
 
   for factor in factors:
@@ -216,7 +218,6 @@ def _run_auto_unroll(context):
       run_dfg_generator(
         context,
         unroll_factor=factor,
-        remainder_policy=config.auto_unroll_remainder_policy,
       )
       run_mapper(context)
     except subprocess.CalledProcessError as exc:
@@ -268,7 +269,6 @@ def _run_auto_unroll(context):
     run_dfg_generator(
       context,
       unroll_factor=best["factor"],
-      remainder_policy=config.auto_unroll_remainder_policy,
     )
     run_mapper(context)
 

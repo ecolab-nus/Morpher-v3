@@ -1,4 +1,4 @@
-#define S 20
+#define S 128
 #define WIN_SIZE (2 * S + 1)
 #define MAX_DIFF 255
 

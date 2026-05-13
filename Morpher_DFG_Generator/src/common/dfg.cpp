@@ -10165,7 +10165,67 @@ void DFG::removeAGINodes()
 			}
 		}
 	}
-	// Step 3: Disconnect AGI nodes from remaining non-AGI nodes
+	// Step 3: Emit AGI sub-graph XML alongside the main DFG before pruning.
+	// Boundary references to non-AGI partners use the post-removal new index
+	// so downstream tooling can cross-reference with the main DFG XML.
+	{
+		std::map<dfgNode *, int> agiLocalIdx;
+		std::map<dfgNode *, int> postRemoveIdx;
+		int local = 0;
+		int post = 0;
+		for (dfgNode *n : NodeList)
+		{
+			if (agiSet.count(n))
+				agiLocalIdx[n] = local++;
+			else
+				postRemoveIdx[n] = post++;
+		}
+
+		std::string fileName = name + "_AGI_subgraph.xml";
+		std::ofstream xmlFile;
+		xmlFile.open(fileName.c_str());
+		xmlFile << "<AGI_DFG count=\"" << agiLocalIdx.size() << "\">\n";
+		for (dfgNode *n : NodeList)
+		{
+			if (!agiSet.count(n))
+				continue;
+			xmlFile << "<Node localIdx=\"" << agiLocalIdx[n] << "\"";
+			if (n->BB)
+				xmlFile << " BB=\"" << n->BB->getName().str() << "\"";
+			if (n->hasConstantVal())
+				xmlFile << " CONST=\"" << n->getConstantVal() << "\"";
+			xmlFile << ">\n";
+			std::string op = n->getNameType();
+			if (op.empty() && n->getFinalIns() != NOP)
+				op = HyCUBEInsStrings[n->getFinalIns()];
+			xmlFile << "\t<OP>" << op << "</OP>\n";
+			xmlFile << "\t<Inputs>\n";
+			for (dfgNode *p : n->getAncestors())
+			{
+				if (agiSet.count(p))
+					xmlFile << "\t\t<Input localIdx=\"" << agiLocalIdx[p] << "\"/>\n";
+				else
+					xmlFile << "\t\t<Input externalIdx=\"" << postRemoveIdx[p] << "\"/>\n";
+			}
+			xmlFile << "\t</Inputs>\n";
+			xmlFile << "\t<Outputs>\n";
+			for (dfgNode *c : n->getChildren())
+			{
+				if (agiSet.count(c))
+					xmlFile << "\t\t<Output localIdx=\"" << agiLocalIdx[c] << "\"/>\n";
+				else
+					xmlFile << "\t\t<Output externalIdx=\"" << postRemoveIdx[c] << "\"/>\n";
+			}
+			xmlFile << "\t</Outputs>\n";
+			xmlFile << "</Node>\n";
+		}
+		xmlFile << "</AGI_DFG>\n";
+		xmlFile.close();
+		llvm::outs() << "[removeAGINodes] Wrote AGI sub-graph (" << agiLocalIdx.size()
+					 << " nodes) to " << fileName << "\n";
+	}
+
+	// Step 4: Disconnect AGI nodes from remaining non-AGI nodes
 	for (dfgNode *agi : agiSet)
 	{
 		for (dfgNode *parent : agi->getAncestors())
@@ -10179,12 +10239,12 @@ void DFG::removeAGINodes()
 				child->removeAncestor(agi);
 		}
 	}
-	// Step 4: Remove from NodeList
+	// Step 5: Remove from NodeList
 	NodeList.erase(std::remove_if(NodeList.begin(), NodeList.end(),
 								  [&agiSet](dfgNode *n)
 								  { return agiSet.count(n) > 0; }),
 				   NodeList.end());
-	// Step 5: Re-index
+	// Step 6: Re-index
 	for (size_t i = 0; i < NodeList.size(); i++)
 		NodeList[i]->setIdx((int)i);
 	llvm::outs() << "[removeAGINodes] Remaining nodes after AGI removal: " << NodeList.size() << "\n";
@@ -10418,6 +10478,38 @@ static Value* getGlobalBaseImpl(Value *V, std::unordered_set<const Value *> &vis
 		visited.erase(V);
 		return base;
 	}
+	if (GEPOperator *GEP = dyn_cast<GEPOperator>(V))
+	{
+		Value *base = getGlobalBaseImpl(GEP->getPointerOperand(), visited, depth + 1);
+		visited.erase(V);
+		return base;
+	}
+	if (BitCastOperator *BC = dyn_cast<BitCastOperator>(V))
+	{
+		Value *base = getGlobalBaseImpl(BC->getOperand(0), visited, depth + 1);
+		visited.erase(V);
+		return base;
+	}
+	if (LoadInst *LI = dyn_cast<LoadInst>(V))
+	{
+		Value *base = getGlobalBaseImpl(LI->getPointerOperand(), visited, depth + 1);
+		visited.erase(V);
+		return base;
+	}
+	if (PHINode *PHI = dyn_cast<PHINode>(V))
+	{
+		for (unsigned i = 0; i < PHI->getNumIncomingValues(); ++i)
+		{
+			Value *base = getGlobalBaseImpl(PHI->getIncomingValue(i), visited, depth + 1);
+			if (base)
+			{
+				visited.erase(V);
+				return base;
+			}
+		}
+		visited.erase(V);
+		return nullptr;
+	}
 	visited.erase(V);
 	return V;
 }
@@ -10550,56 +10642,52 @@ void DFG::getTransferVariables(std::unordered_set<Value *> &outer_vals,
 	 * __attribute__((annotate("fr:128,fi:128")))
 	 * int fix_fft(short fr[], short fi[], short m1, short inverse){
 	 * */
-	for (dfgNode *node : NodeList)
-	{
-		if (node->getNode())
+		for (dfgNode *node : NodeList)
 		{
-			if (LoadInst *LDI = dyn_cast<LoadInst>(node->getNode()))
+			if (node->getNode())
 			{
-				LLVM_DEBUG(dbgs() << "LOAD TRANSFER = ");
-				LLVM_DEBUG(LDI->dump());
-				Value *ld_ptr = LDI->getPointerOperand();
+				auto recordAccessBase = [&](Value *ptr) {
+					if (sizeArrMap.find(ptr->getName().str()) != sizeArrMap.end())
+					{
+						acc[ptr] = acc[ptr] + 1;
+						return;
+					}
 
-				if(sizeArrMap.find(ld_ptr->getName().str()) != sizeArrMap.end()){
-					acc[LDI->getPointerOperand()] = acc[LDI->getPointerOperand()] + 1;
-				}
-				else{
+					auto gepIt = gep_derivatives.find(ptr);
+					if (gepIt != gep_derivatives.end())
+					{
+						mem_ptrs[ptr] = gepIt->second;
+						Value *basePtr = gepIt->second->getPointerOperand();
+						acc[basePtr] = acc[basePtr] + 1;
+						return;
+					}
+
+					Value *basePtr = getGlobalBase(ptr);
+					if (!basePtr)
+						basePtr = ptr;
+					acc[basePtr] = acc[basePtr] + 1;
+				};
+
+				if (LoadInst *LDI = dyn_cast<LoadInst>(node->getNode()))
+				{
+					LLVM_DEBUG(dbgs() << "LOAD TRANSFER = ");
+					LLVM_DEBUG(LDI->dump());
+					Value *ld_ptr = LDI->getPointerOperand();
 					LLVM_DEBUG(dbgs()<<"ld_ptr:" );
 					LLVM_DEBUG(ld_ptr->dump());
-					if (gep_derivatives.find(ld_ptr) != gep_derivatives.end()) {
-						mem_ptrs[ld_ptr] = gep_derivatives[ld_ptr];
-						acc[gep_derivatives[ld_ptr]->getPointerOperand()] = acc[gep_derivatives[ld_ptr]->getPointerOperand()] + 1;
-					} else if (LDI->getType()->isPointerTy()) {
-						// Loading a pointer value (e.g., volatile int **A pattern).
-						// Count access to the pointer source; SetBasePointers handles naming.
-						acc[ld_ptr] = acc[ld_ptr] + 1;
-					} else {
-						assert(false && "unexpected non-GEP pointer operand for data load");
-					}
-				}
+					recordAccessBase(ld_ptr);
 
-			}
-			if (StoreInst *STI = dyn_cast<StoreInst>(node->getNode()))
-			{
-				LLVM_DEBUG(dbgs() << "STORE TRANSFER = ");
-				LLVM_DEBUG(STI->dump());
-				Value *st_ptr = STI->getPointerOperand();
-
-				if(sizeArrMap.find(st_ptr->getName().str()) != sizeArrMap.end()){
-					acc[STI->getPointerOperand()] = acc[STI->getPointerOperand()] + 1;
 				}
-				else{
-					if (gep_derivatives.find(st_ptr) != gep_derivatives.end()) {
-						mem_ptrs[st_ptr] = gep_derivatives[st_ptr];
-						acc[gep_derivatives[st_ptr]->getPointerOperand()] = acc[gep_derivatives[st_ptr]->getPointerOperand()] + 1;
-					} else {
-						assert(false && "unexpected non-GEP pointer operand for store");
-					}
-				}
+				if (StoreInst *STI = dyn_cast<StoreInst>(node->getNode()))
+				{
+					LLVM_DEBUG(dbgs() << "STORE TRANSFER = ");
+					LLVM_DEBUG(STI->dump());
+					Value *st_ptr = STI->getPointerOperand();
+					recordAccessBase(st_ptr);
 
+				}
 			}
 		}
-	}
 
 
 	// for(auto it = OutLoopNodeMapReverse.begin(); it != OutLoopNodeMapReverse.end(); it++){
@@ -11149,22 +11237,27 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 				LLVM_DEBUG(dbgs() << "type = "); LLVM_DEBUG(ptr->getType()->dump());
 
 				if(outVals_inorout.find(ptr)!=outVals_inorout.end()){
-					if(outVals_inorout[ptr]==0){//outLoopStore
-						LLVM_DEBUG(dbgs() << "Adding live_out_report_intermediatevariable() call for OutloopStore\n");
-						for (auto &I : *exitBB){
+						if(outVals_inorout[ptr]==0){//outLoopStore
+							LLVM_DEBUG(dbgs() << "Adding live_out_report_intermediatevariable() call for OutloopStore\n");
+							for (auto &I : *exitBB){
 
 							LLVM_DEBUG(I.dump());
 							Value *val = dyn_cast<Value>(&I);
 							LLVM_DEBUG(val->dump());
 							if (I.getNumOperands() == 0)
 								continue;
-							if(I.getOperand(0)==ptr){
-								LLVM_DEBUG(dbgs() << "lcssa use\n");
-//								ptr_name_val = builder.CreateGlobalStringPtr(val->getName());
-								Value* bitcastedptr = builder.CreateIntCast(val, Type::getInt32Ty(Ctx),true);
-								builder.CreateCall(live_out_report_intvar_FN,{ptr_name_val,bitcastedptr});
+								if(I.getOperand(0)==ptr){
+									LLVM_DEBUG(dbgs() << "lcssa use\n");
+	//								ptr_name_val = builder.CreateGlobalStringPtr(val->getName());
+									Type *valTy = val->getType();
+									if (!valTy->isIntegerTy() && !valTy->isFloatingPointTy() && !valTy->isPointerTy()) {
+										LLVM_DEBUG(dbgs() << "Skipping non-castable live-out value in exit block\n");
+										continue;
+									}
+									Value* bitcastedptr = builder.CreateIntCast(val, Type::getInt32Ty(Ctx),true);
+									builder.CreateCall(live_out_report_intvar_FN,{ptr_name_val,bitcastedptr});
+								}
 							}
-						}
 
 
 						for (User *u : ptr->users()){
@@ -11316,63 +11409,70 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 					//					mem_alloc_txt << var_name<<","<< base_addr<<"\n";
 				}
 			}
-			else if (LoadInst *LDI = dyn_cast<LoadInst>(node->getNode()))
-			{
-				Value *ptr = LDI->getPointerOperand();
-				LLVM_DEBUG(ptr->dump());
-
-				if (arr_ptrs.find(ptr) == arr_ptrs.end()) {
-					// Pointer-type load (e.g., volatile int **A pattern): no SPM slot needed.
-					if (LDI->getType()->isPointerTy())
-						continue;
-					LLVM_DEBUG(dbgs() << "\t pointer  " << ptr->getName() << "\n");
-					LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[ptr] << "\n");
-					assert(false && "unexpected non-GEP data load in UpdateSPMAllocation");
-				}
-
-				Value *gep_ptr = arr_ptrs[ptr]->getPointerOperand();
-				assert(spm_base_allocation.find(gep_ptr) != spm_base_allocation.end());
-
-				if (spm_base_allocation[gep_ptr] == BANK0)
+				else if (LoadInst *LDI = dyn_cast<LoadInst>(node->getNode()))
 				{
-					node->setLeftAlignedMemOp(1);
-				}
+					Value *ptr = LDI->getPointerOperand();
+					LLVM_DEBUG(ptr->dump());
+
+					Value *base_ptr = nullptr;
+					if (arr_ptrs.find(ptr) != arr_ptrs.end())
+						base_ptr = arr_ptrs[ptr]->getPointerOperand();
+					else
+						base_ptr = getGlobalBase(ptr);
+
+					if (!base_ptr) {
+						// Pointer-type load (e.g., volatile int **A pattern): no SPM slot needed.
+						if (LDI->getType()->isPointerTy())
+							continue;
+						assert(false && "could not resolve base pointer for data load in UpdateSPMAllocation");
+					}
+
+					assert(spm_base_allocation.find(base_ptr) != spm_base_allocation.end());
+
+					if (spm_base_allocation[base_ptr] == BANK0)
+					{
+						node->setLeftAlignedMemOp(1);
+					}
 				else
 				{
-					node->setLeftAlignedMemOp(2);
+						node->setLeftAlignedMemOp(2);
+					}
+
+					LLVM_DEBUG(dbgs() << "\t pointer  " << base_ptr->getName() << "\n");
+					LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[base_ptr] << "\n");
+					var_name = traceBaseArrayName(base_ptr);
+					base_addr = spm_base_address[base_ptr];
+					if (!var_name.empty())
+						base_address_map[var_name]=base_addr;
 				}
-
-				LLVM_DEBUG(dbgs() << "\t pointer  " << gep_ptr->getName() << "\n");
-				LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[gep_ptr] << "\n");
-				var_name = traceBaseArrayName(gep_ptr);
-				base_addr = spm_base_address[gep_ptr];
-				if (!var_name.empty())
-					base_address_map[var_name]=base_addr;
-			}
-			else if (StoreInst *STI = dyn_cast<StoreInst>(node->getNode()))
-			{
-				Value *ptr = STI->getPointerOperand();
-				LLVM_DEBUG(ptr->dump());
-				assert(arr_ptrs.find(ptr) != arr_ptrs.end());
-				Value *gep_ptr = arr_ptrs[ptr]->getPointerOperand();
-				assert(spm_base_allocation.find(gep_ptr) != spm_base_allocation.end());
-
-				if (spm_base_allocation[gep_ptr] == BANK0)
+				else if (StoreInst *STI = dyn_cast<StoreInst>(node->getNode()))
 				{
-					node->setLeftAlignedMemOp(1);
-				}
+					Value *ptr = STI->getPointerOperand();
+					LLVM_DEBUG(ptr->dump());
+					Value *base_ptr = nullptr;
+					if (arr_ptrs.find(ptr) != arr_ptrs.end())
+						base_ptr = arr_ptrs[ptr]->getPointerOperand();
+					else
+						base_ptr = getGlobalBase(ptr);
+					assert(base_ptr != nullptr);
+					assert(spm_base_allocation.find(base_ptr) != spm_base_allocation.end());
+
+					if (spm_base_allocation[base_ptr] == BANK0)
+					{
+						node->setLeftAlignedMemOp(1);
+					}
 				else
 				{
-					node->setLeftAlignedMemOp(2);
-				}
+						node->setLeftAlignedMemOp(2);
+					}
 
-				LLVM_DEBUG(dbgs() << "\t pointer " << gep_ptr->getName() << "\n");
-				LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[gep_ptr] << "\n");
-				var_name = traceBaseArrayName(gep_ptr);
-				base_addr = spm_base_address[gep_ptr];
-				if (!var_name.empty())
-					base_address_map[var_name]=base_addr;
-			}
+					LLVM_DEBUG(dbgs() << "\t pointer " << base_ptr->getName() << "\n");
+					LLVM_DEBUG(dbgs() << "\t to address " << spm_base_address[base_ptr] << "\n");
+					var_name = traceBaseArrayName(base_ptr);
+					base_addr = spm_base_address[base_ptr];
+					if (!var_name.empty())
+						base_address_map[var_name]=base_addr;
+				}
 		}
 	}
 

@@ -38,6 +38,21 @@ def resolve_mapping_file(context, validation_mode):
   return matches[0]
 
 
+def resolve_mem_alloc_file(context):
+  latest = sorted(
+    glob.glob(os.path.join(context.mapper_kernel, "*_mem_alloc.txt")),
+    key=os.path.getmtime,
+    reverse=True,
+  )
+  for match in latest:
+    if os.path.getsize(match) > 0:
+      return match
+  fallback = os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % context.kernel)
+  if os.path.isfile(fallback):
+    return fallback
+  raise RuntimeError("No mem_alloc artifact found in %s" % context.mapper_kernel)
+
+
 def build_artifact_sim_command(context, trace_file, validation_mode):
   kernel = context.kernel
   argv = [
@@ -47,7 +62,7 @@ def build_artifact_sim_command(context, trace_file, validation_mode):
       "--mapping",
       resolve_mapping_file(context, validation_mode),
       "--mem-alloc",
-      os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % kernel),
+      resolve_mem_alloc_file(context),
       "--trace",
       os.path.join(context.mem_trace, trace_file),
       "--x",

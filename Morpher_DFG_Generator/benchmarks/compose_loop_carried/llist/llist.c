@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define SIZE 20
-#define TARGET 133
+#define SIZE 64
+#define TARGET -1
 
 typedef struct Node {
     int data;

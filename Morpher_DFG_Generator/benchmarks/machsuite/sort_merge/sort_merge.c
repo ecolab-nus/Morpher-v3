@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define SIZE 16
+#define SIZE 64
 
 int32_t a[SIZE];
 int32_t temp_buf[SIZE];

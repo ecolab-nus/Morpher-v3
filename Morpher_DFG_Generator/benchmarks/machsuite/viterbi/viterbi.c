@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define N_STATES  8
+#define N_STATES 65
 #define N_OBS    16
 #define N_TOKENS  4
 

@@ -365,22 +365,22 @@ bool SimulatorBase::shouldStop() const {
     return true;
   }
 
-  // When remove_iter prunes the OSTORE that sets loopend, the loopend byte is
-  // never written. Stop once every STORE node's external address trace is
-  // consumed — that marks completion of all traced loop iterations.
-  bool hasExternalStores = false;
+  // When remove_iter prunes loop-control stores, loopend is never written.
+  // Stop once all traced node address streams are consumed; otherwise the
+  // simulator falls back to synthetic memory addresses and overwrites valid
+  // outputs after the last traced iteration.
+  bool hasExternalTraces = false;
   for (const auto &[idx, node] : graph_.nodes()) {
-    if (!isStoreOp(node.op)) continue;
     auto addrIt = trace_.externalAddresses.find(idx);
     if (addrIt == trace_.externalAddresses.end()) continue;
-    hasExternalStores = true;
+    hasExternalTraces = true;
     size_t cursor = externalAddressOffsets_.count(idx)
                         ? externalAddressOffsets_.at(idx) : 0;
     if (cursor < addrIt->second.size()) {
-      return false;  // still have store entries to process
+      return false;  // still have traced accesses to process
     }
   }
-  return hasExternalStores;  // true only when all store entries are done
+  return hasExternalTraces;  // true only when all traced accesses are done
 }
 
 SimResult SimulatorBase::compare() const {

@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define N            16
-#define NNZ_PER_ROW   4   /* fixed / padded row width */
+#define N            64
+#define NNZ_PER_ROW  64   /* fixed / padded row width */
 #define NNZ          (N * NNZ_PER_ROW)
 
 int32_t val[NNZ];

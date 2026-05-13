@@ -2,8 +2,8 @@
 //typedef int DATA_TYPE;
 
 /* Problem size */
-#define NI 8
-#define NJ 8
+#define NI 66
+#define NJ 66
 #define SIZE NI*NJ
 
 

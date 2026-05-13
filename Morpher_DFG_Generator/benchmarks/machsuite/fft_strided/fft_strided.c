@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#define FFT_SIZE 32
+#define FFT_SIZE 128
 #define twoPI    6.28318530717959
 
 double real_in[FFT_SIZE];

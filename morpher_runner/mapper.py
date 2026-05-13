@@ -197,7 +197,9 @@ def run_mapper(context):
     memtraces = Path(context.mapper_kernel) / "memtraces"
     if not memtraces.exists():
       memtraces = Path(context.dfg_gen_kernel) / "memtraces"
-    rewritten = remap_addr_traces(memtraces)
+    decision_files = sorted(Path(context.mapper_kernel).glob("*_layout_decision.json"))
+    decision_path = decision_files[0] if decision_files else None
+    rewritten = remap_addr_traces(memtraces, decision_path)
     if rewritten:
       print("[layout_solver] addr_trace rewrite: %d rows updated\n" % rewritten)
     if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):

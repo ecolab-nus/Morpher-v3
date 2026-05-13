@@ -7,9 +7,9 @@
 #include <stdint.h>
 
 #define height_size  4
-#define col_size     8
-#define row_size     8
-#define SIZE         (row_size * col_size * height_size)  /* = 256 * 4 = 1024 B */
+#define col_size     66
+#define row_size     66
+#define SIZE         (row_size * col_size * height_size)
 
 #define C0_VAL  2
 #define C1_VAL  1

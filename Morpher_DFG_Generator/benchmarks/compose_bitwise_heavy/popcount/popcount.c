@@ -1,4 +1,4 @@
-#define SIZE 20
+#define SIZE 64
 
 unsigned char DATA[SIZE];
 unsigned char OUT[SIZE];

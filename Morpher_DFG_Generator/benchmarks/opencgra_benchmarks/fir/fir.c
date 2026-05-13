@@ -1,4 +1,4 @@
-#define NTAPS 32
+#define NTAPS 64
 
 int input[NTAPS];
 int output[NTAPS];
@@ -37,4 +37,3 @@ void fir()
     }
  }
 }
-

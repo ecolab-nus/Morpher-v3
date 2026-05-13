@@ -2,7 +2,7 @@
 #include <stdio.h>
 
 
-#define SIZE  20
+#define SIZE  64
 int A[SIZE], B[SIZE], C[SIZE];
 
 void external_fun() {C[0] = 7;}

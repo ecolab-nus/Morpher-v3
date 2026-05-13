@@ -12,6 +12,12 @@ class BankSizeTooSmallError(RuntimeError):
     self.required_banksize = required_banksize
 
 
+_REQUIRED_BANKSIZE_RE = re.compile(
+  r"Required SPM bank size for provisional layout:\s*(\d+)\s*bytes",
+  re.IGNORECASE,
+)
+
+
 def resolve_llvm_tool(tool_name):
   """Resolve an LLVM tool name, optionally using a configured bin dir or suffix."""
   bin_dir = os.environ.get("MORPHER_LLVM_BIN_DIR", "").strip()
@@ -175,7 +181,21 @@ def run_dfg_opt_with_diagnostics(opt_cmd_argv, kernel, banksize, numberofbanks, 
       print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
     raise subprocess.CalledProcessError(result.returncode, opt_cmd_argv)
 
+  required_banksize = None
   # Preserve the useful legacy summary without flooding stdout with full pass logs.
   for line in output.splitlines():
     if "DFG node count:" in line:
       print(line)
+      continue
+    if "Required SPM bank size for provisional layout:" in line:
+      print(line)
+      match = _REQUIRED_BANKSIZE_RE.search(line)
+      if match:
+        required_banksize = int(match.group(1))
+      continue
+    if "Continuing DFG generation with effective bank size:" in line:
+      print(line)
+
+  return {
+    "required_banksize": required_banksize,
+  }

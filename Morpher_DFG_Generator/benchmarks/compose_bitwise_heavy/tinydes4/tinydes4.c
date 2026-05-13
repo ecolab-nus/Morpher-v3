@@ -1,4 +1,4 @@
-#define SIZE 20
+#define SIZE 256
 
 unsigned int PLAINTEXT[SIZE];
 unsigned int KEY[SIZE];

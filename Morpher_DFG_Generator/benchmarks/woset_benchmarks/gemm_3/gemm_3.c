@@ -2,8 +2,8 @@
 	#include <stdio.h>
 
 
-	#define SIZE  8
-	#define SIZESIZESIZE4 128 //8*8*8/4
+	#define SIZE  16
+	#define SIZESIZESIZE4 1024 //16*16*16/4
 	int n = SIZE;
 	int A[SIZE*SIZE], B[SIZE*SIZE], C[SIZE*SIZE];
 	int i,j;

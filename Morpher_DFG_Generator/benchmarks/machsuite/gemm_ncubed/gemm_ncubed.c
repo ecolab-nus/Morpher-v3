@@ -5,7 +5,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#define N 8
+#define N 128
 
 int m1[N*N], m2[N*N], prod[N*N];
 

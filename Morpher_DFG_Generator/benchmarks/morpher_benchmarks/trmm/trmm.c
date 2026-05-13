@@ -13,7 +13,7 @@
 /* Include polybench common header. */
 // #include "polybench.h"
 
-# define MINI_DATASET
+# define SMALL_DATASET
 
 /* Default to STANDARD_DATASET. */
 # if !defined(MINI_DATASET) && !defined(SMALL_DATASET) && !defined(LARGE_DATASET) && !defined(EXTRALARGE_DATASET)

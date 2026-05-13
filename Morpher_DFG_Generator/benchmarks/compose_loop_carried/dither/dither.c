@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SIZE 20
+#define SIZE 64
 #define SRC_VAL(i) ((i * 13) % 256) // Example values
 
 int src[SIZE], dest[SIZE];

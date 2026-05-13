@@ -117,13 +117,13 @@ def simd_packing_active_for_factor(config, unroll_factor):
   return config.arch_simd_enabled and unroll_factor >= config.arch_simd_width
 
 
-def build_unroll_command(context, unroll_factor, remainder_policy):
+def build_unroll_command(context, unroll_factor):
   kernel = context.kernel
   simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
   reduction_lanes = context.config.arch_simd_width if simd_active else 1
   reduction_policy = "packed-psum" if simd_active else "tree"
   opt_tool = resolve_llvm_tool("opt")
-  return Command(
+  command = Command(
     argv=[
       opt_tool,
       "-load-pass-plugin",
@@ -133,8 +133,6 @@ def build_unroll_command(context, unroll_factor, remainder_policy):
       kernel,
       "--morpher-unroll-factor",
       str(unroll_factor),
-      "--morpher-remainder-policy",
-      remainder_policy,
       "--morpher-reduction-lanes",
       str(reduction_lanes),
       "--morpher-reduction-policy",
@@ -147,6 +145,9 @@ def build_unroll_command(context, unroll_factor, remainder_policy):
     cwd=context.dfg_gen_kernel,
     env=build_llvm_tool_env(),
   )
+  if context.config.auto_unroll_fuse_innermost_loops:
+    command.argv.insert(3, "--morpher-fuse-innermost-loops")
+  return command
 
 
 def build_dfg_pass_command(context, skeleton_ir=None):
@@ -196,13 +197,22 @@ def _run_dfg_pass_with_banksize_retry(context, skeleton_ir):
         % (config.banksize, attempt, max_attempts)
       )
     try:
-      run_dfg_opt_with_diagnostics(
+      diagnostics = run_dfg_opt_with_diagnostics(
         build_dfg_pass_command(context, skeleton_ir=skeleton_ir),
         kernel,
         config.banksize,
         config.numberofbanks,
         cwd=dfg_kernel,
       )
+      required_banksize = diagnostics.get("required_banksize")
+      if required_banksize and required_banksize > config.banksize:
+        if not _can_auto_grow_banksize(context):
+          raise RuntimeError(
+            "Provisional DFG layout requires banksize=%d bytes, but memory_mode=%s with spm_mode=%s "
+            "cannot auto-grow the architecture at mapper time."
+            % (required_banksize, context.config.memory_mode, context.config.spm_mode)
+          )
+        config.banksize = required_banksize
       if config.banksize != original_banksize:
         print(
           "DFG bank allocation required banksize=%d bytes; continuing with that effective size.\n"
@@ -317,14 +327,16 @@ def _default_unroll_factor(config):
   return 1
 
 
-def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
+def _unroll_pass_required(config, unroll_factor):
+  return unroll_factor > 1
+
+
+def run_dfg_generator(context, unroll_factor=None):
   config = context.config
   kernel = context.kernel
   dfg_kernel = context.dfg_gen_kernel
   if unroll_factor is None:
     unroll_factor = _default_unroll_factor(config)
-  if remainder_policy is None:
-    remainder_policy = config.auto_unroll_remainder_policy
   simd_active = simd_packing_active_for_factor(config, unroll_factor)
   context.selected_simd_enabled = simd_active
   context.selected_simd_width = config.arch_simd_width if simd_active else 1
@@ -345,8 +357,12 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
       )
   if unroll_factor > 1:
     print(
-      "Requested Morpher scalar loop unroll: factor=%d, remainder_policy=%s\n"
-      % (unroll_factor, remainder_policy)
+      "Requested Morpher scalar loop unroll: factor=%d (remainders preserved)\n"
+      % unroll_factor
+    )
+  if config.auto_unroll_fuse_innermost_loops and config.auto_unroll_enabled:
+    print(
+      "Requested Morpher innermost loop fusion where LLVM can prove legality.\n"
     )
 
   remove_glob(dfg_kernel, "memtraces/*")
@@ -362,9 +378,9 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   run_command(ir_commands[1])
 
   skeleton_ir = "%s_opt.ll" % kernel
-  if unroll_factor > 1:
+  if _unroll_pass_required(config, unroll_factor):
     print("Unrolling annotated loop for DFG candidate..\n")
-    run_command(build_unroll_command(context, unroll_factor, remainder_policy))
+    run_command(build_unroll_command(context, unroll_factor))
     skeleton_ir = "%s_uf%d_opt.ll" % (kernel, unroll_factor)
 
   print("Generating DFG (%s_PartPredDFG.xml/dot) and data layout (%s_mem_alloc.txt)..\n" % (kernel, kernel))
