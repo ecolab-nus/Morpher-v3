@@ -3380,17 +3380,22 @@ void CGRAXMLCompile::PathFinderMapper::UpdateVariableBaseAddr(){
 
 
 	for(DFGNode& node : dfg->nodeList){
+		auto override_it = cgra->perNodeAddrOverride.find(node.idx);
+		auto resolve_base = [&](const std::string &name) -> int {
+			if (override_it != cgra->perNodeAddrOverride.end())
+				return override_it->second;
+			assert(cgra->Variable2SPMAddr.find(name) != cgra->Variable2SPMAddr.end());
+			return cgra->Variable2SPMAddr[name];
+		};
 		if(node.gep_offset != -1){
 			assert(!node.base_pointer_name.empty());
 			LOG(MAPPING) << "base_pointer name = " << node.base_pointer_name << "\n";
-			assert(cgra->Variable2SPMAddr.find(node.base_pointer_name) != cgra->Variable2SPMAddr.end());
-			node.constant = node.gep_offset + cgra->Variable2SPMAddr[node.base_pointer_name];
+			node.constant = node.gep_offset + resolve_base(node.base_pointer_name);
 		}
 		else if(node.op.find("OLOAD") != string::npos || node.op.find("OSTORE") != string::npos){
 			//for outer loop load and stores, set the constant to the base address
 			assert(!node.base_pointer_name.empty());
-			assert(cgra->Variable2SPMAddr.find(node.base_pointer_name) != cgra->Variable2SPMAddr.end());
-			node.constant = cgra->Variable2SPMAddr[node.base_pointer_name];
+			node.constant = resolve_base(node.base_pointer_name);
 		}
 	}
 	// exit(EXIT_SUCCESS);

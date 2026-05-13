@@ -10,6 +10,7 @@
 #include <chrono>
 #include <sstream>
 #include <stdexcept>
+#include <dirent.h>
 
 #include <assert.h>
 #include <string.h>
@@ -389,6 +390,47 @@ int main(int argn, char *argc[])
 					          << " (" << phase_label << ", attempt " << (restart + 2) << "/" << phase_attempts << ")\n";
 				}
 				continue;
+			}
+
+			tempCGRA->EmitLayoutObservation(
+				activeDFG,
+				inputDFG_filename + tempCGRA->getCGRAName() + "_layout_observation.json");
+
+			if (args.layout_solver)
+			{
+				std::string agiPath = args.agi_subgraph;
+				if (agiPath.empty())
+				{
+					std::string dir = inputDFG_filename;
+					auto slash = dir.find_last_of('/');
+					dir = (slash == std::string::npos) ? std::string(".") : dir.substr(0, slash);
+					DIR *d = opendir(dir.c_str());
+					if (d)
+					{
+						const std::string suffix = "_AGI_subgraph.xml";
+						struct dirent *ent;
+						while ((ent = readdir(d)) != nullptr)
+						{
+							std::string fn = ent->d_name;
+							if (fn.size() > suffix.size() &&
+								fn.compare(fn.size() - suffix.size(), std::string::npos, suffix) == 0)
+							{
+								agiPath = dir + "/" + fn;
+								break;
+							}
+						}
+						closedir(d);
+					}
+				}
+				CGRA::LayoutSolverOpts opts{true, args.replicate_data != 0};
+				std::string decisionPath = inputDFG_filename + tempCGRA->getCGRAName() + "_layout_decision.json";
+				bool changed = tempCGRA->SolveLayout(activeDFG, opts, agiPath, decisionPath);
+				if (changed)
+				{
+					active_mapper->UpdateVariableBaseAddr();
+					tempCGRA->WriteMemAllocTxt(
+						inputDFG_filename + tempCGRA->getCGRAName() + "_mem_alloc.txt");
+				}
 			}
 
 			if (!emit_binary)

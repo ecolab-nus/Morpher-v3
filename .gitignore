@@ -3,6 +3,7 @@ scripts/compare_v2_v3_benchmarks.py
 scripts/run_v3_benchmarks.py
 simulator/artifact_simulator/build/
 bot.md
+REFERENCE.md
 __pycache__/
 *.py[cod]
 workspace/

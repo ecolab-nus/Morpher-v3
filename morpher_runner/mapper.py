@@ -10,6 +10,7 @@ from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
 from morpher_runner.fs_ops import copy_glob
 from morpher_runner.fs_ops import remove_glob
+from morpher_runner.trace_partition import remap_addr_traces
 
 
 def resolve_arch_template_path(context):
@@ -103,6 +104,11 @@ def build_mapper_commands(context):
   if node_pin:
     mapper_common_args += ["--node_pin", str(node_pin)]
 
+  if getattr(config, "layout_solver", False):
+    mapper_common_args += ["--layout_solver", "1"]
+  if getattr(config, "replicate_data", False):
+    mapper_common_args += ["--replicate_data", "1"]
+
   commands = []
   mapper_arch = template_arch
   if mode == "auto":
@@ -183,3 +189,17 @@ def run_mapper(context):
   if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):
     remove_glob(context.simulator_kernel, "*.bin")
     copy_glob(context.mapper_kernel, "*.bin", context.simulator_kernel, required=True)
+
+  if getattr(config, "layout_solver", False):
+    # Layout solver may have rewritten the SPM placement and re-baked the
+    # binary's LD/ST constants. The addr_trace was recorded against the
+    # original layout; shift each row by the per-node delta the solver emitted.
+    memtraces = Path(context.mapper_kernel) / "memtraces"
+    if not memtraces.exists():
+      memtraces = Path(context.dfg_gen_kernel) / "memtraces"
+    rewritten = remap_addr_traces(memtraces)
+    if rewritten:
+      print("[layout_solver] addr_trace rewrite: %d rows updated\n" % rewritten)
+    if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):
+      remove_glob(context.simulator_kernel, "*_mem_alloc.txt")
+      copy_glob(context.mapper_kernel, "*_mem_alloc.txt", context.simulator_kernel)

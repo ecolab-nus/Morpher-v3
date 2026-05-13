@@ -171,7 +171,31 @@ public:
 	void EstablishTemporalLinkage();
 	void PrintMappedJSON(string fileName);
 	// by Yujie
-	void PrintMappingForPillars(string fileName_i, string fileName_r);    
+	void PrintMappingForPillars(string fileName_i, string fileName_r);
+
+	// Post-mapping diagnostic: per-LD/ST snapshot of (array, GEP offset, mapped
+	// memPE, current bank/SPM-addr binding). Foundation for the future
+	// post-mapping layout solver that derives data placement from where LD/STs
+	// landed instead of presetting Variable2SPMAddr.
+	void EmitLayoutObservation(class DFG *dfg, string fileName);
+
+	// Post-mapping layout solver knobs and state.
+	struct LayoutSolverOpts {
+		bool enable = false;
+		bool replicate_data = false;
+	};
+	// memPE -> bank module wired to its MEMPORT socket. Populated by
+	// buildMemPE2Bank() after CONNECTIONS parsing completes.
+	unordered_map<PE*, Module*> memPE2Bank;
+	// Per-LD/ST address override (DFGNode.idx -> SPM base address). Consulted
+	// by PathFinderMapper::UpdateVariableBaseAddr before falling back to
+	// Variable2SPMAddr. Populated by SolveLayout for partitioned/replicated
+	// arrays.
+	unordered_map<int,int> perNodeAddrOverride;
+	void buildMemPE2Bank();
+	bool SolveLayout(class DFG *dfg, const LayoutSolverOpts &opts,
+					 const string &agiSubgraphPath, const string &decisionPath);
+	void WriteMemAllocTxt(const string &fileName);
 
 	void InsertVariable2SPMAddrInfo(json& output_json);
 	void checkMDPVars(unordered_set<Module *>& spms);

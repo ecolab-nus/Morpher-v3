@@ -446,6 +446,8 @@ class RunnerConfig:
   node_pin: str
   remove_agi: bool
   remove_iter: bool
+  layout_solver: bool
+  replicate_data: bool
   auto_unroll_enabled: bool
   auto_unroll_factors: list
   auto_unroll_remainder_policy: str
@@ -614,6 +616,8 @@ class RunnerConfig:
       remove_agi=config_dict.get("remove_agi", False),
       node_pin=str(config_dict.get("node_pin", "") or ""),
       remove_iter=config_dict.get("remove_iter", False),
+      layout_solver=bool(config_dict.get("layout_solver", False)),
+      replicate_data=bool(config_dict.get("replicate_data", False)),
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_remainder_policy=auto_unroll_remainder_policy,

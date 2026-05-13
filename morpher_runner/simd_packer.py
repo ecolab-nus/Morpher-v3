@@ -666,11 +666,13 @@ def pack_simd_xml(
       _prunable_packed_store_address_oloads(nodes, replacement, packed_store_reps)
       - removed
     )
+  iter_pruned: set[int] = set()
   if prune_iter_control:
-    artifact_pruned |= (
+    iter_pruned = (
       _prunable_external_control_nodes(nodes, replacement, removed | artifact_pruned)
       - removed
     )
+    artifact_pruned |= iter_pruned
   if prune_scalar_lane_outputs or prune_iter_control:
     # Bases that surviving nodes still write to must remain in the trace.
     # The VRED rewrite (below) re-bases the rep OSTORE to its simd_reduce_base
@@ -703,6 +705,24 @@ def pack_simd_xml(
   removed_or_pruned = removed | artifact_pruned
   remaining_nodes = [node for node in nodes if _node_idx(node) not in removed_or_pruned]
   reindex = {_node_idx(node): idx for idx, node in enumerate(remaining_nodes)}
+
+  if iter_pruned:
+    iter_local_idx = {old: i for i, old in enumerate(sorted(iter_pruned))}
+    iter_subgraph_path = output_path.parent / output_path.name.replace(
+      "_PartPredDFG.xml", "_ITER_subgraph.xml"
+    )
+    if iter_subgraph_path == output_path:
+      iter_subgraph_path = output_path.parent / (output_path.stem + "_ITER_subgraph.xml")
+    _write_iter_subgraph(nodes, iter_pruned, iter_local_idx, reindex, iter_subgraph_path)
+
+  # Compose lane->rep with the post-pack reindex so AGI externalIdx values
+  # land in the mapper's final namespace. Lanes 1..L-1 collapse to lane 0;
+  # last-wins in the XML is acceptable (lane 0 is the canonical representative
+  # for v1 partition/replication decisions).
+  composed = {pre: reindex[replacement.get(pre, pre)]
+              for pre in {_node_idx(n) for n in nodes}
+              if replacement.get(pre, pre) in reindex}
+  remap_agi_subgraph_externalidx(input_path.parent, composed)
 
   # Capture pre-packing indices before mutating node elements below.
   simd_groups = {}
@@ -872,6 +892,10 @@ def prune_iter_control_xml(
   Returns (n_pruned, reindex) where reindex maps old node idx to new node idx.
   Callers should pass reindex to reindex_addr_trace so the simulator can match
   external addresses to the correct post-pruning node indices.
+
+  Also writes a companion *_ITER_subgraph.xml next to output_xml containing the
+  pruned nodes. Intra-ITER refs use a local idx; refs across the boundary to a
+  surviving compute node use externalIdx in the post-prune index space.
   """
   input_path = Path(input_xml)
   output_path = Path(output_xml)
@@ -883,6 +907,16 @@ def prune_iter_control_xml(
   pruned = _prunable_external_control_nodes(nodes, {}, set())
   remaining = [n for n in nodes if _node_idx(n) not in pruned]
   reindex = {_node_idx(n): idx for idx, n in enumerate(remaining)}
+
+  iter_local_idx = {old: i for i, old in enumerate(sorted(pruned))}
+  iter_subgraph_path = output_path.parent / output_path.name.replace(
+    "_noiter_PartPredDFG.xml", "_ITER_subgraph.xml"
+  )
+  if iter_subgraph_path == output_path:
+    iter_subgraph_path = output_path.parent / (output_path.stem + "_ITER_subgraph.xml")
+  _write_iter_subgraph(nodes, pruned, iter_local_idx, reindex, iter_subgraph_path)
+  remap_agi_subgraph_externalidx(input_path.parent, reindex)
+
   for node in nodes:
     dfg.remove(node)
   for node in remaining:
@@ -895,6 +929,115 @@ def prune_iter_control_xml(
   dfg.set("count", str(len(remaining)))
   _write_unwrapped_xml(root, output_path)
   return len(pruned), reindex
+
+
+def remap_agi_subgraph_externalidx(
+  search_dir: Path,
+  reindex: "dict[int, int]",
+) -> None:
+  """Walk *_AGI_subgraph.xml under search_dir and rewrite externalIdx
+  attributes (on Input and Output refs) using `reindex`. Refs whose target
+  is missing from `reindex` are dropped — they pointed at a node that the
+  caller's reindex step removed entirely.
+
+  Called by prune_iter_control_xml (ITER pruning reindex) and pack_simd_xml
+  (post-pack reindex composed with the lane->rep replacement map) so the
+  AGI sub-graph's externalIdx values track the compute DFG's final indices.
+  """
+  if not reindex:
+    return
+  for agi_path in sorted(search_dir.glob("*_AGI_subgraph.xml")):
+    try:
+      tree = ET.parse(agi_path)
+    except ET.ParseError:
+      continue
+    root = tree.getroot()
+    changed = False
+    for node in root.findall("Node"):
+      for container_name, ref_name in (("Inputs", "Input"), ("Outputs", "Output")):
+        container = node.find(container_name)
+        if container is None:
+          continue
+        to_drop = []
+        for ref in list(container):
+          if ref.tag != ref_name:
+            continue
+          ext = ref.attrib.get("externalIdx")
+          if ext is None:
+            continue
+          try:
+            old = int(ext)
+          except ValueError:
+            continue
+          new = reindex.get(old)
+          if new is None:
+            to_drop.append(ref)
+            continue
+          if str(new) != ext:
+            ref.set("externalIdx", str(new))
+            changed = True
+        for ref in to_drop:
+          container.remove(ref)
+          changed = True
+    if changed:
+      try:
+        ET.indent(root, space="  ")
+      except AttributeError:
+        pass
+      agi_path.write_text(ET.tostring(root, encoding="unicode") + "\n", encoding="utf-8")
+      print(f"[agi_remap] Rewrote externalIdx in {agi_path.name}")
+
+
+def _write_iter_subgraph(
+  nodes: list[ET.Element],
+  pruned: set[int],
+  iter_local_idx: dict[int, int],
+  reindex: dict[int, int],
+  out_path: Path,
+) -> None:
+  root = ET.Element("ITER_DFG", attrib={"count": str(len(pruned))})
+  for node in nodes:
+    old_idx = _node_idx(node)
+    if old_idx not in pruned:
+      continue
+    new_node = ET.SubElement(root, "Node", attrib={"localIdx": str(iter_local_idx[old_idx])})
+    bb = node.attrib.get("BB")
+    if bb:
+      new_node.set("BB", bb)
+    const = node.attrib.get("CONST")
+    if const is not None:
+      new_node.set("CONST", const)
+    op_elem = node.find("OP")
+    op_text = (op_elem.text or "").strip() if op_elem is not None and op_elem.text else ""
+    op_out = ET.SubElement(new_node, "OP")
+    op_out.text = op_text
+    for container_name, ref_name in (("Inputs", "Input"), ("Outputs", "Output")):
+      src = node.find(container_name)
+      out_container = ET.SubElement(new_node, container_name)
+      if src is None:
+        continue
+      for ref in list(src):
+        if ref.tag != ref_name:
+          continue
+        partner = _ref_idx(ref)
+        attribs = {k: v for k, v in ref.attrib.items() if k != "idx"}
+        if partner in pruned:
+          attribs["localIdx"] = str(iter_local_idx[partner])
+        elif partner in reindex:
+          attribs["externalIdx"] = str(reindex[partner])
+        else:
+          continue
+        ET.SubElement(out_container, ref_name, attrib=attribs)
+  try:
+    ET.indent(root, space="  ")
+    xml_text = ET.tostring(root, encoding="unicode")
+  except AttributeError:
+    from xml.dom import minidom
+    xml_text = minidom.parseString(ET.tostring(root, encoding="unicode")).toprettyxml(indent="  ")
+    xml_text = "\n".join(line for line in xml_text.splitlines() if line.strip())
+    if xml_text.startswith("<?xml"):
+      xml_text = xml_text.split("\n", 1)[1]
+  out_path.write_text(xml_text + "\n", encoding="utf-8")
 
 
 def reindex_addr_trace(

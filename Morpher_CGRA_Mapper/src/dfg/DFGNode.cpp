@@ -354,32 +354,16 @@ std::string CGRAXMLCompile::DFGNode::getOPtype(DFGNode *child)
 
 bool CGRAXMLCompile::DFGNode::isMemOp()
 {
-	if (this->op.compare("LOAD") == 0)
+	static const std::vector<std::string> prefixes = {
+		"LOAD", "STORE", "OLOAD", "OSTORE",
+		"VLOAD", "VSTORE", "VOLOAD", "VOSTORE"
+	};
+	for (const std::string &prefix : prefixes)
 	{
-		return true;
+		if (this->op.rfind(prefix, 0) == 0)
+		{
+			return true;
+		}
 	}
-	else if (this->op.compare("LOADH") == 0)
-	{
-		return true;
-	}
-	else if (this->op.compare("LOADB") == 0)
-	{
-		return true;
-	}
-	else if (this->op.compare("STORE") == 0)
-	{
-		return true;
-	}
-	else if (this->op.compare("STOREH") == 0)
-	{
-		return true;
-	}
-	else if (this->op.compare("STOREB") == 0)
-	{
-		return true;
-	}
-	else
-	{
-		return false;
-	}
+	return false;
 }

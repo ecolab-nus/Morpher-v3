@@ -2,6 +2,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
@@ -421,6 +422,9 @@ def run_dfg_generator(context, unroll_factor=None, remainder_policy=None):
   staged_xml = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel)
   _print_staged_dfg_summary(staged_xml)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.mapper_kernel)
+  # Stage the AGI sub-graph next to the DFG XML so the layout solver can find it.
+  for agi_path in Path(dfg_kernel).glob("*_AGI_subgraph.xml"):
+    copy_file(str(agi_path), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 
   if not config.enable_simulation:

@@ -8,6 +8,9 @@
 #include <morpher/arch/CGRA.h>
 #include <morpher/arch/PE.h>
 #include <morpher/arch/Port.h>
+#include <morpher/arch/DataPath.h>
+#include <morpher/dfg/DFG.h>
+#include <morpher/util/tinyxml2.h>
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -15,6 +18,7 @@
 #include <cstdlib>
 #include <unordered_map>
 #include <queue>
+#include <functional>
 //#include <nlohmann/json.hpp>
 #include <iomanip>
 #include <regex>
@@ -718,7 +722,57 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 	// exit(EXIT_SUCCESS);
 	// assert(false);
 
+	buildMemPE2Bank();
 	return true;
+}
+
+void CGRAXMLCompile::CGRA::buildMemPE2Bank()
+{
+	// Walk each memPE's MEMPORT socket to the SPM bank it's wired to.
+	// Connection map (connectedTo) lives on the CGRA (this), populated by
+	// insertConnection during CONNECTIONS parsing.
+	//
+	// In hycube-style arches the destination port's module is the SPM
+	// wrapper (e.g. SPM_B0_WRAPPER_INS). The wrapper's isSPM=false; its
+	// inner child of type SPM carries isSPM=true and is what Variable2SPM
+	// points to. So we descend the wrapper to find the inner SPM. If the
+	// wired module already has isSPM=true (single-level encoding), we use
+	// it directly.
+	std::function<Module*(Module*)> findInnerSpm = [&](Module *m) -> Module* {
+		if (!m) return nullptr;
+		if (m->isSPM) return m;
+		for (Module *sm : m->subModules) {
+			if (Module *r = findInnerSpm(sm))
+				return r;
+		}
+		return nullptr;
+	};
+	memPE2Bank.clear();
+	const auto &cmap = this->getconnectedTo();
+	for (PE *pe : getAllPEList())
+	{
+		if (!pe->isMemPE)
+			continue;
+		Port *memport = pe->getSocketPort("MEMPORT");
+		if (!memport)
+			continue;
+		auto it = cmap.find(memport);
+		if (it == cmap.end() || it->second.empty())
+			continue;
+		Module *wired = it->second.front()->getMod();
+		Module *bank = findInnerSpm(wired);
+		// Fallback: walk up if neither the wired module nor its descendants
+		// declare isSPM (defensive for unusual encodings).
+		if (!bank) {
+			bank = wired;
+			while (bank && !bank->isSPM && bank->getParent())
+				bank = (Module *)bank->getParent();
+			if (bank && !bank->isSPM)
+				bank = nullptr;
+		}
+		if (bank)
+			memPE2Bank[pe] = bank;
+	}
 }
 
 void ExpandPattern(json &input, json &connections, json &submods)
@@ -1373,6 +1427,561 @@ void CGRAXMLCompile::CGRA::PrintMappingForPillars(string fileName_i, string file
 		delete []iter->second;
 	}
 	outFile_r.close();
+}
+
+void CGRAXMLCompile::CGRA::EmitLayoutObservation(DFG *dfg, string fileName)
+{
+	json out;
+	out["kernel"] = getCGRAName();
+	out["load_store_nodes"] = json::array();
+	std::map<std::string, json> per_array;
+
+	auto isMemOpInclusive = [](const std::string &op) {
+		static const std::vector<std::string> prefixes = {
+			"LOAD", "STORE", "OLOAD", "OSTORE",
+			"VLOAD", "VSTORE", "VOLOAD", "VOSTORE"
+		};
+		for (auto &p : prefixes)
+			if (op.rfind(p, 0) == 0) return true;
+		return false;
+	};
+	for (DFGNode &node : dfg->nodeList)
+	{
+		if (!isMemOpInclusive(node.op))
+			continue;
+
+		json entry;
+		entry["idx"] = node.idx;
+		entry["op"] = node.op;
+		entry["base_pointer"] = node.base_pointer_name;
+		entry["gep_offset"] = node.gep_offset;
+
+		json mapped_pe = nullptr;
+		if (node.rootDP && node.rootDP->getPE())
+		{
+			PE *pe = node.rootDP->getPE();
+			mapped_pe = {
+				{"x", pe->X},
+				{"y", pe->Y},
+				{"t", pe->T},
+				{"is_memPE", pe->isMemPE}};
+		}
+		entry["mapped_pe"] = mapped_pe;
+
+		const std::string &base = node.base_pointer_name;
+		auto bank_it = Variable2SPM.find(base);
+		entry["current_bank_module"] = (bank_it != Variable2SPM.end() && bank_it->second)
+										   ? bank_it->second->getName()
+										   : std::string();
+		auto addr_it = Variable2SPMAddr.find(base);
+		entry["current_spm_base_addr"] = (addr_it != Variable2SPMAddr.end())
+											 ? addr_it->second
+											 : -1;
+
+		out["load_store_nodes"].push_back(entry);
+
+		if (base != "NOT_A_MEM_OP" && !base.empty())
+		{
+			json &arr = per_array[base];
+			if (arr.is_null())
+			{
+				arr = json::object();
+				arr["current_bank_module"] = entry["current_bank_module"];
+				arr["current_spm_base_addr"] = entry["current_spm_base_addr"];
+				arr["memPEs_touched"] = json::array();
+				arr["access_offsets"] = json::array();
+				arr["ld_st_node_idxs"] = json::array();
+			}
+			if (!mapped_pe.is_null() && mapped_pe["is_memPE"])
+				arr["memPEs_touched"].push_back(mapped_pe);
+			if (node.gep_offset >= 0)
+				arr["access_offsets"].push_back(node.gep_offset);
+			arr["ld_st_node_idxs"].push_back(node.idx);
+		}
+	}
+
+	out["arrays"] = json::object();
+	for (auto &kv : per_array)
+		out["arrays"][kv.first] = kv.second;
+
+	ofstream f(fileName);
+	f << out.dump(2) << "\n";
+	f.close();
+	std::cout << "[LayoutObservation] Wrote " << fileName << " ("
+			  << out["load_store_nodes"].size() << " LD/ST nodes, "
+			  << per_array.size() << " arrays)\n";
+}
+
+namespace {
+
+// Affine pattern for one LD/ST: addr = base_offset + iv * stride.
+// stride = -1 means "unknown / no affine chain" (scalar or out-of-loop access).
+struct AffinePattern {
+	int base_offset = 0;
+	int stride = -1;
+	int iv_extern_idx = -1;
+};
+
+// Walk a *_AGI_subgraph.xml emitted by removeAGINodes and recover one
+// AffinePattern per compute-side LD/ST that the AGI tree drives. The compute
+// LD/ST is identified by the externalIdx attribute on AGI <Output> elements.
+// Chain shape we handle in v1:
+//   GEPADD(CONST=base)  -- Input localIdx --> GEPLEFTSHIFT(CONST=log2_stride)
+//                                              -- Input externalIdx --> IV (compute)
+// Anything more complex (e.g., 2D address with two adds) falls through and
+// stays absent from the result map; the solver treats those LD/STs as having
+// no recoverable affine pattern.
+std::unordered_map<int, AffinePattern> parseAGISubgraph(const std::string &path)
+{
+	std::unordered_map<int, AffinePattern> result;
+	tinyxml2::XMLDocument doc;
+	if (doc.LoadFile(path.c_str()) != tinyxml2::XML_SUCCESS)
+		return result;
+	tinyxml2::XMLElement *root = doc.FirstChildElement("AGI_DFG");
+	if (!root)
+		return result;
+
+	struct AgiNode {
+		std::string op;
+		int constVal = 0;
+		bool hasConst = false;
+		std::vector<std::pair<int, bool>> inputs;  // (idx, isLocal)
+		std::vector<std::pair<int, bool>> outputs;
+	};
+	std::unordered_map<int, AgiNode> nodes;
+	for (tinyxml2::XMLElement *n = root->FirstChildElement("Node"); n; n = n->NextSiblingElement("Node")) {
+		int localIdx = -1;
+		if (n->QueryIntAttribute("localIdx", &localIdx) != tinyxml2::XML_SUCCESS)
+			continue;
+		AgiNode an;
+		const char *opText = nullptr;
+		if (tinyxml2::XMLElement *opE = n->FirstChildElement("OP"))
+			opText = opE->GetText();
+		if (opText) an.op = opText;
+		int cv = 0;
+		if (n->QueryIntAttribute("CONST", &cv) == tinyxml2::XML_SUCCESS) {
+			an.constVal = cv;
+			an.hasConst = true;
+		}
+		auto loadRefs = [&](const char *container, const char *ref,
+							std::vector<std::pair<int, bool>> &out) {
+			tinyxml2::XMLElement *c = n->FirstChildElement(container);
+			if (!c) return;
+			for (tinyxml2::XMLElement *r = c->FirstChildElement(ref); r;
+				 r = r->NextSiblingElement(ref)) {
+				int v = 0;
+				if (r->QueryIntAttribute("localIdx", &v) == tinyxml2::XML_SUCCESS)
+					out.push_back({v, true});
+				else if (r->QueryIntAttribute("externalIdx", &v) == tinyxml2::XML_SUCCESS)
+					out.push_back({v, false});
+			}
+		};
+		loadRefs("Inputs", "Input", an.inputs);
+		loadRefs("Outputs", "Output", an.outputs);
+		nodes[localIdx] = std::move(an);
+	}
+
+	for (auto &kv : nodes) {
+		const AgiNode &add = kv.second;
+		// Expect a GEPADD at the boundary: AGI op encoded as "ADD" or
+		// "GEPADD" with at least one externalIdx Output (the LD/ST).
+		if (add.op != "GEPADD" && add.op != "ADD")
+			continue;
+		if (!add.hasConst)
+			continue;
+		int compute_ext = -1;
+		for (auto &o : add.outputs) {
+			if (!o.second) { compute_ext = o.first; break; }
+		}
+		if (compute_ext < 0)
+			continue;
+		// Walk the AGI chain backward from this GEPADD. Accept intermediate
+		// ADD nodes that contribute a constant offset (e.g. the "i+1" add
+		// LLVM emits for unrolled accesses). Stop at the first GEPLEFTSHIFT
+		// or GEPSCALE node — that gives the stride. Whatever externalIdx
+		// inputs we see along the way (typically the IV) become the
+		// candidate iv_extern_idx.
+		AffinePattern pat;
+		pat.base_offset = add.constVal;
+		bool ok = false;
+		int cur = -1;
+		for (auto &i : add.inputs) {
+			if (i.second) { cur = i.first; break; }
+		}
+		std::unordered_set<int> seen;
+		while (cur >= 0 && !seen.count(cur)) {
+			seen.insert(cur);
+			auto nit = nodes.find(cur);
+			if (nit == nodes.end()) break;
+			const AgiNode &n = nit->second;
+			if (n.op == "GEPLEFTSHIFT" && n.hasConst) {
+				pat.stride = 1 << n.constVal;
+				for (auto &i : n.inputs) {
+					if (!i.second) { pat.iv_extern_idx = i.first; break; }
+				}
+				ok = true;
+				break;
+			}
+			if (n.op == "GEPSCALE" && n.hasConst) {
+				pat.stride = n.constVal;
+				for (auto &i : n.inputs) {
+					if (!i.second) { pat.iv_extern_idx = i.first; break; }
+				}
+				ok = true;
+				break;
+			}
+			if ((n.op == "ADD" || n.op == "GEPADD") && n.hasConst) {
+				// Intermediate add — fold its constant into base_offset and
+				// continue walking back.
+				pat.base_offset += n.constVal * 0;  // intermediate "+k" pre-shift adds k*stride later
+				// Note: the +k here is BEFORE the shift, so it scales by
+				// stride. We don't yet know stride; record and apply after.
+				// To keep things sound for v1 we just remember any
+				// pre-shift add via base_offset adjustment computed once we
+				// know the stride.
+				int preShiftAdd = n.constVal;
+				int nextCur = -1;
+				for (auto &i : n.inputs) {
+					if (i.second) { nextCur = i.first; break; }
+					if (!i.second && pat.iv_extern_idx < 0) pat.iv_extern_idx = i.first;
+				}
+				if (nextCur < 0)
+					break;
+				// Defer applying preShiftAdd*stride until we find the
+				// shift; encode it on a stack.
+				// For simplicity: re-traverse from nextCur, accumulating
+				// pre-shift adds in a separate counter.
+				int preShiftAccum = preShiftAdd;
+				while (nextCur >= 0 && !seen.count(nextCur)) {
+					seen.insert(nextCur);
+					auto it2 = nodes.find(nextCur);
+					if (it2 == nodes.end()) break;
+					const AgiNode &n2 = it2->second;
+					if (n2.op == "GEPLEFTSHIFT" && n2.hasConst) {
+						pat.stride = 1 << n2.constVal;
+						pat.base_offset += preShiftAccum * pat.stride;
+						for (auto &i : n2.inputs)
+							if (!i.second) { pat.iv_extern_idx = i.first; break; }
+						ok = true;
+						break;
+					}
+					if (n2.op == "GEPSCALE" && n2.hasConst) {
+						pat.stride = n2.constVal;
+						pat.base_offset += preShiftAccum * pat.stride;
+						for (auto &i : n2.inputs)
+							if (!i.second) { pat.iv_extern_idx = i.first; break; }
+						ok = true;
+						break;
+					}
+					if ((n2.op == "ADD" || n2.op == "GEPADD") && n2.hasConst) {
+						preShiftAccum += n2.constVal;
+						int nn = -1;
+						for (auto &i : n2.inputs) {
+							if (i.second) { nn = i.first; break; }
+							else if (pat.iv_extern_idx < 0) pat.iv_extern_idx = i.first;
+						}
+						nextCur = nn;
+						continue;
+					}
+					break;
+				}
+				break;
+			}
+			break;
+		}
+		if (ok)
+			result[compute_ext] = pat;
+	}
+	return result;
+}
+
+} // anonymous namespace
+
+bool CGRAXMLCompile::CGRA::SolveLayout(DFG *dfg, const LayoutSolverOpts &opts,
+									   const std::string &agiSubgraphPath,
+									   const std::string &decisionPath)
+{
+	if (!opts.enable) return false;
+
+	auto patterns = parseAGISubgraph(agiSubgraphPath);
+	// NOTE: when ITER pruning or SIMD packing reindex the DFG between
+	// AGI sub-graph emission and the mapper, the externalIdx values in
+	// the sub-graph won't line up with the mapper-side DFGNode.idx. v1
+	// gracefully falls through to the no-pattern branch in that case,
+	// which fires the "missing affine pattern info" diagnostic. A future
+	// pass should either emit the AGI sub-graph after all reindex steps
+	// or carry an original-idx attribute that survives reindex.
+
+	struct LdStInfo {
+		int idx;
+		std::string op;
+		PE *pe;
+		Module *bank;
+		AffinePattern pat;
+		bool has_pat;
+		bool is_store;
+	};
+	auto isMemOpInclusive = [](const std::string &op) {
+		static const std::vector<std::string> prefixes = {
+			"LOAD", "STORE", "OLOAD", "OSTORE",
+			"VLOAD", "VSTORE", "VOLOAD", "VOSTORE"
+		};
+		for (auto &p : prefixes)
+			if (op.rfind(p, 0) == 0) return true;
+		return false;
+	};
+	// Canonical bank identity. CGRA modules are time-replicated by ParseCGRA
+	// (II copies, each with its own wrapper instance named "<base>-T<n>"), so
+	// the inner-SPM Module* pointer differs across time steps even though all
+	// instances represent the same physical bank. Canonicalize by walking to
+	// the wrapper parent and stripping the "-T<digits>" suffix.
+	auto bankKey = [](Module *bank) -> std::string {
+		if (!bank) return std::string();
+		Module *wrapper = (Module *)bank->getParent();
+		std::string n = wrapper ? wrapper->getName() : bank->getName();
+		size_t pos = n.rfind("-T");
+		if (pos != std::string::npos && pos + 2 < n.size()) {
+			bool all_digits = true;
+			for (size_t i = pos + 2; i < n.size(); ++i) {
+				if (!isdigit((unsigned char)n[i])) { all_digits = false; break; }
+			}
+			if (all_digits) n.resize(pos);
+		}
+		return n;
+	};
+	std::map<std::string, std::vector<LdStInfo>> perArray;
+	for (DFGNode &n : dfg->nodeList) {
+		if (!isMemOpInclusive(n.op)) continue;
+		if (n.base_pointer_name.empty() || n.base_pointer_name == "NOT_A_MEM_OP")
+			continue;
+		PE *pe = (n.rootDP) ? n.rootDP->getPE() : nullptr;
+		if (!pe) continue;
+		auto bit = memPE2Bank.find(pe);
+		Module *bank = (bit != memPE2Bank.end()) ? bit->second : nullptr;
+		LdStInfo info;
+		info.idx = n.idx;
+		info.op = n.op;
+		info.pe = pe;
+		info.bank = bank;
+		auto pit = patterns.find(n.idx);
+		info.has_pat = (pit != patterns.end());
+		if (info.has_pat) info.pat = pit->second;
+		info.is_store = (n.op.find("STORE") != std::string::npos);
+		perArray[n.base_pointer_name].push_back(info);
+	}
+
+	json decision;
+	decision["kernel"] = getCGRAName();
+	decision["replicate_data"] = opts.replicate_data;
+	decision["arrays"] = json::object();
+	decision["node_addr_delta"] = json::object();
+	// Snapshot pre-solver addresses so we can compute per-LD/ST address deltas
+	// for the trace remapper.
+	std::unordered_map<std::string,int> origAddr;
+	for (auto &kv : Variable2SPMAddr) origAddr[kv.first] = kv.second;
+	bool mutated = false;
+
+	// Per-bank flat-address range derived from existing preset Variable2SPMAddr.
+	// The simulator treats the address space as flat, so each bank physically
+	// occupies a contiguous chunk [bank_min, bank_top). We bump within that
+	// chunk when reassigning. Banks with no preset entries can't be inferred
+	// safely; we mark them as "unknown" and the per-array logic falls back to
+	// preserving the preset placement when the target bank is unknown.
+	// Keyed by canonical bank name (wrapper minus "-T<n>") so all time-step
+	// instances of one physical bank share one entry.
+	struct BankRange { int min_addr = INT_MAX; int top = 0; bool known = false; };
+	std::unordered_map<std::string, BankRange> bankRange;
+	for (auto &kv : Variable2SPMAddr) {
+		auto vit = Variable2SPM.find(kv.first);
+		Module *b = (vit != Variable2SPM.end()) ? vit->second : nullptr;
+		if (!b) continue;
+		std::string key = bankKey(b);
+		int sz = 0;
+		auto pit = dfg->pointer_sizes.find(kv.first);
+		if (pit != dfg->pointer_sizes.end()) sz = pit->second;
+		auto &r = bankRange[key];
+		r.known = true;
+		if (kv.second < r.min_addr) r.min_addr = kv.second;
+		int top = kv.second + std::max(sz, 1);
+		if (top > r.top) r.top = top;
+	}
+
+	for (auto &kv : perArray) {
+		const std::string &arr = kv.first;
+		auto &lds = kv.second;
+		json arrJ;
+		arrJ["ld_st_nodes"] = json::array();
+		// Dedup banks across time-replicated wrapper instances.
+		std::map<std::string, Module*> bankByKey;
+		bool any_store = false;
+		bool any_pat = false;
+		for (auto &li : lds) {
+			arrJ["ld_st_nodes"].push_back({{"idx", li.idx}, {"op", li.op}});
+			if (li.bank) {
+				std::string k = bankKey(li.bank);
+				if (!bankByKey.count(k)) bankByKey[k] = li.bank;
+			}
+			if (li.is_store) any_store = true;
+			if (li.has_pat) any_pat = true;
+		}
+		arrJ["banks"] = json::array();
+		for (auto &bk : bankByKey) arrJ["banks"].push_back(bk.first);
+		size_t banks_count = bankByKey.size();
+
+		int arr_size = 0;
+		auto sit = dfg->pointer_sizes.find(arr);
+		if (sit != dfg->pointer_sizes.end()) arr_size = sit->second;
+
+		auto assignBank = [&](Module *bank, const std::string &varName, int size) -> int {
+			// Returns -1 if the bank's flat-address range is unknown (no preset
+			// entries to anchor on); caller treats -1 as "skip this mutation".
+			std::string key = bankKey(bank);
+			auto rit = bankRange.find(key);
+			if (rit == bankRange.end() || !rit->second.known)
+				return -1;
+			BankRange &r = rit->second;
+			int addr = r.top;
+			r.top = addr + std::max(size, 1);
+			Variable2SPM[varName] = bank;
+			Variable2SPMAddr[varName] = addr;
+			return addr;
+		};
+
+		if (banks_count == 1) {
+			Module *target = bankByKey.begin()->second;
+			std::string targetKey = bankByKey.begin()->first;
+			auto cur = Variable2SPM.find(arr);
+			std::string curKey = (cur != Variable2SPM.end()) ? bankKey(cur->second) : std::string();
+			if (cur == Variable2SPM.end() || curKey != targetKey) {
+				int orig = origAddr.count(arr) ? origAddr[arr] : 0;
+				int addr = assignBank(target, arr, arr_size > 0 ? arr_size : 1);
+				if (addr < 0) {
+					arrJ["strategy"] = "fallback_unknown_bank_range";
+					arrJ["reason"] = "target bank has no preset entries; can't pick flat address";
+					std::cerr << "[LayoutSolver] array '" << arr
+							  << "' fallback: target bank's flat-address range unknown\n";
+				} else {
+					arrJ["strategy"] = "consolidate";
+					arrJ["bank"] = target->getName();
+					arrJ["base_addr"] = addr;
+					arrJ["orig_base_addr"] = orig;
+					int delta = addr - orig;
+					for (auto &li : lds)
+						decision["node_addr_delta"][std::to_string(li.idx)] = delta;
+					mutated = true;
+				}
+			} else {
+				arrJ["strategy"] = "already_consolidated";
+				arrJ["bank"] = target->getName();
+				arrJ["base_addr"] = Variable2SPMAddr[arr];
+			}
+		} else if (banks_count > 1 && any_pat && !any_store) {
+			// Tentative partition: each bank gets a partition variable
+			// "<arr>_part<i>" placed at a fresh local address. Strides
+			// must agree across LD/STs (cyclic partition). If patterns
+			// disagree, fall back.
+			int common_stride = -1;
+			bool ok = true;
+			for (auto &li : lds) {
+				if (!li.has_pat) { ok = false; break; }
+				if (common_stride < 0) common_stride = li.pat.stride;
+				else if (common_stride != li.pat.stride) { ok = false; break; }
+			}
+			if (ok && opts.replicate_data) {
+				int orig_addr = Variable2SPMAddr.count(arr) ? Variable2SPMAddr[arr] : 0;
+				int part_idx = 0;
+				std::unordered_map<std::string, int> replicaAddrByKey;
+				bool any_bank_unknown = false;
+				for (auto &bk : bankByKey) {
+					std::string partName = arr + "_repl" + std::to_string(part_idx++);
+					int addr = assignBank(bk.second, partName, arr_size > 0 ? arr_size : 1);
+					if (addr < 0) { any_bank_unknown = true; break; }
+					replicaAddrByKey[bk.first] = addr;
+					arrJ["per_bank_replicas"][bk.first] = {{"var", partName}, {"base_addr", addr}};
+				}
+				if (any_bank_unknown) {
+					arrJ["strategy"] = "fallback_unknown_bank_range";
+					arrJ["reason"] = "one or more target banks have no preset entries";
+					std::cerr << "[LayoutSolver] array '" << arr
+							  << "' replicate fallback: a target bank's flat-address range unknown\n";
+				} else {
+					arrJ["strategy"] = "replicate";
+					arrJ["per_lane"] = json::object();
+					for (auto &li : lds) {
+						int addr = replicaAddrByKey[bankKey(li.bank)];
+						perNodeAddrOverride[li.idx] = addr;
+						decision["node_addr_delta"][std::to_string(li.idx)] = addr - orig_addr;
+					}
+					arrJ["orig_base_addr"] = orig_addr;
+					mutated = true;
+				}
+			} else if (ok) {
+				// Cyclic partition by per-bank residue class.
+				int orig_addr = origAddr.count(arr) ? origAddr[arr] : 0;
+				int part_idx = 0;
+				std::unordered_map<std::string, std::pair<int,std::string>> partInfoByKey;
+				bool any_bank_unknown = false;
+				for (auto &bk : bankByKey) {
+					std::string partName = arr + "_part" + std::to_string(part_idx++);
+					int part_size = std::max(1, (arr_size + (int)banks_count - 1) / (int)banks_count);
+					int addr = assignBank(bk.second, partName, part_size);
+					if (addr < 0) { any_bank_unknown = true; break; }
+					partInfoByKey[bk.first] = {addr, partName};
+					arrJ["per_bank_partitions"][bk.first] = {
+						{"var", partName}, {"base_addr", addr}, {"part_size", part_size}};
+				}
+				if (any_bank_unknown) {
+					arrJ["strategy"] = "fallback_unknown_bank_range";
+					arrJ["reason"] = "one or more partition target banks have no preset entries";
+					std::cerr << "[LayoutSolver] array '" << arr
+							  << "' partition fallback: a target bank's flat-address range unknown\n";
+				} else {
+					arrJ["strategy"] = "partition";
+					arrJ["stride"] = common_stride;
+					for (auto &li : lds) {
+						int addr = partInfoByKey[bankKey(li.bank)].first;
+						perNodeAddrOverride[li.idx] = addr;
+						arrJ["per_node_addr"][std::to_string(li.idx)] = addr;
+						decision["node_addr_delta"][std::to_string(li.idx)] = addr - orig_addr;
+					}
+					arrJ["orig_base_addr"] = orig_addr;
+					mutated = true;
+				}
+			} else {
+				arrJ["strategy"] = "fallback_no_clean_pattern";
+				arrJ["reason"] = "LD/STs of '" + arr + "' span banks but affine patterns disagree";
+				std::cerr << "[LayoutSolver] " << arrJ["reason"].get<std::string>() << "\n";
+			}
+		} else if (banks_count > 1) {
+			arrJ["strategy"] = "fallback_conflict";
+			std::string why = any_store
+				? "RW array spans banks; replication unsafe"
+				: "missing affine pattern info";
+			arrJ["reason"] = why;
+			std::cerr << "[LayoutSolver] array '" << arr << "' fallback: " << why << "\n";
+		} else {
+			arrJ["strategy"] = "untouched";
+		}
+		decision["arrays"][arr] = arrJ;
+	}
+
+	std::ofstream df(decisionPath);
+	df << decision.dump(2) << "\n";
+	df.close();
+	std::cout << "[LayoutSolver] Wrote " << decisionPath
+			  << " (mutated=" << (mutated ? "true" : "false") << ")\n";
+	return mutated;
+}
+
+void CGRAXMLCompile::CGRA::WriteMemAllocTxt(const std::string &fileName)
+{
+	std::ofstream f(fileName);
+	f << "var_name,base_addr\n";
+	for (auto &kv : Variable2SPMAddr) {
+		f << kv.first << "," << kv.second << "\n";
+	}
+	f.close();
+	std::cout << "[LayoutSolver] Wrote " << fileName << "\n";
 }
 
 // by Yujie

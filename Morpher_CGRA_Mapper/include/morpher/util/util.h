@@ -49,6 +49,9 @@ struct arguments
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
 	std::string node_pin = ""; // pin a DFG node to a PE: "node_idx:X:Y"
+	int layout_solver = 0; // 1: enable post-mapping data layout solver
+	int replicate_data = 0; // 1: allow replicating read-only arrays across banks
+	std::string agi_subgraph = ""; // path to *_AGI_subgraph.xml (auto-discovered if empty)
 };
 
 inline arguments parse_arguments(int argn, char *argc[]){
@@ -87,6 +90,9 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
 				.add_option<std::string>("", "--node_pin", "pin a DFG node: 'node_idx:X:Y'", "")
+				.add_option<int>("", "--layout_solver", "enable post-mapping layout solver (1=on, 0=off)", 0)
+				.add_option<int>("", "--replicate_data", "allow replicating read-only arrays across banks (1=on, 0=off)", 0)
+				.add_option<std::string>("", "--agi_subgraph", "path to the AGI sub-graph XML (auto-discovered when empty)", "")
 			        .parse(argn, argc);
 
 	ret.dfg_filename = args.get_option<std::string>("--dfg");
@@ -117,6 +123,9 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.arch_name = args.get_option<std::string>("--arch_name");
 	ret.proximity_sort = args.get_option<int>("--proximity_sort") != 0;
 	ret.node_pin = args.get_option<std::string>("--node_pin");
+	ret.layout_solver = args.get_option<int>("--layout_solver");
+	ret.replicate_data = args.get_option<int>("--replicate_data");
+	ret.agi_subgraph = args.get_option<std::string>("--agi_subgraph");
 	assert(ret.dfg_filename!= "");
 	assert(ret.json_file_name!= "");
 
