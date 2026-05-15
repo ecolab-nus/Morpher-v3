@@ -135,6 +135,66 @@ def get_template_wrapper_modules(cgra_submods):
   return wrapper_names
 
 
+def _iter_cgra_instance_names(cgra_submods):
+  for submod_entry in cgra_submods:
+    if not isinstance(submod_entry, dict):
+      continue
+    mods = submod_entry.get("MODS")
+    if isinstance(mods, list):
+      for mod_entry in mods:
+        if isinstance(mod_entry, dict) and isinstance(mod_entry.get("name"), str):
+          yield mod_entry["name"]
+    for key, value in submod_entry.items():
+      if key in ("MODS", "CONNECTIONS"):
+        continue
+      if not isinstance(value, list):
+        continue
+      for instance_entry in value:
+        if isinstance(instance_entry, dict) and isinstance(instance_entry.get("name"), str):
+          yield instance_entry["name"]
+
+
+def validate_cgra_connection_instances(cgra):
+  cgra_submods = cgra.get("SUBMODS")
+  if not isinstance(cgra_submods, list):
+    return
+
+  instance_names = list(_iter_cgra_instance_names(cgra_submods))
+  duplicate_names = sorted(
+    name for name in set(instance_names) if instance_names.count(name) > 1
+  )
+  if duplicate_names:
+    raise RuntimeError(
+      "Template CGRA has duplicate explicit instance names: %s."
+      % ", ".join(duplicate_names)
+    )
+
+  instance_name_set = set(instance_names)
+  missing = []
+  connections = cgra.get("CONNECTIONS", {})
+  if not isinstance(connections, dict):
+    return
+
+  for src, dests in connections.items():
+    endpoints = [src]
+    if isinstance(dests, str):
+      endpoints.append(dests)
+    elif isinstance(dests, list):
+      endpoints.extend(dests)
+    for endpoint in endpoints:
+      if not isinstance(endpoint, str):
+        continue
+      module_name = endpoint.split(".", 1)[0]
+      if module_name != "THIS" and module_name not in instance_name_set:
+        missing.append(endpoint)
+
+  if missing:
+    raise RuntimeError(
+      "Template CGRA connections reference missing explicit instances: %s."
+      % ", ".join(sorted(set(missing)))
+    )
+
+
 def build_spm_wrapper_block(entries):
   data_layout = {}
   for var_name, addr in entries:
@@ -201,6 +261,7 @@ def main():
   bank_entries = split_mem_alloc_by_bank(mem_alloc, args.bank_size, args.bank_number)
 
   update_arch_with_mem_layout(arch_root, cgra_submods, bank_entries, args.bank_size)
+  validate_cgra_connection_instances(arch_root["CGRA"])
 
   print("Loaded %d mem_alloc entries from %s" % (len(mem_alloc), args.mem_alloc_file))
   for bank_idx, entries in enumerate(bank_entries):
