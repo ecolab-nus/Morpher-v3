@@ -35,6 +35,9 @@ public:
 	std::string op;
 	std::string base_pointer_name;
 	int gep_offset = -1;
+	bool simd_packed = false;
+	int simd_lanes = 1;
+	std::vector<int> simd_lane_sources;
 	std::vector<DFGNode *> parents;
 	std::vector<DFGNode *> phiParents;
 	std::vector<DFGNode *> recParents;

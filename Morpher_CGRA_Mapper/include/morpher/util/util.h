@@ -45,6 +45,7 @@ struct arguments
 	float sa_temp_max = 200.0f;
 	float sa_temp_min = 10.0f;
 	int sa_candidate_topk = 8;
+	int off_spm_mem_candidate_topk = 0; // 0=unbounded; cap PF memory candidates when SPM modelling is off
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
@@ -86,6 +87,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<std::string>("", "--sa_temp_max", "SA maximum temperature", "200")
 					.add_option<std::string>("", "--sa_temp_min", "SA minimum temperature", "10")
 					.add_option<int>("", "--sa_candidate_topk", "SA top-K candidate DPs sampled stochastically", 8)
+					.add_option<int>("", "--off_spm_mem_candidate_topk", "cap PathFinder memory candidates when spm_mode=off (0=unbounded)", 0)
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
@@ -118,6 +120,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.sa_temp_max = std::stof(args.get_option<std::string>("--sa_temp_max"));
 	ret.sa_temp_min = std::stof(args.get_option<std::string>("--sa_temp_min"));
 	ret.sa_candidate_topk = args.get_option<int>("--sa_candidate_topk");
+	ret.off_spm_mem_candidate_topk = args.get_option<int>("--off_spm_mem_candidate_topk");
 	ret.spm_mode = args.get_option<std::string>("--spm_mode");
 	ret.use_json = true;
 	ret.arch_name = args.get_option<std::string>("--arch_name");

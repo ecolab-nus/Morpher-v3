@@ -67,6 +67,7 @@ class SimdMapping:
   simd_groups: dict  # post_idx -> [pre_idx_lane0, ..., pre_idx_laneL-1]
   simd_splat_groups: frozenset = frozenset()  # post_idx values whose lane0 addr should be replicated.
   simd_reduced_store_groups: frozenset = frozenset()  # post_idx values collapsed from lane stores to one scalar trace.
+  simd_no_vector_word_groups: frozenset = frozenset()  # post_idx values that must stay per-lane in addr traces.
 
 
 def _read_wrapped_xml(path: Path) -> ET.Element:
@@ -206,6 +207,14 @@ def _is_oload_op(op: str | None) -> bool:
 
 def _is_load_op(op: str | None) -> bool:
   return op in {"LOAD", "LOADH", "LOADB", "OLOAD", "OLOADH", "OLOADB"}
+
+
+def _op_access_size(op: str | None) -> int:
+  if op and op.endswith("B"):
+    return 1
+  if op and op.endswith("H"):
+    return 2
+  return 4
 
 
 def _candidate_groups(
@@ -782,6 +791,7 @@ def pack_simd_xml(
   splat_reps = _splat_load_reps(packable)
   simd_splat_groups = set()
   simd_reduced_store_groups = set()
+  simd_no_vector_word_groups = set()
   for group_nodes in packable.values():
     rep_pre_idx = _node_idx(group_nodes[0])
     if rep_pre_idx not in reindex:
@@ -792,6 +802,9 @@ def pack_simd_xml(
       simd_splat_groups.add(rep_post_idx)
     if rep_pre_idx in vred_store_groups:
       simd_reduced_store_groups.add(rep_post_idx)
+    rep_op = _child_text(group_nodes[0], "OP")
+    if _is_store_op(rep_op) and group_nodes[0].attrib.get("simd_reduce_op"):
+      simd_no_vector_word_groups.add(rep_post_idx)
 
   for node in nodes:
     dfg.remove(node)
@@ -809,8 +822,8 @@ def pack_simd_xml(
     reindexed_nodes_by_old_idx[old_idx] = node
     if old_idx in vred_final_store_ids:
       node.attrib.pop("CONST", None)
-      node.set("simd_packed", "true")
-      node.set("simd_lanes", str(lanes))
+      node.attrib.pop("simd_packed", None)
+      node.attrib.pop("simd_lanes", None)
       node.set("simd_reduce_consumer", "true")
     if old_idx in rep_ids:
       if old_idx not in vred_store_groups:
@@ -827,6 +840,17 @@ def pack_simd_xml(
             op_elem.text = vector_op
         node.set("simd_packed", "true")
         node.set("simd_lanes", str(lanes))
+        if old_idx in pack_group_by_rep:
+          lane_sources = ",".join(str(_node_idx(n)) for n in pack_group_by_rep[old_idx])
+          node.set("simd_lane_sources", lane_sources)
+        if _is_load_op(scalar_op) or _is_store_op(scalar_op):
+          elem_bytes = _op_access_size(scalar_op)
+          node.set("simd_elem_bytes", str(elem_bytes))
+          node.set("simd_word_bytes", str(elem_bytes * lanes))
+          if _is_store_op(scalar_op) and node.attrib.get("simd_reduce_op"):
+            node.set("simd_addr_unit", "per_lane_reduction_store")
+          else:
+            node.set("simd_addr_unit", "vector_word_if_contiguous")
         if scalar_op in ASSOCIATIVE_REDUCTION_OPS:
           node.set("simd_reduce_op", scalar_op)
     _rewrite_refs(node, old_idx, "Inputs", "Input", replacement, reindex)
@@ -918,6 +942,7 @@ def pack_simd_xml(
     simd_groups=simd_groups,
     simd_splat_groups=frozenset(simd_splat_groups),
     simd_reduced_store_groups=frozenset(simd_reduced_store_groups),
+    simd_no_vector_word_groups=frozenset(simd_no_vector_word_groups),
   )
 
 
@@ -1138,6 +1163,58 @@ def _is_splat_lane_entries(entries: list[tuple[str, ...]]) -> bool:
   return all(entry[1:] == first[1:] for entry in entries[1:])
 
 
+def _contiguous_vector_word_entry(entries: list[tuple[str, ...]]) -> tuple[str, ...] | None:
+  """Collapse lane scalar addr-trace rows into one SIMD-word row when legal.
+
+  Addr-trace tuple layout is:
+    addr,size,is_store,base[,byte0,byte1,...]
+
+  We only collapse when every lane has the same scalar access size/store/base
+  and the lane addresses form one monotonic contiguous word.  Descending lane
+  order can come from scalar unroll order; the SIMD word is canonicalized to
+  the lowest byte address with bytes ordered by address.  This keeps gather,
+  scatter, and broadcast/splat accesses in the old per-lane representation.
+  """
+  if not entries:
+    return None
+  try:
+    size = int(entries[0][1])
+  except (IndexError, ValueError):
+    return None
+  if size <= 0:
+    return None
+  is_store = entries[0][2] if len(entries[0]) > 2 else ""
+  base = entries[0][3] if len(entries[0]) > 3 else ""
+  parsed: list[tuple[int, tuple[str, ...]]] = []
+  for lane, entry in enumerate(entries):
+    try:
+      addr = int(entry[0])
+      lane_size = int(entry[1])
+    except (IndexError, ValueError):
+      return None
+    if lane_size != size:
+      return None
+    if (entry[2] if len(entry) > 2 else "") != is_store:
+      return None
+    if (entry[3] if len(entry) > 3 else "") != base:
+      return None
+    parsed.append((addr, entry))
+  sorted_by_addr = sorted(parsed, key=lambda item: item[0])
+  for lane, (addr, _entry) in enumerate(sorted_by_addr):
+    if addr != sorted_by_addr[0][0] + lane * size:
+      return None
+  vector_bytes: list[str] = []
+  for _addr, entry in sorted_by_addr:
+    vector_bytes.extend(entry[4:])
+  return (
+    str(sorted_by_addr[0][0]),
+    str(size * len(entries)),
+    is_store,
+    base,
+    *vector_bytes,
+  )
+
+
 def remap_addr_trace(
   input_path: "str | Path",
   output_path: "str | Path",
@@ -1147,9 +1224,8 @@ def remap_addr_trace(
 
   The instrumented binary records one address per pre-packing DFG node.
   After SIMD packing, node indices change and L nodes are collapsed into
-  one packed node.  This rebuilds the trace so each packed node has L
-  consecutive addresses per loop iteration (one per lane), as the
-  artifact simulator expects.
+  one packed node. Contiguous lane addresses are collapsed to one SIMD-word
+  trace row; non-contiguous/splat cases remain per-lane rows.
   """
   entries_by_pre_idx: dict = {}
   with open(input_path, encoding="utf-8") as f:
@@ -1166,6 +1242,10 @@ def remap_addr_trace(
 
   entries_by_post_idx: dict = {}
   all_simd_pre: set = set()
+  # Packed-output reductions still use lane-addressed scratch stores. Until
+  # those stores are normalized to vector-word order too, preserve the original
+  # lane order for the whole trace.
+  disable_vector_word = bool(mapping.simd_no_vector_word_groups)
 
   for post_idx, pre_indices in mapping.simd_groups.items():
     all_simd_pre.update(pre_indices)
@@ -1201,6 +1281,10 @@ def remap_addr_trace(
       ]
       if _is_splat_lane_entries(current_entries):
         interleaved.extend([current_entries[0]] * len(current_entries))
+        continue
+      vector_entry = None if disable_vector_word else _contiguous_vector_word_entry(current_entries)
+      if vector_entry is not None:
+        interleaved.append(vector_entry)
         continue
       for lane_e in lane_entries:
         if i < len(lane_e):

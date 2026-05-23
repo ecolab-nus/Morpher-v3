@@ -1,13 +1,18 @@
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -396,6 +401,9 @@ bool expandIntegerAddReduction(PHINode *Phi, Loop *L, unsigned Lanes) {
                                  Updates[I], "morpher.red.combine");
 
   BackedgeValue->replaceAllUsesWith(Combined);
+  for (auto It = Chain.rbegin(); It != Chain.rend(); ++It)
+    if ((*It)->use_empty())
+      (*It)->eraseFromParent();
 
   unsigned TreeDepth = 0;
   for (unsigned N = Lanes; N > 1; N = (N + 1) / 2)
@@ -561,7 +569,97 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   return Changed;
 }
 
-bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
+bool sameArrayRowsKnownDifferent(Value *A, Value *B, Loop *L,
+                                 ScalarEvolution &SE) {
+  auto *GEPA = dyn_cast<GetElementPtrInst>(A);
+  auto *GEPB = dyn_cast<GetElementPtrInst>(B);
+  if (!GEPA || !GEPB)
+    return false;
+  if (GEPA->getPointerOperand() != GEPB->getPointerOperand())
+    return false;
+  if (GEPA->getSourceElementType() != GEPB->getSourceElementType())
+    return false;
+  if (!GEPA->getSourceElementType()->isArrayTy())
+    return false;
+
+  SmallVector<Value *, 4> IndicesA(GEPA->idx_begin(), GEPA->idx_end());
+  SmallVector<Value *, 4> IndicesB(GEPB->idx_begin(), GEPB->idx_end());
+  if (IndicesA.size() < 3 || IndicesB.size() < 3)
+    return false;
+
+  // For a normal 2D static array GEP, the first index is commonly the
+  // leading zero into the global object.  The row coordinate is the
+  // penultimate index, and the final index is the column coordinate.
+  Value *RowIndexA = IndicesA[IndicesA.size() - 2];
+  Value *RowIndexB = IndicesB[IndicesB.size() - 2];
+  const SCEV *RowA = SE.getSCEV(RowIndexA);
+  const SCEV *RowB = SE.getSCEV(RowIndexB);
+  if (SE.isKnownPredicate(CmpInst::ICMP_NE, RowA, RowB))
+    return true;
+
+  auto rowAddRecStartsAboveInvariant =
+      [&](const SCEV *MaybeRec, const SCEV *MaybeInvariant,
+          Value *MaybeRecIndex, Value *MaybeInvariantIndex) {
+        auto *AR = dyn_cast<SCEVAddRecExpr>(MaybeRec);
+        if (!AR || AR->getLoop() != L)
+          return false;
+        if (!L->isLoopInvariant(MaybeInvariantIndex) ||
+            L->isLoopInvariant(MaybeRecIndex))
+          return false;
+        const SCEV *Start = AR->getStart();
+        const SCEV *Step = AR->getStepRecurrence(SE);
+        return SE.isKnownPredicate(CmpInst::ICMP_SGT, Start, MaybeInvariant) &&
+               SE.isKnownPositive(Step);
+      };
+
+  return rowAddRecStartsAboveInvariant(RowA, RowB, RowIndexA, RowIndexB) ||
+         rowAddRecStartsAboveInvariant(RowB, RowA, RowIndexB, RowIndexA);
+}
+
+bool accessesKnownIndependent(Value *PtrA, MemoryLocation LocA, Value *PtrB,
+                              MemoryLocation LocB, Loop *L,
+                              ScalarEvolution &SE, AAResults &AA) {
+  if (AA.alias(LocA, LocB) == AliasResult::NoAlias)
+    return true;
+  return sameArrayRowsKnownDifferent(PtrA, PtrB, L, SE);
+}
+
+Value *findStoredPreheaderValue(Value *Ptr, Type *ValueType,
+                                BasicBlock *Preheader, AAResults &AA) {
+  Value *StoredValue = nullptr;
+  MemoryLocation PtrLoc = MemoryLocation::getBeforeOrAfter(Ptr);
+
+  for (Instruction &I : *Preheader) {
+    if (I.isTerminator())
+      break;
+
+    if (auto *SI = dyn_cast<StoreInst>(&I)) {
+      if (SI->isVolatile() || SI->isAtomic()) {
+        StoredValue = nullptr;
+        continue;
+      }
+
+      MemoryLocation StoreLoc = MemoryLocation::get(SI);
+      AliasResult AR = AA.alias(PtrLoc, StoreLoc);
+      if ((SI->getPointerOperand() == Ptr || AR == AliasResult::MustAlias) &&
+          SI->getValueOperand()->getType() == ValueType) {
+        StoredValue = SI->getValueOperand();
+        continue;
+      }
+      if (AR != AliasResult::NoAlias)
+        StoredValue = nullptr;
+      continue;
+    }
+
+    if (I.mayWriteToMemory())
+      StoredValue = nullptr;
+  }
+
+  return StoredValue;
+}
+
+bool scalarizeInvariantAddressReductionForLoop(Loop *L, ScalarEvolution &SE,
+                                               DominatorTree &DT, AAResults &AA) {
   BasicBlock *Header = L->getHeader();
   BasicBlock *Latch = L->getLoopLatch();
   BasicBlock *Preheader = L->getLoopPreheader();
@@ -586,7 +684,6 @@ bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
   };
 
   std::map<Value *, AccessGroup> Groups;
-  std::map<Value *, Value *> UnderlyingObj;
 
   for (Instruction &I : *Header) {
     if (auto *LI = dyn_cast<LoadInst>(&I)) {
@@ -604,7 +701,6 @@ bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
       if (Group.ValueType != Ty)
         continue;
       Group.Loads.push_back(LI);
-      UnderlyingObj[Ptr] = getUnderlyingObject(Ptr, 0);
       continue;
     }
     if (auto *SI = dyn_cast<StoreInst>(&I)) {
@@ -622,7 +718,6 @@ bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
       if (Group.ValueType != Ty)
         continue;
       Group.Stores.push_back(SI);
-      UnderlyingObj[Ptr] = getUnderlyingObject(Ptr, 0);
     }
   }
 
@@ -642,31 +737,65 @@ bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
     if (LoopStore->getValueOperand() == LoopLoad)
       continue;
 
-    Value *Obj = UnderlyingObj[Ptr];
+    MemoryLocation LoadLoc = MemoryLocation::get(LoopLoad);
+    MemoryLocation StoreLoc = MemoryLocation::get(LoopStore);
     bool ConflictingAccess = false;
-    for (Instruction &I : *Header) {
-      Value *OtherPtr = nullptr;
-      if (auto *LI = dyn_cast<LoadInst>(&I))
-        OtherPtr = LI->getPointerOperand();
-      else if (auto *SI = dyn_cast<StoreInst>(&I))
-        OtherPtr = SI->getPointerOperand();
-      if (!OtherPtr || OtherPtr == Ptr)
-        continue;
-      if (getUnderlyingObject(OtherPtr, 0) == Obj) {
-        ConflictingAccess = true;
-        break;
+    for (BasicBlock *BB : L->blocks()) {
+      for (Instruction &I : *BB) {
+        if (&I == LoopLoad || &I == LoopStore)
+          continue;
+        if (auto *LI = dyn_cast<LoadInst>(&I)) {
+          if (LI->isVolatile() || LI->isAtomic()) {
+            ConflictingAccess = true;
+            break;
+          }
+          MemoryLocation OtherLoc = MemoryLocation::get(LI);
+          Value *OtherPtr = LI->getPointerOperand();
+          if (!accessesKnownIndependent(Ptr, LoadLoc, OtherPtr, OtherLoc, L,
+                                        SE, AA) ||
+              !accessesKnownIndependent(Ptr, StoreLoc, OtherPtr, OtherLoc, L,
+                                        SE, AA)) {
+            ConflictingAccess = true;
+            break;
+          }
+          continue;
+        }
+        if (auto *SI = dyn_cast<StoreInst>(&I)) {
+          if (SI->isVolatile() || SI->isAtomic()) {
+            ConflictingAccess = true;
+            break;
+          }
+          MemoryLocation OtherLoc = MemoryLocation::get(SI);
+          Value *OtherPtr = SI->getPointerOperand();
+          if (!accessesKnownIndependent(Ptr, LoadLoc, OtherPtr, OtherLoc, L,
+                                        SE, AA) ||
+              !accessesKnownIndependent(Ptr, StoreLoc, OtherPtr, OtherLoc, L,
+                                        SE, AA)) {
+            ConflictingAccess = true;
+            break;
+          }
+        }
       }
+      if (ConflictingAccess)
+        break;
     }
     if (ConflictingAccess)
       continue;
 
     IRBuilder<> PreBuilder(Preheader->getTerminator());
-    LoadInst *InitLoad = PreBuilder.CreateLoad(Group.ValueType, Ptr,
-                                               Ptr->hasName() ? Ptr->getName() + ".morpher.reduc.init" : "morpher.reduc.init");
+    Value *InitValue =
+        findStoredPreheaderValue(Ptr, Group.ValueType, Preheader, AA);
+    if (!InitValue) {
+      LoadInst *InitLoad = PreBuilder.CreateLoad(
+          Group.ValueType, Ptr,
+          Ptr->hasName() ? Ptr->getName() + ".morpher.reduc.init"
+                         : "morpher.reduc.init");
+      InitValue = InitLoad;
+    }
 
     Instruction *PhiInsertPt = &*Header->getFirstInsertionPt();
     PHINode *AccPhi = PHINode::Create(Group.ValueType, 2, "morpher.reduc.acc", PhiInsertPt);
-    AccPhi->addIncoming(InitLoad, Preheader);
+    AccPhi->addIncoming(InitValue, Preheader);
 
     LoopLoad->replaceAllUsesWith(AccPhi);
 
@@ -687,6 +816,158 @@ bool scalarizeInvariantAddressReductionForLoop(Loop *L, DominatorTree &DT) {
     Changed = true;
   }
 
+  return Changed;
+}
+
+bool loopStoresMayAliasLoad(Loop *L, LoadInst *LI, AAResults &AA) {
+  MemoryLocation LoadLoc = MemoryLocation::get(LI);
+  for (BasicBlock *BB : L->blocks()) {
+    for (Instruction &I : *BB) {
+      auto *SI = dyn_cast<StoreInst>(&I);
+      if (!SI)
+        continue;
+      if (SI->isVolatile() || SI->isAtomic())
+        return true;
+      if (AA.alias(LoadLoc, MemoryLocation::get(SI)) != AliasResult::NoAlias)
+        return true;
+    }
+  }
+  return false;
+}
+
+Value *materializeInvariantValueInPreheader(
+    Value *V, Loop *L, AAResults &AA, IRBuilder<> &Builder,
+    std::map<Value *, Value *> &Materialized,
+    SmallPtrSetImpl<Value *> &Active) {
+  if (Materialized.count(V))
+    return Materialized[V];
+
+  auto *I = dyn_cast<Instruction>(V);
+  if (!I || !L->contains(I->getParent())) {
+    Materialized[V] = V;
+    return V;
+  }
+
+  if (Active.contains(V))
+    return nullptr;
+  Active.insert(V);
+
+  Value *Result = nullptr;
+  if (auto *GEP = dyn_cast<GetElementPtrInst>(I)) {
+    Value *Base = materializeInvariantValueInPreheader(
+        GEP->getPointerOperand(), L, AA, Builder, Materialized, Active);
+    if (Base) {
+      SmallVector<Value *, 4> Indices;
+      bool AllIndicesAvailable = true;
+      for (Value *Idx : GEP->indices()) {
+        Value *PreIdx = materializeInvariantValueInPreheader(
+            Idx, L, AA, Builder, Materialized, Active);
+        if (!PreIdx) {
+          AllIndicesAvailable = false;
+          break;
+        }
+        Indices.push_back(PreIdx);
+      }
+      if (AllIndicesAvailable)
+        Result = Builder.CreateInBoundsGEP(
+            GEP->getSourceElementType(), Base, Indices,
+            GEP->hasName() ? GEP->getName() + ".morpher.hoist"
+                           : "morpher.hoist.gep");
+    }
+  } else if (auto *BC = dyn_cast<BitCastInst>(I)) {
+    Value *Op = materializeInvariantValueInPreheader(
+        BC->getOperand(0), L, AA, Builder, Materialized, Active);
+    if (Op)
+      Result = Builder.CreateBitCast(Op, BC->getType(),
+                                     BC->hasName() ? BC->getName() + ".morpher.hoist"
+                                                   : "morpher.hoist.bitcast");
+  } else if (auto *LI = dyn_cast<LoadInst>(I)) {
+    if (!LI->isVolatile() && !LI->isAtomic() &&
+        !loopStoresMayAliasLoad(L, LI, AA)) {
+      Value *Ptr = materializeInvariantValueInPreheader(
+          LI->getPointerOperand(), L, AA, Builder, Materialized, Active);
+      if (Ptr) {
+        auto *Hoisted = Builder.CreateLoad(
+            LI->getType(), Ptr,
+            LI->hasName() ? LI->getName() + ".morpher.hoist"
+                          : "morpher.hoist.load");
+        Hoisted->setAlignment(LI->getAlign());
+        Result = Hoisted;
+      }
+    }
+  } else if (auto *BO = dyn_cast<BinaryOperator>(I)) {
+    Value *LHS = materializeInvariantValueInPreheader(
+        BO->getOperand(0), L, AA, Builder, Materialized, Active);
+    Value *RHS = materializeInvariantValueInPreheader(
+        BO->getOperand(1), L, AA, Builder, Materialized, Active);
+    if (LHS && RHS)
+      Result = Builder.CreateBinOp(
+          BO->getOpcode(), LHS, RHS,
+          BO->hasName() ? BO->getName() + ".morpher.hoist"
+                        : "morpher.hoist.binop");
+  } else if (auto *CI = dyn_cast<CastInst>(I)) {
+    Value *Op = materializeInvariantValueInPreheader(
+        CI->getOperand(0), L, AA, Builder, Materialized, Active);
+    if (Op)
+      Result = Builder.CreateCast(
+          CI->getOpcode(), Op, CI->getType(),
+          CI->hasName() ? CI->getName() + ".morpher.hoist"
+                        : "morpher.hoist.cast");
+  }
+
+  Active.erase(V);
+  if (Result)
+    Materialized[V] = Result;
+  return Result;
+}
+
+bool hoistLoopInvariantLoadsForUnroll(Loop *L, AAResults &AA) {
+  BasicBlock *Preheader = L->getLoopPreheader();
+  if (!Preheader)
+    return false;
+
+  SmallVector<LoadInst *, 16> Loads;
+  for (BasicBlock *BB : L->blocks())
+    for (Instruction &I : *BB)
+      if (auto *LI = dyn_cast<LoadInst>(&I))
+        Loads.push_back(LI);
+
+  if (Loads.empty())
+    return false;
+
+  bool Changed = false;
+  IRBuilder<> Builder(Preheader->getTerminator());
+  std::map<Value *, Value *> Materialized;
+  for (LoadInst *LI : Loads) {
+    if (!LI || LI->getParent() == nullptr)
+      continue;
+    if (LI->isVolatile() || LI->isAtomic())
+      continue;
+    if (!LI->getType()->isIntegerTy() && !LI->getType()->isPointerTy())
+      continue;
+    if (loopStoresMayAliasLoad(L, LI, AA))
+      continue;
+
+    SmallPtrSet<Value *, 16> Active;
+    Value *PrePtr = materializeInvariantValueInPreheader(
+        LI->getPointerOperand(), L, AA, Builder, Materialized, Active);
+    if (!PrePtr)
+      continue;
+
+    auto *Hoisted = Builder.CreateLoad(
+        LI->getType(), PrePtr,
+        LI->hasName() ? LI->getName() + ".morpher.inv"
+                      : "morpher.inv.load");
+    Hoisted->setAlignment(LI->getAlign());
+    LI->replaceAllUsesWith(Hoisted);
+    LI->eraseFromParent();
+    Changed = true;
+  }
+
+  if (Changed)
+    errs() << "Morpher invariant load hoist: function="
+           << L->getHeader()->getParent()->getName()
+           << " loop_header=" << L->getHeader()->getName() << "\n";
   return Changed;
 }
 
@@ -959,7 +1240,8 @@ bool flattenAnnotatedInnermostLoop(Function &F, LoopInfo &LI,
 }
 
 static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
-                                 DominatorTree &DT, AssumptionCache &AC) {
+                                 DominatorTree &DT, AssumptionCache &AC,
+                                 AAResults &AA) {
     if (MorpherUnrollFactor <= 1)
       return false;
 
@@ -974,11 +1256,14 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
     Loop *TargetLoop = nullptr;
     findAnnotatedLoopMarker(F, LI, TargetLoop);
     bool Changed = false;
-    scalarizeInvariantAddressReductionForLoop(TargetLoop, DT);
+    canonicalizeLoopForUnroll(TargetLoop, LI, SE, DT, AC);
+    if (MorpherReductionLanes > 1)
+      Changed |= scalarizeInvariantAddressReductionForLoop(TargetLoop, SE, DT, AA);
+    Changed |= hoistLoopInvariantLoadsForUnroll(TargetLoop, AA);
     Changed |= unrollAnnotatedLoop(TargetLoop, LI, SE, DT, AC);
 
-    expandReductionsForSIMD(TargetLoop, MorpherReductionLanes,
-                            MorpherReductionPolicy);
+    Changed |= expandReductionsForSIMD(TargetLoop, MorpherReductionLanes,
+                                       MorpherReductionPolicy);
     normalizePleaseMapMeMarkers(F, LI, TargetLoop);
 
     errs() << "Morpher loop unroll: function=" << F.getName()
@@ -996,8 +1281,9 @@ struct MorpherLoopUnrollPass : public PassInfoMixin<MorpherLoopUnrollPass> {
     ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
     DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
     AssumptionCache &AC = AM.getResult<AssumptionAnalysis>(F);
+    AAResults &AA = AM.getResult<AAManager>(F);
 
-    return runMorpherLoopUnroll(F, LI, SE, DT, AC)
+    return runMorpherLoopUnroll(F, LI, SE, DT, AC, AA)
                ? PreservedAnalyses::none()
                : PreservedAnalyses::all();
   }

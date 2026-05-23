@@ -1,84 +1,65 @@
 #include <stdio.h>
 
-/* Global pointers set by the outer CPU loop before each CGRA invocation.
-   Declared volatile so the DFG generator sees them as CGRA-visible memory. */
-volatile int *N;
-volatile int **A;
-volatile int **B;
-volatile int **C;
+#define NI 64
+#define NJ 64
+#define NK 64
+#define DATA_TYPE int
+#define POLYBENCH_2D(var, dim1, dim2, n1, n2) var[dim1][dim2]
+#define _PB_NI ni
+#define _PB_NJ nj
+#define _PB_NK nk
 
-/* CGRA kernel: inner k-loop for a single (i,j) pair.
-   i and j are resolved by the outer CPU loops (appear as undef in the IR). */
-__attribute__((noinline))
-int gemm() {
-    int i = 1;
-    int j = 1;
-    int k;
-    int n = *N;
-    int acc = C[i][j];
-    for (k = 1; k < n-1; k++) {
-        #ifdef CGRA_COMPILER
-        please_map_me();
-        #endif
-        acc += A[i][k] * B[k][j];
-    }
-    C[i][j] = acc;
-    return 0;
+static DATA_TYPE A[NI][NK];
+static DATA_TYPE B[NK][NJ];
+static DATA_TYPE C[NI][NJ];
+static DATA_TYPE alpha_storage = 3;
+static DATA_TYPE beta_storage = 5;
+
+static void init_array(void) {
+  int i, j;
+
+  for (i = 0; i < NI; i++)
+    for (j = 0; j < NK; j++)
+      A[i][j] = i + j + 1;
+
+  for (i = 0; i < NK; i++)
+    for (j = 0; j < NJ; j++)
+      B[i][j] = i - j + 3;
+
+  for (i = 0; i < NI; i++)
+    for (j = 0; j < NJ; j++)
+      C[i][j] = i * j + 1;
 }
 
-/* Test harness: set up data, run reference computation, compare with gemm(). */
-int main() {
-    int n_val = 256;
-    volatile int N_storage = n_val;
-    static int A_flat[65536];
-    static int B_flat[65536];
-    static int C_flat[65536];
-    static int C_ref[65536];
-    static volatile int *A_rows[256];
-    static volatile int *B_rows[266];
-    static volatile int *C_rows[256];
-    N = &N_storage;
+static void gemm(int ni, int nj, int nk, DATA_TYPE alpha, DATA_TYPE beta,
+                 DATA_TYPE POLYBENCH_2D(C, NI, NJ, ni, nj),
+                 DATA_TYPE POLYBENCH_2D(A, NI, NK, ni, nk),
+                 DATA_TYPE POLYBENCH_2D(B, NK, NJ, nk, nj)) {
+  int i, j, k;
 
-    /* Polybench-style contiguous allocation: A[i] = flat + i*n */
-    for (int ii = 0; ii < n_val; ii++) {
-        A_rows[ii] = (volatile int *)(A_flat + ii * n_val);
-        B_rows[ii] = (volatile int *)(B_flat + ii * n_val);
-        C_rows[ii] = (volatile int *)(C_flat + ii * n_val);
+  // BLAS parameters:
+  // TRANSA = 'N'
+  // TRANSB = 'N'
+  // => Form C := alpha * A * B + beta * C.
+#pragma scop
+  for (i = 0; i < _PB_NI; i++) {
+    for (j = 0; j < _PB_NJ; j++)
+      C[i][j] *= beta;
+    for (k = 0; k < _PB_NK; k++) {
+      DATA_TYPE aik = alpha * A[i][k];
+      for (j = 0; j < _PB_NJ; j++) {
+#ifdef CGRA_COMPILER
+        please_map_me();
+#endif
+        C[i][j] += aik * B[k][j];
+      }
     }
-    A = A_rows;  B = B_rows;  C = C_rows;
+  }
+#pragma endscop
+}
 
-    /* Initialize: A[i][k] = i+k+1, B[k][j] = k+j+1, C = 0 */
-    for (int ii = 0; ii < n_val; ii++)
-        for (int kk = 0; kk < n_val; kk++)
-            A_rows[ii][kk] = ii + kk + 1;
-    for (int kk = 0; kk < n_val; kk++)
-        for (int jj = 0; jj < n_val; jj++)
-            B_rows[kk][jj] = kk + jj + 1;
-
-    /* Reference: compute C_ref = A * B (inner k only, matching kernel range) */
-    for (int ii = 0; ii < n_val; ii++)
-        for (int jj = 0; jj < n_val; jj++)
-            for (int kk = 1; kk < n_val - 1; kk++)
-                C_ref[ii * n_val + jj] += (ii + kk + 1) * (kk + jj + 1);
-
-    /* Run gemm() (the CGRA kernel) for each (i,j) pair.
-       The kernel sees i,j as undef; the instrumented binary traces volatile
-       accesses which the simulator will verify against the CGRA binary. */
-    gemm();
-
-    /* Print both for manual comparison when running without CGRA */
-    printf("kernel kernel done. C[0..3][0..3]:\n");
-    for (int ii = 0; ii < 4; ii++) {
-        for (int jj = 0; jj < 4; jj++)
-            printf("%8d", (int)C_rows[ii][jj]);
-        printf("\n");
-    }
-    printf("\nReference C[0..3][0..3]:\n");
-    for (int ii = 0; ii < 4; ii++) {
-        for (int jj = 0; jj < 4; jj++)
-            printf("%8d", C_ref[ii * n_val + jj]);
-        printf("\n");
-    }
-
-    return 0;
+int main(void) {
+  init_array();
+  gemm(NI, NJ, NK, alpha_storage, beta_storage, C, A, B);
+  return C[0][0];
 }

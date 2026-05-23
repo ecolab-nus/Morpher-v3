@@ -1525,12 +1525,10 @@ struct AffinePattern {
 // Walk a *_AGI_subgraph.xml emitted by removeAGINodes and recover one
 // AffinePattern per compute-side LD/ST that the AGI tree drives. The compute
 // LD/ST is identified by the externalIdx attribute on AGI <Output> elements.
-// Chain shape we handle in v1:
-//   GEPADD(CONST=base)  -- Input localIdx --> GEPLEFTSHIFT(CONST=log2_stride)
-//                                              -- Input externalIdx --> IV (compute)
-// Anything more complex (e.g., 2D address with two adds) falls through and
-// stays absent from the result map; the solver treats those LD/STs as having
-// no recoverable affine pattern.
+// The parser accepts a narrow linear form:
+//   addr = constant + coefficient * one_external_index
+// through ADD/GEPADD, GEPLEFTSHIFT, GEPSCALE, and constant MUL/GEPMUL nodes.
+// Multi-index or nonlinear expressions are rejected rather than guessed.
 std::unordered_map<int, AffinePattern> parseAGISubgraph(const std::string &path)
 {
 	std::unordered_map<int, AffinePattern> result;
@@ -1581,6 +1579,111 @@ std::unordered_map<int, AffinePattern> parseAGISubgraph(const std::string &path)
 		nodes[localIdx] = std::move(an);
 	}
 
+	struct LinearExpr {
+		bool valid = true;
+		int base = 0;
+		int coeff = 0;
+		int ext = -1;
+	};
+
+	auto combineExternal = [](LinearExpr &expr, int ext, int coeff) {
+		if (coeff == 0)
+			return;
+		if (expr.ext < 0)
+			expr.ext = ext;
+		else if (expr.ext != ext)
+			expr.valid = false;
+		expr.coeff += coeff;
+	};
+
+	std::function<LinearExpr(int, std::unordered_set<int> &)> evalLocal =
+		[&](int localIdx, std::unordered_set<int> &active) -> LinearExpr {
+			auto it = nodes.find(localIdx);
+			if (it == nodes.end())
+				return LinearExpr{false, 0, 0, -1};
+			if (active.count(localIdx))
+				return LinearExpr{false, 0, 0, -1};
+			active.insert(localIdx);
+
+			const AgiNode &n = it->second;
+			LinearExpr expr;
+			if (n.op == "ADD" || n.op == "GEPADD") {
+				expr.base = n.hasConst ? n.constVal : 0;
+				for (auto &in : n.inputs) {
+					if (in.second) {
+						LinearExpr child = evalLocal(in.first, active);
+						if (!child.valid) {
+							expr.valid = false;
+							break;
+						}
+						expr.base += child.base;
+						combineExternal(expr, child.ext, child.coeff);
+					} else {
+						combineExternal(expr, in.first, 1);
+					}
+				}
+			} else if (n.op == "GEPLEFTSHIFT" && n.hasConst) {
+				int scale = 1 << n.constVal;
+				LinearExpr child;
+				bool sawInput = false;
+				for (auto &in : n.inputs) {
+					sawInput = true;
+					LinearExpr term;
+					if (in.second)
+						term = evalLocal(in.first, active);
+					else {
+						term.ext = in.first;
+						term.coeff = 1;
+					}
+					if (!term.valid) {
+						child.valid = false;
+						break;
+					}
+					child.base += term.base;
+					combineExternal(child, term.ext, term.coeff);
+				}
+				if (!sawInput)
+					child = LinearExpr{};
+				expr.valid = child.valid;
+				expr.base = child.base * scale;
+				expr.coeff = child.coeff * scale;
+				expr.ext = child.ext;
+			} else if ((n.op == "GEPSCALE" || n.op == "MUL" || n.op == "GEPMUL") &&
+					   n.hasConst) {
+				LinearExpr child;
+				bool sawInput = false;
+				for (auto &in : n.inputs) {
+					sawInput = true;
+					LinearExpr term;
+					if (in.second)
+						term = evalLocal(in.first, active);
+					else {
+						term.ext = in.first;
+						term.coeff = 1;
+					}
+					if (!term.valid) {
+						child.valid = false;
+						break;
+					}
+					child.base += term.base;
+					combineExternal(child, term.ext, term.coeff);
+				}
+				if (!sawInput)
+					child = LinearExpr{};
+				expr.valid = child.valid;
+				expr.base = child.base * n.constVal;
+				expr.coeff = child.coeff * n.constVal;
+				expr.ext = child.ext;
+			} else if (n.hasConst && n.inputs.empty()) {
+				expr.base = n.constVal;
+			} else {
+				expr.valid = false;
+			}
+
+			active.erase(localIdx);
+			return expr;
+		};
+
 	for (const auto &kv : nodes) {
 		const AgiNode &add = kv.second;
 		// Expect a GEPADD at the boundary: AGI op encoded as "ADD" or
@@ -1595,102 +1698,35 @@ std::unordered_map<int, AffinePattern> parseAGISubgraph(const std::string &path)
 		}
 		if (compute_ext < 0)
 			continue;
-		// Walk the AGI chain backward from this GEPADD. Accept intermediate
-		// ADD nodes that contribute a constant offset (e.g. the "i+1" add
-		// LLVM emits for unrolled accesses). Stop at the first GEPLEFTSHIFT
-		// or GEPSCALE node — that gives the stride. Whatever externalIdx
-		// inputs we see along the way (typically the IV) become the
-		// candidate iv_extern_idx.
-		AffinePattern pat;
-		pat.base_offset = add.constVal;
-		bool ok = false;
-		int cur = -1;
+
+		LinearExpr expr;
+		expr.base = add.constVal;
 		for (auto &i : add.inputs) {
-			if (i.second) { cur = i.first; break; }
+			LinearExpr term;
+			if (i.second) {
+				std::unordered_set<int> active;
+				term = evalLocal(i.first, active);
+			} else {
+				term.ext = i.first;
+				term.coeff = 1;
+			}
+			if (!term.valid) {
+				expr.valid = false;
+				break;
+			}
+			expr.base += term.base;
+			combineExternal(expr, term.ext, term.coeff);
+			if (!expr.valid)
+				break;
 		}
-		std::unordered_set<int> seen;
-		while (cur >= 0 && !seen.count(cur)) {
-			seen.insert(cur);
-			auto nit = nodes.find(cur);
-			if (nit == nodes.end()) break;
-			const AgiNode &n = nit->second;
-			if (n.op == "GEPLEFTSHIFT" && n.hasConst) {
-				pat.stride = 1 << n.constVal;
-				for (auto &i : n.inputs) {
-					if (!i.second) { pat.iv_extern_idx = i.first; break; }
-				}
-				ok = true;
-				break;
-			}
-			if (n.op == "GEPSCALE" && n.hasConst) {
-				pat.stride = n.constVal;
-				for (auto &i : n.inputs) {
-					if (!i.second) { pat.iv_extern_idx = i.first; break; }
-				}
-				ok = true;
-				break;
-			}
-			if ((n.op == "ADD" || n.op == "GEPADD") && n.hasConst) {
-				// Intermediate add — fold its constant into base_offset and
-				// continue walking back.
-				pat.base_offset += n.constVal * 0;  // intermediate "+k" pre-shift adds k*stride later
-				// Note: the +k here is BEFORE the shift, so it scales by
-				// stride. We don't yet know stride; record and apply after.
-				// To keep things sound for v1 we just remember any
-				// pre-shift add via base_offset adjustment computed once we
-				// know the stride.
-				int preShiftAdd = n.constVal;
-				int nextCur = -1;
-				for (auto &i : n.inputs) {
-					if (i.second) { nextCur = i.first; break; }
-					if (!i.second && pat.iv_extern_idx < 0) pat.iv_extern_idx = i.first;
-				}
-				if (nextCur < 0)
-					break;
-				// Defer applying preShiftAdd*stride until we find the
-				// shift; encode it on a stack.
-				// For simplicity: re-traverse from nextCur, accumulating
-				// pre-shift adds in a separate counter.
-				int preShiftAccum = preShiftAdd;
-				while (nextCur >= 0 && !seen.count(nextCur)) {
-					seen.insert(nextCur);
-					auto it2 = nodes.find(nextCur);
-					if (it2 == nodes.end()) break;
-					const AgiNode &n2 = it2->second;
-					if (n2.op == "GEPLEFTSHIFT" && n2.hasConst) {
-						pat.stride = 1 << n2.constVal;
-						pat.base_offset += preShiftAccum * pat.stride;
-						for (auto &i : n2.inputs)
-							if (!i.second) { pat.iv_extern_idx = i.first; break; }
-						ok = true;
-						break;
-					}
-					if (n2.op == "GEPSCALE" && n2.hasConst) {
-						pat.stride = n2.constVal;
-						pat.base_offset += preShiftAccum * pat.stride;
-						for (auto &i : n2.inputs)
-							if (!i.second) { pat.iv_extern_idx = i.first; break; }
-						ok = true;
-						break;
-					}
-					if ((n2.op == "ADD" || n2.op == "GEPADD") && n2.hasConst) {
-						preShiftAccum += n2.constVal;
-						int nn = -1;
-						for (auto &i : n2.inputs) {
-							if (i.second) { nn = i.first; break; }
-							else if (pat.iv_extern_idx < 0) pat.iv_extern_idx = i.first;
-						}
-						nextCur = nn;
-						continue;
-					}
-					break;
-				}
-				break;
-			}
-			break;
-		}
-		if (ok)
+
+		if (expr.valid && expr.ext >= 0 && expr.coeff != 0) {
+			AffinePattern pat;
+			pat.base_offset = expr.base;
+			pat.stride = expr.coeff;
+			pat.iv_extern_idx = expr.ext;
 			result[compute_ext] = pat;
+		}
 	}
 	return result;
 }
@@ -1704,13 +1740,8 @@ bool CGRAXMLCompile::CGRA::SolveLayout(DFG *dfg, const LayoutSolverOpts &opts,
 	if (!opts.enable) return false;
 
 	auto patterns = parseAGISubgraph(agiSubgraphPath);
-	// NOTE: when ITER pruning or SIMD packing reindex the DFG between
-	// AGI sub-graph emission and the mapper, the externalIdx values in
-	// the sub-graph won't line up with the mapper-side DFGNode.idx. v1
-	// gracefully falls through to the no-pattern branch in that case,
-	// which fires the "missing affine pattern info" diagnostic. A future
-	// pass should either emit the AGI sub-graph after all reindex steps
-	// or carry an original-idx attribute that survives reindex.
+	// The runner remaps AGI externalIdx values after SIMD packing / pruning so
+	// these keys should refer to the mapper-side DFGNode.idx namespace.
 
 	struct LdStInfo {
 		int idx;
@@ -1816,7 +1847,15 @@ bool CGRAXMLCompile::CGRA::SolveLayout(DFG *dfg, const LayoutSolverOpts &opts,
 		bool any_store = false;
 		bool any_pat = false;
 		for (auto &li : lds) {
-			arrJ["ld_st_nodes"].push_back({{"idx", li.idx}, {"op", li.op}});
+			json nodeJ = {{"idx", li.idx}, {"op", li.op}};
+			if (li.has_pat) {
+				nodeJ["affine"] = {
+					{"base_offset", li.pat.base_offset},
+					{"stride", li.pat.stride},
+					{"iv_external_idx", li.pat.iv_extern_idx},
+				};
+			}
+			arrJ["ld_st_nodes"].push_back(nodeJ);
 			if (li.bank) {
 				std::string k = bankKey(li.bank);
 				if (!bankByKey.count(k)) bankByKey[k] = li.bank;

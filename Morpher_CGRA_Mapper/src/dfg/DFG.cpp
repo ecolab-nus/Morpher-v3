@@ -100,6 +100,29 @@ bool DFG::parseXML(std::string fileName)
 
 		output_ss << ",idx=" << idx << ",";
 		currDFGNode.idx = idx;
+		const char *simdPacked = nullptr;
+		if (node->QueryStringAttribute("simd_packed", &simdPacked) == XML_SUCCESS &&
+			std::string(simdPacked) == "true")
+		{
+			currDFGNode.simd_packed = true;
+		}
+		int simdLanes = 1;
+		if (node->QueryIntAttribute("simd_lanes", &simdLanes) == XML_SUCCESS)
+		{
+			currDFGNode.simd_lanes = simdLanes;
+		}
+		const char *simdLaneSources = nullptr;
+		if (node->QueryStringAttribute("simd_lane_sources", &simdLaneSources) == XML_SUCCESS &&
+			simdLaneSources)
+		{
+			std::stringstream ss(simdLaneSources);
+			std::string item;
+			while (std::getline(ss, item, ','))
+			{
+				if (!item.empty())
+					currDFGNode.simd_lane_sources.push_back(std::stoi(item));
+			}
+		}
 
 		XMLElement *op = node->FirstChildElement("OP");
 		const char *opName = op->GetText();

@@ -4,18 +4,18 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define row_size   8
-#define col_size   8
+#define row_size   16
+#define col_size   16
 #define N          (row_size * col_size)
-#define block_size 2
+#define block_size 16
 
-float m1[N], m2[N], prod[N];
+int m1[N], m2[N], prod[N];
 
 __attribute__((noinline))
 void gemm_blocked() {
     int i, k, j, jj, kk;
     int i_row, k_row;
-    float temp_x, mul;
+    int temp_x, mul;
 
     for (jj = 0; jj < row_size; jj += block_size) {
         for (kk = 0; kk < row_size; kk += block_size) {
@@ -40,11 +40,11 @@ void gemm_blocked() {
 int main() {
     int i;
     for (i = 0; i < N; i++) {
-        m1[i] = (float)(i % row_size + 1);
-        m2[i] = (float)(i / row_size + 1);
-        prod[i] = 0.0;
+        m1[i] = i % row_size + 1;
+        m2[i] = i / row_size + 1;
+        prod[i] = 0;
     }
     gemm_blocked();
-    printf("prod[0]=%.2f\n", (double)prod[0]);
+    printf("prod[0]=%d\n", prod[0]);
     return 0;
 }

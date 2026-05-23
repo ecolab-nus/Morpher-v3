@@ -94,6 +94,8 @@ def build_mapper_commands(context):
     str(config.sa_temp_min),
     "--sa_candidate_topk",
     str(config.sa_candidate_topk),
+    "--off_spm_mem_candidate_topk",
+    str(config.off_spm_mem_candidate_topk),
     "--spm_mode",
     str(config.spm_mode),
     "--proximity_sort",

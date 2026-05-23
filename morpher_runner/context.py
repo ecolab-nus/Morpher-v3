@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -72,6 +73,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 120.0,
     "sa_temp_min": 20.0,
     "sa_candidate_topk": 4,
+    "off_spm_mem_candidate_topk": "auto_fast",
     "proximity_sort": True,
   },
   "balanced": {
@@ -88,6 +90,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 200.0,
     "sa_temp_min": 10.0,
     "sa_candidate_topk": 8,
+    "off_spm_mem_candidate_topk": "auto_balanced",
     "proximity_sort": True,
   },
   "quality": {
@@ -104,6 +107,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 250.0,
     "sa_temp_min": 5.0,
     "sa_candidate_topk": 12,
+    "off_spm_mem_candidate_topk": 0,
     "proximity_sort": True,
   },
   "exhaust": {
@@ -120,6 +124,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 300.0,
     "sa_temp_min": 3.0,
     "sa_candidate_topk": 16,
+    "off_spm_mem_candidate_topk": 0,
     "proximity_sort": False,
   },
 }
@@ -148,6 +153,7 @@ def _parse_mapper_preset(config_dict):
     "sa_temp_max",
     "sa_temp_min",
     "sa_candidate_topk",
+    "off_spm_mem_candidate_topk",
     "proximity_sort",
   ]
   used_overrides = []
@@ -276,6 +282,115 @@ def infer_arch_spm_config(morpher_home, mapper_home, arch_template_json):
     return None, bank_size
 
   return len(wrapper_names), bank_size
+
+
+def _module_supports_memory_ops(arch_root, module_name, seen=None):
+  if seen is None:
+    seen = set()
+  if module_name in seen:
+    return False
+  seen.add(module_name)
+
+  module = arch_root.get(module_name)
+  if not isinstance(module, dict):
+    return False
+
+  ops = module.get("OPS")
+  if isinstance(ops, dict) and any(str(op).startswith("LOAD") for op in ops.keys()):
+    return True
+
+  submods = module.get("SUBMODS")
+  if isinstance(submods, dict):
+    for submod_name in submods.keys():
+      if _module_supports_memory_ops(arch_root, submod_name, seen):
+        return True
+  if isinstance(submods, list):
+    for entry in submods:
+      if not isinstance(entry, dict):
+        continue
+      mod_name = entry.get("MOD")
+      if isinstance(mod_name, str) and _module_supports_memory_ops(arch_root, mod_name, seen):
+        return True
+      for key in entry.keys():
+        if key not in ("MOD", "name", "X", "Y", "DIMS", "PATTERN", "CONNECTIONS", "MODS"):
+          if _module_supports_memory_ops(arch_root, key, seen):
+            return True
+      mods = entry.get("MODS")
+      if isinstance(mods, list):
+        for mod_entry in mods:
+          if isinstance(mod_entry, dict):
+            mod_name = mod_entry.get("MOD")
+            if isinstance(mod_name, str) and _module_supports_memory_ops(arch_root, mod_name, seen):
+              return True
+  return False
+
+
+def infer_arch_mem_pe_count(morpher_home, mapper_home, arch_template_json):
+  arch_path = resolve_arch_template_path(morpher_home, mapper_home, arch_template_json)
+  with open(arch_path, "r", encoding="utf-8") as stream:
+    arch_data = json.load(stream)
+
+  arch_root = arch_data.get("ARCH")
+  if not isinstance(arch_root, dict):
+    return None
+  cgra_root = arch_root.get("CGRA")
+  if not isinstance(cgra_root, dict):
+    return None
+  cgra_submods = cgra_root.get("SUBMODS")
+  if not isinstance(cgra_submods, list):
+    return None
+
+  count = 0
+  for entry in cgra_submods:
+    if not isinstance(entry, dict):
+      continue
+    mods = entry.get("MODS")
+    if isinstance(mods, list):
+      for mod_entry in mods:
+        if not isinstance(mod_entry, dict):
+          continue
+        mod_name = mod_entry.get("MOD")
+        if isinstance(mod_name, str) and _module_supports_memory_ops(arch_root, mod_name):
+          count += 1
+      continue
+
+    mod_name = entry.get("MOD")
+    if isinstance(mod_name, str) and _module_supports_memory_ops(arch_root, mod_name):
+      count += 1
+      continue
+
+    for key in entry.keys():
+      if key not in ("name", "X", "Y", "DIMS", "PATTERN", "CONNECTIONS"):
+        if _module_supports_memory_ops(arch_root, key):
+          count += 1
+
+  return count if count > 0 else None
+
+
+def _resolve_off_spm_mem_candidate_topk(value, mem_pe_count):
+  if isinstance(value, str):
+    policy = value.strip().lower().replace("-", "_")
+    if policy in ("", "0", "none", "off", "unbounded"):
+      return 0
+    if mem_pe_count is None or mem_pe_count < 1:
+      raise RuntimeError(
+        "off_spm_mem_candidate_topk=%s requires an architecture JSON with inferable memory PE count."
+        % value
+      )
+    if policy == "auto_fast":
+      return max(1, int(math.ceil((2.0 * mem_pe_count) / 3.0)))
+    if policy in ("auto_balanced", "auto_mempes", "auto_mem_pes"):
+      return int(mem_pe_count)
+    raise RuntimeError(
+      "off_spm_mem_candidate_topk must be an integer or one of: auto_fast, auto_balanced, 0."
+    )
+  try:
+    topk = int(value)
+  except (TypeError, ValueError):
+    raise RuntimeError("off_spm_mem_candidate_topk must be an integer or auto policy string.")
+  if topk < 0:
+    raise RuntimeError("off_spm_mem_candidate_topk must be >= 0.")
+  return topk
 
 
 VECTOR_OP_PREFIX = "V"
@@ -439,6 +554,7 @@ class RunnerConfig:
   sa_temp_max: float
   sa_temp_min: float
   sa_candidate_topk: int
+  off_spm_mem_candidate_topk: int
   enable_simulation: bool
   validation_mode: str
   spm_mode: str
@@ -536,6 +652,7 @@ class RunnerConfig:
     inferred_ydim = None
     inferred_numberofbanks = None
     inferred_banksize = None
+    inferred_mem_pes = None
     arch_simd = ArchSimdConfig(False, 1, False, frozenset())
     try:
       inferred_xdim, inferred_ydim = infer_arch_dims(morpher_home, mapper_home, arch_template_json)
@@ -551,6 +668,7 @@ class RunnerConfig:
     except RuntimeError:
       if "numberofbanks" not in config_dict or "banksize" not in config_dict:
         raise
+    inferred_mem_pes = infer_arch_mem_pe_count(morpher_home, mapper_home, arch_template_json)
     arch_simd = infer_arch_simd_config(morpher_home, mapper_home, arch_template_json)
 
     xdim = config_dict.get("xdim", inferred_xdim)
@@ -618,6 +736,10 @@ class RunnerConfig:
       sa_temp_max=mapper_tuning["sa_temp_max"],
       sa_temp_min=mapper_tuning["sa_temp_min"],
       sa_candidate_topk=mapper_tuning["sa_candidate_topk"],
+      off_spm_mem_candidate_topk=_resolve_off_spm_mem_candidate_topk(
+        mapper_tuning.get("off_spm_mem_candidate_topk", 0),
+        inferred_mem_pes,
+      ),
       enable_simulation=config_dict.get("enable_simulation", True),
       validation_mode=validation_mode,
       spm_mode=config_dict.get("spm_mode", "on"),

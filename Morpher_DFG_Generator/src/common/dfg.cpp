@@ -6390,28 +6390,34 @@ int DFG::nameNodes()
 					LLVM_DEBUG(dbgs() << "GT\n");
 					node->setFinalIns(CGT);
 					break;
-				case CmpInst::ICMP_EQ:
-					LLVM_DEBUG(dbgs() << "EQ\n");
-					node->setFinalIns(CMP);
-					break;
-				default:
-					assert(false);
-					break;
+					case CmpInst::ICMP_EQ:
+						LLVM_DEBUG(dbgs() << "EQ\n");
+						node->setFinalIns(CMP);
+						break;
+					default:
+						DFG_CHECK(false, "nameNodes",
+							"unsupported integer comparison predicate " +
+							std::to_string(CI->getPredicate()) +
+							" for node " + std::to_string(node->getIdx()));
+						break;
+					}
 				}
-			}
-			break;
+				break;
 			case Instruction::FCmp:
 				LLVM_DEBUG(dbgs() << "NameNodes::Node=" << node->getIdx() << ",FCMP\n");
 				node->setFinalIns(CMP);
 				//2019 work
 				//					assert(false);
 				break;
-			default:
-				LLVM_DEBUG(dbgs() << "The Op :" << node->getNode()->getOpcodeName() << " that I thought would not be in the compiled code\n");
-				LLVM_DEBUG(node->getNode()->dump());
-				assert(false);
-				break;
-			}
+				default:
+					LLVM_DEBUG(dbgs() << "The Op :" << node->getNode()->getOpcodeName() << " that I thought would not be in the compiled code\n");
+					LLVM_DEBUG(node->getNode()->dump());
+					DFG_CHECK(false, "nameNodes",
+						"unsupported LLVM opcode '" +
+						std::string(node->getNode()->getOpcodeName()) +
+						"' for node " + std::to_string(node->getIdx()));
+					break;
+				}
 		}
 		else
 		{

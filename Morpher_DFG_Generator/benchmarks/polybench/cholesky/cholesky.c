@@ -1,51 +1,39 @@
 #include <stdio.h>
 
-volatile int *N;
-volatile int *a;
-volatile int *b;
-volatile int **A;
-volatile int *p;
+#define N 64
 
-int *c;
+static int A[N][N];
 
-int cholesky()
-{
-    int i;
-    int n = *N;
-    int _PB_N, x = 1000, j, k;
-
-    int sum = 0;
-    x = 100;
-    A[0][0] = 1;
-    for (k = 1; k < n - 1; k++)
-    {
-        #ifdef CGRA_COMPILER
-           please_map_me();
-        #endif
-        x = x - A[j][k] * A[i][k];
-    }
-
-    // for (i = 0; i < _PB_N; ++i)
-    // {
-    //     x = A[i][i];
-    //     for (j = 0; j <= i - 1; ++j)
-    //         x = x - A[i][j] * A[i][j];
-    //     p[i] = x;
-    //     for (j = i + 1; j < _PB_N; ++j)
-    //     {
-    //         x = A[i][j];
-    //         for (k = 0; k <= i - 1; ++k)
-    //         {
-    //             x = x - A[j][k] * A[i][k];
-    //         }
-    //         A[j][i] = x * p[i];
-    //     }
-    // }
-
-    return x;
+static void init_array(void) {
+  int i, j;
+  for (i = 0; i < N; i++)
+    for (j = 0; j < N; j++)
+      A[i][j] = (i == j) ? (N + i + 1) : ((i + j) % 7 + 1);
 }
 
-int main() {
-    cholesky();
-    return 0;
+static int cholesky(void) {
+  int i, j, k;
+
+#pragma scop
+  for (i = 0; i < N; i++) {
+    for (j = 0; j < i; j++) {
+      for (k = 0; k < j; k++) {
+#ifdef CGRA_COMPILER
+        please_map_me();
+#endif
+        A[i][j] -= A[i][k] * A[j][k];
+      }
+      A[i][j] /= A[j][j];
+    }
+    for (k = 0; k < i; k++)
+      A[i][i] -= A[i][k] * A[i][k];
+  }
+#pragma endscop
+
+  return A[N - 1][N - 1];
+}
+
+int main(void) {
+  init_array();
+  return cholesky();
 }

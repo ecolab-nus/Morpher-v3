@@ -734,6 +734,45 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	bool changed = false;
 	LOG(ROUTE)<< "modifyMaxLatCandDest\n";
 	candidateDests = modifyMaxLatCandDest(minLatDests, node, changed);
+	if (!cgra->is_spm_modelled && checkMEMOp(node->op) &&
+	    offSpmMemCandidateTopK > 0 &&
+	    candidateDests.size() > static_cast<size_t>(offSpmMemCandidateTopK))
+	{
+		int cx = 0, cy = 0, n = 0;
+		for (auto &kv : possibleStarts)
+		{
+			DFGNode *par = kv.first;
+			if (par->rootDP)
+			{
+				cx += par->rootDP->getPE()->X;
+				cy += par->rootDP->getPE()->Y;
+				n++;
+			}
+		}
+		if (n > 0)
+		{
+			cx /= n;
+			cy /= n;
+		}
+		std::sort(candidateDests.begin(), candidateDests.end(),
+		          [&](DataPath *a, DataPath *b) {
+			          int lata = minLatDests[a];
+			          int latb = minLatDests[b];
+			          if (lata != latb)
+				          return lata < latb;
+			          if (n > 0)
+			          {
+				          int da = std::abs(a->getPE()->X - cx) + std::abs(a->getPE()->Y - cy);
+				          int db = std::abs(b->getPE()->X - cx) + std::abs(b->getPE()->Y - cy);
+				          if (da != db)
+					          return da < db;
+			          }
+			          return a->getFullName() < b->getFullName();
+		          });
+		candidateDests.resize(static_cast<size_t>(offSpmMemCandidateTopK));
+		LOG(ROUTE) << "Capped off-SPM memory candidates for node " << node->idx
+		           << " to " << candidateDests.size() << "\n";
+	}
 	LOG(ROUTE)<< "Candidate Dests = " << candidateDests.size() << "\n";
 	int ii = this->cgra->get_t_max();
 

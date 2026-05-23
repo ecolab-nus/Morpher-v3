@@ -280,6 +280,7 @@ public:
 	bool enableMutexPaths = false;
 	int backTrackLimit = 4;
 	bool proximitySort = true;
+	int offSpmMemCandidateTopK = 0;
 
 	int upperboundII = 1000000;
 	int upperboundIter = -1;

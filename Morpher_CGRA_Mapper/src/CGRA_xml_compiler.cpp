@@ -59,6 +59,7 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "sa_temp_max=" << args.sa_temp_max << "\n";
 	std::cout << "sa_temp_min=" << args.sa_temp_min << "\n";
 	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n";
+	std::cout << "off_spm_mem_candidate_topk=" << args.off_spm_mem_candidate_topk << "\n";
 	std::cout << "spm_mode=" << args.spm_mode << "\n";
 	std::cout << "arch_name=" << args.arch_name << "\n\n";
 	std::cout << std::flush;
@@ -228,6 +229,8 @@ int main(int argn, char *argc[])
 	sa_mapper->backTrackLimit = args.backtracklimit;
 	pf_mapper->proximitySort = args.proximity_sort;
 	sa_mapper->proximitySort = args.proximity_sort;
+	pf_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;
+	sa_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;
 
 	//cout << "json_file_name = " << json_file_name << "\n";
 	// exit(EXIT_SUCCESS);
@@ -555,13 +558,13 @@ int main(int argn, char *argc[])
 			assert(node.rootDP == NULL);
 		}
 
-		II++;
-
-		if (II == max_II)
+		if (II >= max_II)
 		{
 			std::cout << "### cannot map:  II max has been reached and exiting...\n";
 			break;
 		}
+
+		II++;
 
 		PathFinderMapper *upperboundMapper = (mapping_method == 1) ? static_cast<PathFinderMapper *>(sa_mapper) : pf_mapper;
 		if (!binaryEmissionFailedAtII && II > upperboundMapper->upperboundII)

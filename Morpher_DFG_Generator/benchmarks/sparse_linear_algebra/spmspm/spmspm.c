@@ -1,7 +1,7 @@
 #define rows 8
-#define cols 8
+#define cols 128
 #define valid_points_a 8
-#define valid_points_b 64
+#define valid_points_b 128
 
 int data_a[valid_points_a];
 int colindex_a[valid_points_a];
@@ -47,7 +47,7 @@ static void init_inputs()
   rowptr_b[rows] = valid_points_b;
 
   for (int n = 0; n < valid_points_b; n++) {
-    colindex_b[n] = n & (cols - 1);
+    colindex_b[n] = n;
     data_b[n] = (n % 11) + 1;
   }
 }

@@ -1,50 +1,42 @@
 #include <stdio.h>
 
-volatile int * N;
-volatile int *a;
-volatile int *b;
-int *c;
-int *x2;
-int **A;
-int *y_2;
+#define N 64
 
-int mvt() {
-    int i = 1;
-    int j;
-    int n = *N;
+static int A[N][N];
+static int x1[N], x2[N], y1[N], y2[N];
 
-    int sum = 0;
-    for (j = 1; j < n-1; j++) {
-               #ifdef CGRA_COMPILER
-           please_map_me();
-           #endif
-        x2[i] = x2[i] + A[j][i] * y_2[j];
-    }
-
-    return sum;
+static void init_array(void) {
+  int i, j;
+  for (i = 0; i < N; i++) {
+    x1[i] = i;
+    x2[i] = i + 1;
+    y1[i] = i + 2;
+    y2[i] = i + 3;
+    for (j = 0; j < N; j++)
+      A[i][j] = i + j + 1;
+  }
 }
 
-int main() {
-    int n_val = 66;
-    volatile int N_storage = n_val;
-    static int A_flat[66 * 66];
-    static int *A_rows[66];
-    static int x2_data[66];
-    static int y2_data[66];
-    N = &N_storage;
+static int mvt(void) {
+  int i, j;
 
-    for (int ii = 0; ii < n_val; ii++) {
-        A_rows[ii] = A_flat + ii * n_val;
-        x2_data[ii] = ii;
-        y2_data[ii] = ii + 1;
-        for (int jj = 0; jj < n_val; jj++) {
-            A_rows[ii][jj] = ii + jj + 1;
-        }
+#pragma scop
+  for (i = 0; i < N; i++)
+    for (j = 0; j < N; j++) {
+#ifdef CGRA_COMPILER
+      please_map_me();
+#endif
+      x1[i] += A[i][j] * y1[j];
     }
-    A = A_rows;
-    x2 = x2_data;
-    y_2 = y2_data;
+  for (i = 0; i < N; i++)
+    for (j = 0; j < N; j++)
+      x2[i] += A[j][i] * y2[j];
+#pragma endscop
 
-    mvt();
-    return 0;
+  return x1[0] + x2[0];
+}
+
+int main(void) {
+  init_array();
+  return mvt();
 }

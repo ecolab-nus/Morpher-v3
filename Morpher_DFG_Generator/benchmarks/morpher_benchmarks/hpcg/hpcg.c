@@ -1,5 +1,5 @@
 #include <stdio.h>
-#define SIZE 64
+#define SIZE 128
 
 int n = SIZE;
 
@@ -24,33 +24,19 @@ void hpcg(){
 }
 
 int main() {
-    int k, l;
+    int k, l, checksum;
 
     for (k=0; k<n; k++) {
         for(l=0; l<n; l++)
             A[k*SIZE+l] = k*2 + l*3 + 5;
         x[k] = k*3;
     }
-    
-    printf("Input array\n");
-    for(k=0; k<n; k++) {
-        for(l=0; l<n; l++)
-            printf("%d ", A[k*SIZE+l]);
-        printf("\n");
-    }
-    
-    printf("Input vector\n");
-    for(k=0; k<n; k++)
-        printf("%d\n", x[k]);
-    
 
     hpcg();
-	
-    
-    printf("Output vector\n");
-    for(k=0; k<n; k++)
-        printf("%d\n", x[k]);
-    
 
-    return 0;
+    checksum = 0;
+    for(k=0; k<n; k++)
+        checksum += x[k];
+
+    return checksum == -1;
 }

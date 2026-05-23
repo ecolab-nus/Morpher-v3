@@ -1,46 +1,52 @@
 #include <stdio.h>
 
-volatile int * N;
-volatile int *a;
-volatile int *b;
-volatile int ***sum;
-volatile int ***A;
-volatile int **C4;
+#define NR 10
+#define NQ 8
+#define NP 128
+#define IDX_A(r, q, p) (((r) * NQ + (q)) * NP + (p))
+#define IDX_C(s, p) ((s) * NP + (p))
 
-int *c;
+static int A[NR * NQ * NP];
+static int C4[NP * NP];
+static int sum[NP];
 
-int doitgen() {
-    int i;
-    int n = *N;
-    int r;
-    int  p, q, s;
-    int _PB_NR, _PB_NQ, _PB_NP;
+static void init_array(void) {
+  int r, q, p, s;
 
-    // int sum = 0;
-    for (s = 1; s < n-1; s++) {
-        #ifdef CGRA_COMPILER
-           please_map_me();
-        #endif
-         sum[r][q][p] = sum[r][q][p] + A[r][q][s] * C4[s][p];
-    }
+  for (r = 0; r < NR; r++)
+    for (q = 0; q < NQ; q++)
+      for (p = 0; p < NP; p++)
+        A[IDX_A(r, q, p)] = r + q + p + 1;
 
-//     #pragma scop
-//   for (r = 0; r < _PB_NR; r++)
-//     for (q = 0; q < _PB_NQ; q++)  {
-//       for (p = 0; p < _PB_NP; p++)  {
-// 	sum[r][q][p] = 0;
-// 	for (s = 0; s < _PB_NP; s++)
-// 	  sum[r][q][p] = sum[r][q][p] + A[r][q][s] * C4[s][p];
-//       }
-//       for (p = 0; p < _PB_NR; p++)
-// 	A[r][q][p] = sum[r][q][p];
-//     }
-// #pragma endscop
-
-    return 0;
+  for (s = 0; s < NP; s++)
+    for (p = 0; p < NP; p++)
+      C4[IDX_C(s, p)] = s + p + 1;
 }
 
-int main() {
-    doitgen();
-    return 0;
+static int doitgen(void) {
+  int r, q, p, s;
+
+#pragma scop
+  for (r = 0; r < NR; r++)
+    for (q = 0; q < NQ; q++) {
+      for (p = 0; p < NP; p++) {
+        sum[p] = 0;
+        for (s = 0; s < NP; s++) {
+#ifdef CGRA_COMPILER
+          please_map_me();
+#endif
+          sum[p] += A[IDX_A(r, q, s)] * C4[IDX_C(s, p)];
+        }
+      }
+      for (p = 0; p < NP; p++)
+        A[IDX_A(r, q, p)] = sum[p];
+    }
+#pragma endscop
+
+  return A[0];
+}
+
+int main(void) {
+  init_array();
+  return doitgen();
 }

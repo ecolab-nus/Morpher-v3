@@ -1,61 +1,49 @@
 #include <stdio.h>
 
-volatile int * N;
-volatile int **A;
-volatile int *y;
-volatile int *tmp;
-int *c;
+#define NX 64
+#define NY 64
 
-int atax() {
-    int i = 1;
-    int j;
-    int n = *N;
+static int A[NX][NY];
+static int x[NY];
+static int y[NY];
+static int tmp[NX];
 
-    int sum = 0;
-    for (j = 1; j < n-1; j++) {
-               #ifdef CGRA_COMPILER
-           please_map_me();
-           #endif
-        y[j] = y[j] + A[i][j] * tmp[i];
-    }
-
-//     #pragma scop
-//   for (i = 0; i < _PB_NY; i++)
-//     y[i] = 0;
-//   for (i = 0; i < _PB_NX; i++)
-//     {
-//       tmp[i] = 0;
-//       for (j = 0; j < _PB_NY; j++)
-// 	tmp[i] = tmp[i] + A[i][j] * x[j];
-//       for (j = 0; j < _PB_NY; j++)
-// 	y[j] = y[j] + A[i][j] * tmp[i];
-//     }
-// #pragma endscop
-
-    return sum;
+static void init_array(void) {
+  int i, j;
+  for (i = 0; i < NX; i++) {
+    tmp[i] = 0;
+    for (j = 0; j < NY; j++)
+      A[i][j] = i + j + 1;
+  }
+  for (j = 0; j < NY; j++) {
+    x[j] = j + 1;
+    y[j] = 0;
+  }
 }
 
-int main() {
-    int n_val = 66;
-    volatile int N_storage = n_val;
-    static int A_flat[66 * 66];
-    static volatile int *A_rows[66];
-    static volatile int y_data[66];
-    static volatile int tmp_data[66];
-    N = &N_storage;
+static int atax(void) {
+  int i, j;
 
-    for (int ii = 0; ii < n_val; ii++) {
-        A_rows[ii] = (volatile int *)(A_flat + ii * n_val);
-        tmp_data[ii] = ii + 1;
-        y_data[ii] = ii;
-        for (int jj = 0; jj < n_val; jj++) {
-            A_rows[ii][jj] = ii + jj + 1;
-        }
+#pragma scop
+  for (i = 0; i < NY; i++)
+    y[i] = 0;
+  for (i = 0; i < NX; i++) {
+    tmp[i] = 0;
+    for (j = 0; j < NY; j++)
+      tmp[i] += A[i][j] * x[j];
+    for (j = 0; j < NY; j++) {
+#ifdef CGRA_COMPILER
+      please_map_me();
+#endif
+      y[j] += A[i][j] * tmp[i];
     }
-    A = A_rows;
-    y = y_data;
-    tmp = tmp_data;
+  }
+#pragma endscop
 
-    atax();
-    return 0;
+  return y[0];
+}
+
+int main(void) {
+  init_array();
+  return atax();
 }

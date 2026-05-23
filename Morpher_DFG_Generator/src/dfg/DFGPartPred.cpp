@@ -282,11 +282,16 @@ int DFGPartPred::handlePHINodes(std::set<BasicBlock*> LoopBB) {
 
 						}
 
-					}
-					else{
-						assert(BRNode->getAncestors().size()==1);
-						//						previousCTRLNode = BRNode->getAncestors()[0];
-						previousCtrlNodes.push_back(BRNode->getAncestors()[0]);
+						}
+						else{
+							DFG_CHECK(BRNode->getAncestors().size()==1,
+								"handlePHINodes",
+								"expected exactly one controlling branch ancestor for PHI node " +
+								std::to_string(node->getIdx()) +
+								", found " + std::to_string(BRNode->getAncestors().size()) +
+								" (unsupported multi-control PHI pattern)");
+							//						previousCTRLNode = BRNode->getAncestors()[0];
+							previousCtrlNodes.push_back(BRNode->getAncestors()[0]);
 						if(BRI->getSuccessor(0) == node->BB){
 							//							incomingCTRLVal = true;
 							cnodectrlvalmap[BRNode->getAncestors()[0]]=true;
