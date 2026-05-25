@@ -137,6 +137,19 @@ std::vector<uint32_t> SimulatorBase::memoryAddresses(const DFGNode &node) {
     // handling), so only 1 cursor step per call regardless of simd_lanes.
     size_t cursorStep = node.simdReduceConsumer ? 1 : lanes;
     size_t &cursor = externalAddressOffsets_[node.idx];
+    auto sizeIt = trace_.externalAccessSizes.find(node.idx);
+    if (node.simdPacked && !node.simdReduceConsumer &&
+        sizeIt != trace_.externalAccessSizes.end() &&
+        cursor < externalIt->second.size() && cursor < sizeIt->second.size() &&
+        sizeIt->second[cursor] == static_cast<uint32_t>(lanes * node.mem.sizeBytes)) {
+      uint32_t vectorBase = externalIt->second[cursor++];
+      std::vector<uint32_t> addresses;
+      addresses.reserve(lanes);
+      for (size_t lane = 0; lane < lanes; ++lane) {
+        addresses.push_back(vectorBase + static_cast<uint32_t>(lane * node.mem.sizeBytes));
+      }
+      return addresses;
+    }
     if (cursor + cursorStep <= externalIt->second.size()) {
       // For VRED-reduced stores the host trace records the lane-0 partial
       // result address (e.g. .morpher.vecout), not the CGRA-side accumulator
@@ -277,6 +290,9 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
       const uint32_t scalar = data.vector()[0];
       for (uint32_t addr : addresses) {
         trace_.initial.store(addr, node.mem.sizeBytes, Value(scalar));
+        for (int byte = 0; byte < node.mem.sizeBytes; ++byte) {
+          writtenAddresses_.insert(addr + static_cast<uint32_t>(byte));
+        }
       }
       return Value(scalar);
     }
@@ -285,10 +301,16 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
       for (size_t lane = 0; lane < lanes; ++lane) {
         uint32_t scalar = data.isVector() ? data.vector()[lane] : data.scalar();
         trace_.initial.store(addresses[lane], node.mem.sizeBytes, Value(scalar));
+        for (int byte = 0; byte < node.mem.sizeBytes; ++byte) {
+          writtenAddresses_.insert(addresses[lane] + static_cast<uint32_t>(byte));
+        }
       }
       return data;
     }
     trace_.initial.store(addresses[0], node.mem.sizeBytes, data);
+    for (int byte = 0; byte < node.mem.sizeBytes; ++byte) {
+      writtenAddresses_.insert(addresses[0] + static_cast<uint32_t>(byte));
+    }
     return data;
   }
 
@@ -353,6 +375,28 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
   if (!a.isValid() && node.hasConst) {
     a = node.simdPacked ? Value::broadcast(node.constValue, node.simdLanes) : Value(node.constValue);
   }
+
+  // MAC / VMAC: multiply-accumulate with an *implicit* accumulator register
+  // that lives inside the PE (the hardware TREG). The third operand is this
+  // node's own previous-iteration output. On the first iteration the
+  // accumulator is 0 by hardware convention. Mapper sees MAC as a normal
+  // 2-input op; the accumulator is transparent. The V-prefixed variant
+  // behaves identically per-lane (binaryOp already strips the V).
+  if (node.op == "MAC" || node.op == "VMAC") {
+    if (!a.isValid() || !b.isValid()) {
+      return Value::invalid();
+    }
+    Value acc;
+    auto prevIt = previousValues_.find(node.idx);
+    if (prevIt != previousValues_.end() && prevIt->second.isValid()) {
+      acc = prevIt->second;
+    } else {
+      acc = node.simdPacked ? Value::broadcast(0u, node.simdLanes) : Value(0u);
+    }
+    Value product = binaryOp(a, b, "MUL");
+    return binaryOp(product, acc, "ADD");
+  }
+
   if (b.isValid()) {
     return binaryOp(a, b, node.op);
   }
@@ -405,6 +449,13 @@ SimResult SimulatorBase::compare() const {
             [](const auto &a, const auto &b) { return a.first < b.first; });
 
   bool allBasesStored = (storedBases.size() >= alloc_.base.size());
+  // When the DFG has no <BasePointerName> on any node (e.g., synthesized
+  // systolic templates), `storedBases` is empty. In that case the
+  // base-coverage filter would skip every expected address. Fall back to
+  // the per-address `writtenAddresses_` filter instead.
+  if (storedBases.empty() && !writtenAddresses_.empty()) {
+    allBasesStored = true;
+  }
 
   auto isStoreCovered = [&](uint32_t addr) -> bool {
     if (allBasesStored) return true;
@@ -422,6 +473,7 @@ SimResult SimulatorBase::compare() const {
   SimResult result;
   for (const auto &entry : trace_.expected) {
     if (!isStoreCovered(entry.first)) continue;
+    if (!writtenAddresses_.empty() && !writtenAddresses_.count(entry.first)) continue;
     uint8_t actual = trace_.initial.getByte(entry.first);
     if (actual == entry.second) {
       result.matches++;

@@ -22,6 +22,8 @@ llvm_add_library(dfggenPass MODULE
     ../include/morpherdfggen/common/dfgmacro.h
     ../include/morpherdfggen/dfg/DFGPartPred.h
     dfg/DFGPartPred.cpp
+    ../include/morpherdfggen/dfg/SystolicCandidatePass.h
+    dfg/SystolicCandidatePass.cpp
 )
 
 target_include_directories(dfggenPass PRIVATE

@@ -1375,6 +1375,7 @@ void CGRAXMLCompile::PE::getMEMIns(std::map<std::string, int> &supportedOPs)
 	supportedOPs["ADD"] = 2;	//2
 	supportedOPs["SUB"] = 2;	//3
 	supportedOPs["MUL"] = 2;	//4
+	supportedOPs["MAC"] = 2;
 	supportedOPs["SEXT"] = 2;   //5
 	supportedOPs["DIV"] = 2;	//6
 	supportedOPs["LS"] = 2;		//7
@@ -1419,6 +1420,7 @@ void CGRAXMLCompile::PE::getNonMEMIns(
 	supportedOPs["ADD"] = 1;
 	supportedOPs["SUB"] = 1;
 	supportedOPs["MUL"] = 1;
+	supportedOPs["MAC"] = 1;
 	supportedOPs["SEXT"] = 1;
 	supportedOPs["DIV"] = 1;
 	supportedOPs["LS"] = 1;
@@ -1471,6 +1473,7 @@ void CGRAXMLCompile::PE::getArithmeticIns(
 	supportedOPs["ADD"] = 1; //12
 	supportedOPs["SUB"] = 1; //13
 	supportedOPs["MUL"] = 1; //14
+	supportedOPs["MAC"] = 1;
 	supportedOPs["DIV"] = 1; //15
 	supportedOPs["LS"] = 1;  //16
 	supportedOPs["RS"] = 1;  //17

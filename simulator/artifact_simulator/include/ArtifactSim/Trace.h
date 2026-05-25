@@ -14,6 +14,7 @@ struct TraceImage {
   std::map<uint32_t, uint8_t> expected;
   std::vector<uint32_t> interestedAddresses;
   std::map<int, std::vector<uint32_t>> externalAddresses;
+  std::map<int, std::vector<uint32_t>> externalAccessSizes;
   std::map<int, std::vector<uint32_t>> externalLoadValues;
   std::map<int, std::vector<uint32_t>> externalStoreValues;
 };

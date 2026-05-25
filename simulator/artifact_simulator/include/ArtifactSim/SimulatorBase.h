@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,7 @@ protected:
   std::map<std::string, uint32_t> implicitOffsets_;
   std::map<int, size_t> externalAddressOffsets_;
   std::map<int, size_t> externalValueOffsets_;
+  std::set<uint32_t> writtenAddresses_;
 };
 
 } // namespace ArtifactSim

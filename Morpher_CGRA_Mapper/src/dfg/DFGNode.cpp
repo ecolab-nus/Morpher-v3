@@ -47,6 +47,9 @@ std::string CGRAXMLCompile::DFGNode::getBinaryString() {
        else if(op == "MUL"){
                return "00011";
        }
+       else if(op == "MAC"){
+               return "00110";
+       }
        else if(op == "SEXT"){
                return "00100";
        }

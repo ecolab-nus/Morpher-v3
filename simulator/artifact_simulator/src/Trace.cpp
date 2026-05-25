@@ -87,13 +87,22 @@ void parseAddressTrace(const std::string &path, TraceImage &trace) {
     }
     int nodeIdx = std::stoi(parts[0]);
     uint32_t address = static_cast<uint32_t>(std::stoul(parts[2]));
+    uint32_t accessSize = 0;
+    if (parts.size() >= 4) {
+      accessSize = static_cast<uint32_t>(std::stoul(parts[3]));
+    }
     trace.externalAddresses[nodeIdx].push_back(address);
+    trace.externalAccessSizes[nodeIdx].push_back(accessSize);
     if (parts.size() >= 7) {
       bool isStore = false;
       if (parts.size() >= 5) {
         isStore = std::stoul(parts[4]) != 0;
       }
       uint32_t scalar = 0;
+      std::vector<uint32_t> lanes;
+      if (accessSize > 4 && accessSize % 4 == 0) {
+        lanes.resize(accessSize / 4, 0);
+      }
       for (size_t i = 6; i < parts.size(); ++i) {
         if (parts[i].empty()) {
           continue;
@@ -102,16 +111,36 @@ void parseAddressTrace(const std::string &path, TraceImage &trace) {
         uint32_t byteAddress = address + static_cast<uint32_t>(i - 6);
         if (isStore) {
           trace.expected[byteAddress] = byte;
-          scalar |= static_cast<uint32_t>(byte) << (8 * (i - 6));
         } else {
           trace.expected.erase(byteAddress);
+        }
+        if (i - 6 < 4) {
           scalar |= static_cast<uint32_t>(byte) << (8 * (i - 6));
+        }
+        if (!lanes.empty()) {
+          size_t lane = (i - 6) / 4;
+          size_t laneByte = (i - 6) % 4;
+          if (lane < lanes.size()) {
+            lanes[lane] |= static_cast<uint32_t>(byte) << (8 * laneByte);
+          }
         }
       }
       if (isStore) {
-        trace.externalStoreValues[nodeIdx].push_back(scalar);
+        if (!lanes.empty()) {
+          for (uint32_t laneValue : lanes) {
+            trace.externalStoreValues[nodeIdx].push_back(laneValue);
+          }
+        } else if (accessSize <= 4) {
+          trace.externalStoreValues[nodeIdx].push_back(scalar);
+        }
       } else {
-        trace.externalLoadValues[nodeIdx].push_back(scalar);
+        if (!lanes.empty()) {
+          for (uint32_t laneValue : lanes) {
+            trace.externalLoadValues[nodeIdx].push_back(laneValue);
+          }
+        } else if (accessSize <= 4) {
+          trace.externalLoadValues[nodeIdx].push_back(scalar);
+        }
       }
     }
   }

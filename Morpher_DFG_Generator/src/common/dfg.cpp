@@ -6179,6 +6179,11 @@ DFG::DFG(std::string name, std::map<Loop *, std::string> *lnPtr)
 
 	HyCUBEInsStrings[MOVC] = "MOVC";
 	HyCUBEInsBinary[MOVC] = 0 | (0b11111);
+
+	// 0b00110 is a free slot between DIV (0b00101) and LS (0b01000).
+	// PCMP/NCMP exist in the enum but have no binary entries; avoid stealing.
+	HyCUBEInsStrings[MAC] = "MAC";
+	HyCUBEInsBinary[MAC] = 0 | (0b00110);
 }
 
 int DFG::nameNodes()

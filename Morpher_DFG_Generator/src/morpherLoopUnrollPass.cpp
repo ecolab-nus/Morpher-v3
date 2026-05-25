@@ -101,6 +101,28 @@ StringRef reductionOpcodeName(unsigned Opcode) {
   }
 }
 
+bool loopIDHasSystolicCandidate(MDNode *LoopID) {
+  if (!LoopID)
+    return false;
+  for (unsigned i = 1; i < LoopID->getNumOperands(); ++i) {
+    auto *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
+    if (!MD || MD->getNumOperands() == 0)
+      continue;
+    auto *S = dyn_cast<MDString>(MD->getOperand(0));
+    if (S && S->getString() == "systolic.candidate")
+      return true;
+  }
+  return false;
+}
+
+bool loopCarriesSystolicCandidate(Loop *L) {
+  for (Loop *Cur = L; Cur != nullptr; Cur = Cur->getParentLoop()) {
+    if (loopIDHasSystolicCandidate(Cur->getLoopID()))
+      return true;
+  }
+  return false;
+}
+
 void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
   unsigned Group = 0;
   for (BasicBlock *BB : TargetLoop->blocks()) {
@@ -1100,6 +1122,12 @@ bool flattenAnnotatedInnermostLoop(Function &F, LoopInfo &LI,
   findAnnotatedLoopMarker(F, LI, InnerLoop);
   if (!InnerLoop)
     return false;
+  if (loopCarriesSystolicCandidate(InnerLoop)) {
+    errs() << "Morpher loop fusion: skipping function=" << F.getName()
+           << " loop_header=" << InnerLoop->getHeader()->getName()
+           << " reason=systolic_candidate\n";
+    return false;
+  }
   if (!InnerLoop->getSubLoops().empty()) {
     errs() << "Morpher loop fusion skipped: annotated loop is not innermost\n";
     return false;
@@ -1255,6 +1283,12 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
     Loop *TargetLoop = nullptr;
     findAnnotatedLoopMarker(F, LI, TargetLoop);
+    if (TargetLoop && loopCarriesSystolicCandidate(TargetLoop)) {
+      errs() << "Morpher loop unroll: skipping function=" << F.getName()
+             << " loop_header=" << TargetLoop->getHeader()->getName()
+             << " reason=systolic_candidate\n";
+      return false;
+    }
     bool Changed = false;
     canonicalizeLoopForUnroll(TargetLoop, LI, SE, DT, AC);
     if (MorpherReductionLanes > 1)

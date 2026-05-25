@@ -10,6 +10,8 @@
 #include <chrono>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
+#include <vector>
 #include <dirent.h>
 
 #include <assert.h>
@@ -287,29 +289,45 @@ int main(int argn, char *argc[])
 			active_mapper->getconflictedPortsPtr()->clear();
 			tempCGRA->analyzeTimeDist(tdi);
 
-			// Apply node_pin: blacklist all DPs except those at the pinned PE
+			// Apply node_pin: blacklist all DPs except those at the pinned PE.
+			// Accepts one or more pins as a comma-separated list:
+			//   "idx:X:Y" or "idx1:X1:Y1,idx2:X2:Y2,..."
 			if (!args.node_pin.empty()) {
-				std::istringstream ss(args.node_pin);
-				int pin_idx, pin_x, pin_y;
-				char colon;
-				if (ss >> pin_idx >> colon >> pin_x >> colon >> pin_y) {
+				std::string spec = args.node_pin;
+				std::vector<std::tuple<int,int,int>> pins;
+				size_t pos = 0;
+				while (pos < spec.size()) {
+					size_t comma = spec.find(',', pos);
+					std::string tok = spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+					pos = (comma == std::string::npos) ? spec.size() : comma + 1;
+					if (tok.empty()) continue;
+					std::istringstream ts(tok);
+					int pin_idx, pin_x, pin_y;
+					char colon;
+					if (ts >> pin_idx >> colon >> pin_x >> colon >> pin_y) {
+						pins.emplace_back(pin_idx, pin_x, pin_y);
+					}
+				}
+				for (auto &pin : pins) {
+					int pin_idx = std::get<0>(pin);
+					int pin_x   = std::get<1>(pin);
+					int pin_y   = std::get<2>(pin);
 					for (DFGNode &dfgNodeRef : activeDFG->nodeList) {
 						DFGNode *dfgNode = &dfgNodeRef;
-						if (dfgNode->idx == pin_idx) {
-							for (PE *pe : tempCGRA->getAllPEList()) {
-								if (pe->X == pin_x && pe->Y == pin_y)
-									continue;
-								for (Module *submod : pe->subModules) {
-									if (FU *fu = dynamic_cast<FU *>(submod)) {
-										for (Module *submod2 : fu->subModules) {
-											if (DataPath *dp = dynamic_cast<DataPath *>(submod2))
-												dfgNode->blacklistDest.insert(dp);
-										}
+						if (dfgNode->idx != pin_idx) continue;
+						for (PE *pe : tempCGRA->getAllPEList()) {
+							if (pe->X == pin_x && pe->Y == pin_y)
+								continue;
+							for (Module *submod : pe->subModules) {
+								if (FU *fu = dynamic_cast<FU *>(submod)) {
+									for (Module *submod2 : fu->subModules) {
+										if (DataPath *dp = dynamic_cast<DataPath *>(submod2))
+											dfgNode->blacklistDest.insert(dp);
 									}
 								}
 							}
-							break;
 						}
+						break;
 					}
 				}
 			}
