@@ -10,6 +10,7 @@
 class DFGPartPred : public DFG{
 public :
 	DFGPartPred(std::string name,std::map<Loop*,std::string>* lnPtr, Loop* l) : DFG(name,lnPtr), currLoop(l){}
+	bool suppressDOT = false;
 	void connectBB();
 	virtual void connectBBTrig();
 	int handlePHINodes(std::set<BasicBlock*> LoopBB);
@@ -63,8 +64,10 @@ public :
 
 	void PrintOuts(){
 		if (this->removeAGI) removeAGINodes();
-		printDOT(this->kernelname + "_PartPredDFG.dot");
-		printDOTsimple(this->kernelname + "_PartPredDFG_simple.dot");
+		if (!this->suppressDOT) {
+			printDOT(this->kernelname + "_PartPredDFG.dot");
+			printDOTsimple(this->kernelname + "_PartPredDFG_simple.dot");
+		}
 		printNewDFGXML();
 		//std::cout << "DFG generated ("<< this->kernelname <<"_PartPredDFG.dot/xml) \n";
 	}

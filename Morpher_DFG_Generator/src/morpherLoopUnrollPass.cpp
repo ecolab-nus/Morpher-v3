@@ -48,6 +48,15 @@ static cl::opt<std::string> MorpherReductionPolicy(
     "morpher-reduction-policy", cl::init("tree"),
     cl::desc("Reduction lowering policy: tree or packed-psum"));
 
+// Loop-peel P/E: opt-in retagging of the runtime remainder loop's marker.
+// Default off until Phase 2b (peel DFG emission in dfggenPass) is robust
+// against the i64 OutLoopSTORE case in `DFG::nameNodes`.
+static cl::opt<bool> MorpherEmitPeel(
+    "morpher-emit-peel", cl::init(false),
+    cl::desc("Tag the runtime remainder loop with please_map_me_peel for "
+             "downstream peel DFG emission. When false, mirrors the legacy "
+             "behavior of dropping the orphan marker."));
+
 Function *resolveCalledFunction(CallBase *CB) {
   if (!CB)
     return nullptr;
@@ -62,6 +71,45 @@ Function *resolveCalledFunction(CallBase *CB) {
 bool isPleaseMapMe(CallBase *CB) {
   Function *CalledFn = resolveCalledFunction(CB);
   return CalledFn && CalledFn->getName() == "please_map_me";
+}
+
+bool isPleaseMapMePeel(CallBase *CB) {
+  Function *CalledFn = resolveCalledFunction(CB);
+  return CalledFn && CalledFn->getName() == "please_map_me_peel";
+}
+
+// Inserts (or returns the existing) `void please_map_me_peel(void)` declaration
+// in the given module. The runtime body is never invoked: dfggenPass erases the
+// marker call once it has located the peel loop's mapping unit.
+Function *getOrInsertPleaseMapMePeel(Module &M) {
+  LLVMContext &Ctx = M.getContext();
+  FunctionType *FT = FunctionType::get(Type::getVoidTy(Ctx), /*isVarArg=*/false);
+  FunctionCallee Callee = M.getOrInsertFunction("please_map_me_peel", FT);
+  return cast<Function>(Callee.getCallee());
+}
+
+// Rewrite any `please_map_me()` calls inside the LLVM-generated remainder loop
+// (the un-unrolled "epilogue" loop that runs the leftover (TC % U) iterations
+// of the original body) to `please_map_me_peel()`. This survives the existing
+// `normalizePleaseMapMeMarkers` pass because that helper exact-matches on the
+// "please_map_me" symbol name. Downstream dfggenPass picks up the peel marker
+// and emits a separate DFG for the peel mapping unit.
+unsigned retagRemainderMarkersAsPeel(Loop *RemainderLoop) {
+  if (!RemainderLoop)
+    return 0;
+  Module &M = *RemainderLoop->getHeader()->getModule();
+  Function *PeelFn = getOrInsertPleaseMapMePeel(M);
+  unsigned retagged = 0;
+  for (BasicBlock *BB : RemainderLoop->blocks()) {
+    for (Instruction &I : *BB) {
+      auto *CB = dyn_cast<CallBase>(&I);
+      if (!CB || !isPleaseMapMe(CB))
+        continue;
+      CB->setCalledFunction(PeelFn);
+      ++retagged;
+    }
+  }
+  return retagged;
 }
 
 void setIntMetadata(Instruction &I, StringRef Name, unsigned Value) {
@@ -1036,14 +1084,52 @@ bool unrollAnnotatedLoop(Loop *TargetLoop, LoopInfo &LI, ScalarEvolution &SE,
   ULO.UnrollRemainder = false;
   ULO.ForgetAllSCEV = true;
 
+  Loop *RemainderLoop = nullptr;
   LoopUnrollResult Result =
-      UnrollLoop(TargetLoop, ULO, &LI, &SE, &DT, &AC, nullptr, nullptr, true);
+      UnrollLoop(TargetLoop, ULO, &LI, &SE, &DT, &AC, nullptr, nullptr, true,
+                 &RemainderLoop);
 
   if (Result == LoopUnrollResult::Unmodified)
     report_fatal_error("LLVM could not unroll the Morpher annotated loop");
 
   if (Result == LoopUnrollResult::FullyUnrolled)
     report_fatal_error("Morpher annotated loop was fully unrolled away");
+
+  // If LLVM created a remainder loop (runtime peel for (TC % U) leftover
+  // iterations), re-tag its markers as `please_map_me_peel` so dfggenPass can
+  // optionally emit a peel DFG (entry point for end-to-end loop-peel P/E; see
+  // PLAN.md). The retagging is opt-in via -morpher-emit-peel; when disabled
+  // we instead delete the remainder marker (matching legacy behavior where
+  // `normalizePleaseMapMeMarkers` erased the orphan). This keeps the legacy
+  // single-kernel-DFG pipeline working until Phase 2b is fully wired up,
+  // since today's `DFG::nameNodes` asserts on i64 OutLoopSTORE produced when
+  // dfggenPass sees the kernel's live-out IV reach the peel preheader.
+  if (RemainderLoop) {
+    if (MorpherEmitPeel) {
+      unsigned retagged = retagRemainderMarkersAsPeel(RemainderLoop);
+      errs() << "Morpher peel: remainder loop header="
+             << RemainderLoop->getHeader()->getName()
+             << " retagged_markers=" << retagged << "\n";
+    } else {
+      // Mirror the legacy normalize-erase behavior: delete `please_map_me()`
+      // calls inside the remainder so downstream tooling sees a clean IR.
+      unsigned erased = 0;
+      SmallVector<CallBase *, 4> toErase;
+      for (BasicBlock *BB : RemainderLoop->blocks())
+        for (Instruction &I : *BB)
+          if (auto *CB = dyn_cast<CallBase>(&I))
+            if (isPleaseMapMe(CB))
+              toErase.push_back(CB);
+      for (CallBase *CB : toErase) {
+        CB->eraseFromParent();
+        ++erased;
+      }
+      if (erased > 0) {
+        errs() << "Morpher peel: erased " << erased
+               << " remainder marker(s) (peel emission disabled)\n";
+      }
+    }
+  }
 
   formLCSSARecursively(*TargetLoop, DT, &LI, &SE);
   return true;

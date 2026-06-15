@@ -417,6 +417,10 @@ int main(int argn, char *argc[])
 				activeDFG,
 				inputDFG_filename + tempCGRA->getCGRAName() + "_layout_observation.json");
 
+			tempCGRA->EmitMappingStats(
+				activeDFG, II,
+				inputDFG_filename + tempCGRA->getCGRAName() + "_stats.json");
+
 			if (args.layout_solver)
 			{
 				std::string agiPath = args.agi_subgraph;

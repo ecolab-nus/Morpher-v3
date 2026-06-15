@@ -173,6 +173,8 @@ def build_dfg_pass_command(context, skeleton_ir=None):
   ]
   if config.remove_agi:
     cmd.append("--remove-agi")
+  if config.suppress_dfg_dot:
+    cmd.append("--suppress-dfg-dot")
   return cmd
 
 
@@ -240,11 +242,12 @@ def _run_dfg_pass_with_banksize_retry(context, skeleton_ir):
 def validate_dfg_outputs(context):
   kernel = context.kernel
   expected = [
-    "%s_PartPredDFG.dot" % kernel,
     "%s_PartPredDFG.xml" % kernel,
     "%s_mem_alloc.txt" % kernel,
     "%s_opt_instrument.ll" % kernel,
   ]
+  if not context.config.suppress_dfg_dot:
+    expected.insert(0, "%s_PartPredDFG.dot" % kernel)
 
   missing = []
   for filename in expected:
@@ -383,15 +386,21 @@ def run_dfg_generator(context, unroll_factor=None):
     run_command(build_unroll_command(context, unroll_factor))
     skeleton_ir = "%s_uf%d_opt.ll" % (kernel, unroll_factor)
 
-  print("Generating DFG (%s_PartPredDFG.xml/dot) and data layout (%s_mem_alloc.txt)..\n" % (kernel, kernel))
+  dfg_artifact_label = "xml" if config.suppress_dfg_dot else "xml/dot"
+  print("Generating DFG (%s_PartPredDFG.%s) and data layout (%s_mem_alloc.txt)..\n" % (kernel, dfg_artifact_label, kernel))
   _run_dfg_pass_with_banksize_retry(context, skeleton_ir)
 
   validate_dfg_outputs(context)
 
-  run_command(Command(
-    argv=["dot", "-Tpdf", "%s_PartPredDFG.dot" % kernel, "-o", "%s_PartPredDFG.pdf" % kernel],
-    cwd=dfg_kernel,
-  ))
+  if config.generate_dfg_pdf and not config.suppress_dfg_dot:
+    run_command(Command(
+      argv=["dot", "-Tpdf", "%s_PartPredDFG.dot" % kernel, "-o", "%s_PartPredDFG.pdf" % kernel],
+      cwd=dfg_kernel,
+    ))
+  elif not config.generate_dfg_pdf:
+    print("DFG PDF generation disabled (generate_dfg_pdf=false).\n")
+  else:
+    print("DFG PDF generation skipped because DOT emission is disabled.\n")
   dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
   mapper_xml = dfg_xml
   simd_mapping = None

@@ -556,6 +556,8 @@ class RunnerConfig:
   sa_candidate_topk: int
   off_spm_mem_candidate_topk: int
   enable_simulation: bool
+  generate_dfg_pdf: bool
+  suppress_dfg_dot: bool
   validation_mode: str
   spm_mode: str
   proximity_sort: bool
@@ -741,6 +743,8 @@ class RunnerConfig:
         inferred_mem_pes,
       ),
       enable_simulation=config_dict.get("enable_simulation", True),
+      generate_dfg_pdf=bool(config_dict.get("generate_dfg_pdf", True)),
+      suppress_dfg_dot=bool(config_dict.get("suppress_dfg_dot", False)),
       validation_mode=validation_mode,
       spm_mode=config_dict.get("spm_mode", "on"),
       remove_agi=config_dict.get("remove_agi", False),

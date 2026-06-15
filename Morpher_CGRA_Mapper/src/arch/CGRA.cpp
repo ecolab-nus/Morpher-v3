@@ -1512,6 +1512,203 @@ void CGRAXMLCompile::CGRA::EmitLayoutObservation(DFG *dfg, string fileName)
 			  << per_array.size() << " arrays)\n";
 }
 
+// ============================================================================
+// EmitMappingStats: classifies DFG nodes by category, derives the scalar-
+// equivalent ALU count from the arch JSON's PE grid + per-PE SIMD_WIDTH, and
+// writes a per-phase stats JSON next to the mapping output.
+//
+// Op classification (heuristic, op-string based):
+//   - load   : op startswith one of {LOAD, OLOAD, VLOAD, VOLOAD}
+//   - store  : op startswith one of {STORE, OSTORE, VSTORE, VOSTORE}
+//   - compute_vector / compute_scalar : op startswith a known arithmetic /
+//             logic prefix (ADD, SUB, MUL, MAC, AND, OR, XOR, shifts,
+//             comparisons, MOVC, SEXT, VRED, and their V-prefixed siblings).
+//             simd_lanes > 1 -> compute_vector and contributes simd_lanes to
+//             the scalar-equivalent count; otherwise compute_scalar contributes 1.
+//   - iter_ctrl : everything else (CMERGE, SELECTPHI, BR, LOOPSTART, LOOPEXIT,
+//             STORESTART, CTRLBrOR, NOP, ...). This is overhead from the
+//             user's perspective.
+//
+// Limitations (see PLAN.md / REFERENCE.md):
+//   - MAC counted as one op (one ALU-slot of work); does not double-count for
+//     the fused multiply-add throughput.
+//   - "iter_ctrl" is a catch-all; some control nodes are genuinely required
+//     for predication, not just iteration counting. A backward slice from
+//     real-store roots would be a more accurate "useful" split; deferred.
+//   - stage_count_estimate uses max(ASAP)/II as a lower bound on the SWP
+//     stage count; actual mapped latency may be higher.
+//   - num_scalar_eq_ALUs is summed across all PE+PE_MEM grid entries; PE_DUMMY
+//     is excluded. Pass --no-mem-alu in the future to exclude PE_MEM as well.
+// ============================================================================
+void CGRAXMLCompile::CGRA::EmitMappingStats(DFG *dfg, int II, const std::string &fileName)
+{
+	auto starts_with_any = [](const std::string &op, std::initializer_list<const char *> prefixes) {
+		for (const char *p : prefixes) {
+			std::string ps(p);
+			if (op.rfind(ps, 0) == 0) return true;
+		}
+		return false;
+	};
+	auto is_load = [&](const std::string &op) {
+		return starts_with_any(op, {"LOAD", "OLOAD", "VLOAD", "VOLOAD"});
+	};
+	auto is_store = [&](const std::string &op) {
+		return starts_with_any(op, {"STORE", "OSTORE", "VSTORE", "VOSTORE"});
+	};
+	auto is_compute = [&](const std::string &op) {
+		// Whitelist of arithmetic / logic / comparison ops counted as "real" compute.
+		// MOVC / MOVCL / LOADCL move a constant into a register and are kept here
+		// since they consume an ALU slot and produce a value used by data path nodes.
+		return starts_with_any(op, {
+			"ADD", "SUB", "MUL", "DIV", "MAC",
+			"AND", "OR", "XOR", "LS", "RS", "ARS",
+			"CMP", "CLT", "CGT", "PCMP", "NCMP",
+			"SEXT", "MOVC", "MOVCL", "LOADCL",
+			"VADD", "VSUB", "VMUL", "VDIV", "VMAC",
+			"VAND", "VOR", "VXOR", "VLS", "VRS", "VARS",
+			"VCMP", "VCLT", "VCGT", "VSEXT", "VRED"
+		});
+	};
+
+	int n_load = 0, n_store = 0, n_compute_vec = 0, n_compute_scalar = 0, n_iter_ctrl = 0;
+	long long scalar_eq_compute = 0;
+	int max_asap = 0;
+	std::map<int, int> simd_lanes_hist;
+	std::map<std::string, int> per_op_count;
+
+	for (DFGNode &node : dfg->nodeList) {
+		if (node.ASAP > max_asap) max_asap = node.ASAP;
+		int lanes = node.simd_lanes > 0 ? node.simd_lanes : 1;
+		simd_lanes_hist[lanes]++;
+		per_op_count[node.op]++;
+
+		if (is_load(node.op)) {
+			n_load++;
+		} else if (is_store(node.op)) {
+			n_store++;
+		} else if (is_compute(node.op)) {
+			if (lanes > 1) {
+				n_compute_vec++;
+				scalar_eq_compute += lanes;
+			} else {
+				n_compute_scalar++;
+				scalar_eq_compute += 1;
+			}
+		} else {
+			n_iter_ctrl++;
+		}
+	}
+
+	// Walk the arch JSON to extract per-PE-type SIMD_WIDTH and grid counts.
+	int pe_simd_width = 1, pe_mem_simd_width = 1;
+	int n_pe = 0, n_pe_mem = 0, n_pe_dummy = 0, n_other_grid = 0;
+	if (top_desc && top_desc->contains("ARCH")) {
+		const json &arch = (*top_desc)["ARCH"];
+		if (arch.contains("PE") && arch["PE"].contains("SIMD_WIDTH"))
+			pe_simd_width = arch["PE"]["SIMD_WIDTH"].get<int>();
+		if (arch.contains("PE_MEM") && arch["PE_MEM"].contains("SIMD_WIDTH"))
+			pe_mem_simd_width = arch["PE_MEM"]["SIMD_WIDTH"].get<int>();
+
+		if (arch.contains("CGRA") && arch["CGRA"].contains("SUBMODS")) {
+			const json &submods = arch["CGRA"]["SUBMODS"];
+			// After PreprocessPattern (CGRA.cpp:867), SUBMODS is rewritten from
+			//   [{PATTERN: GRID, DIMS, MODS: [{X,Y,MOD}, ...]}]
+			// to a dict keyed by mod type name:
+			//   {PE: [...], PE_MEM: [...], PE_DUMMY: [...]}
+			// We handle both forms in case future arches skip preprocessing.
+			if (submods.is_object()) {
+				for (auto it = submods.begin(); it != submods.end(); ++it) {
+					const std::string &mt = it.key();
+					if (!it.value().is_array()) continue;
+					const int cnt = static_cast<int>(it.value().size());
+					if (mt == "PE") n_pe += cnt;
+					else if (mt == "PE_MEM") n_pe_mem += cnt;
+					else if (mt == "PE_DUMMY") n_pe_dummy += cnt;
+					else n_other_grid += cnt;
+				}
+			} else if (submods.is_array()) {
+				for (const auto &sm : submods) {
+					if (!sm.contains("MODS")) continue;
+					for (const auto &mod : sm["MODS"]) {
+						if (!mod.contains("MOD")) continue;
+						const std::string mt = mod["MOD"].get<std::string>();
+						if (mt == "PE") n_pe++;
+						else if (mt == "PE_MEM") n_pe_mem++;
+						else if (mt == "PE_DUMMY") n_pe_dummy++;
+						else n_other_grid++;
+					}
+				}
+			}
+		}
+	}
+
+	const int num_scalar_eq_ALUs = n_pe * pe_simd_width + n_pe_mem * pe_mem_simd_width;
+	const int schedule_length_kernel = II > 0 ? II : (max_asap + 1);
+	// SWP stage count: derive from DFG critical path. After modulo scheduling
+	// at II, a node at ASAP a sits in stage (a / II). Total stages
+	// = floor(max_asap / II) + 1. This is a lower bound; the actual mapped
+	// schedule may push some nodes later, growing N. Refining requires reading
+	// per-node mapped latency, which is not directly exposed today.
+	const int stage_count_estimate = (II > 0) ? (max_asap / II + 1) : 1;
+	const int swp_fill_cycles = (II > 0 && stage_count_estimate > 1)
+									? (stage_count_estimate - 1) * II : 0;
+	const int swp_drain_cycles = swp_fill_cycles;
+
+	double util_phase = 0.0;
+	if (num_scalar_eq_ALUs > 0 && II > 0) {
+		util_phase = static_cast<double>(scalar_eq_compute) /
+					 (static_cast<double>(num_scalar_eq_ALUs) * II);
+	}
+
+	json out;
+	out["phase"] = "kernel";  // overridden once DFG-gen emits explicit phase tags
+	out["arch_name"] = getCGRAName();
+	out["II"] = II;
+	out["schedule_length_phase"] = schedule_length_kernel;
+	out["dfg_critical_path"] = max_asap + 1;
+	out["stage_count_estimate"] = stage_count_estimate;
+	out["swp_fill_cycles"] = swp_fill_cycles;
+	out["swp_drain_cycles"] = swp_drain_cycles;
+	out["node_count"] = static_cast<int>(dfg->nodeList.size());
+
+	out["grid"] = {
+		{"num_PE", n_pe},
+		{"num_PE_MEM", n_pe_mem},
+		{"num_PE_DUMMY", n_pe_dummy},
+		{"num_other_grid", n_other_grid},
+		{"PE_simd_width", pe_simd_width},
+		{"PE_MEM_simd_width", pe_mem_simd_width},
+	};
+	out["num_scalar_eq_ALUs"] = num_scalar_eq_ALUs;
+
+	out["op_counts"] = {
+		{"compute_vector", n_compute_vec},
+		{"compute_scalar", n_compute_scalar},
+		{"load", n_load},
+		{"store", n_store},
+		{"iter_ctrl", n_iter_ctrl},
+	};
+	out["scalar_eq_compute_ops"] = scalar_eq_compute;
+	out["util_phase"] = util_phase;
+
+	json hist = json::object();
+	for (auto &kv : simd_lanes_hist) hist[std::to_string(kv.first)] = kv.second;
+	out["simd_lanes_histogram"] = hist;
+
+	json ops_breakdown = json::object();
+	for (auto &kv : per_op_count) ops_breakdown[kv.first] = kv.second;
+	out["per_op_count"] = ops_breakdown;
+
+	std::ofstream ofs(fileName);
+	ofs << out.dump(2) << "\n";
+	ofs.close();
+	std::cout << "[MappingStats] Wrote " << fileName
+			  << " (II=" << II
+			  << ", scalar_eq_compute=" << scalar_eq_compute
+			  << ", num_scalar_eq_ALUs=" << num_scalar_eq_ALUs
+			  << ", util=" << util_phase << ")\n";
+}
+
 namespace {
 
 // Affine pattern for one LD/ST: addr = base_offset + iv * stride.

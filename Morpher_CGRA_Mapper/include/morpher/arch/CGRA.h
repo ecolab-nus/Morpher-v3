@@ -179,6 +179,11 @@ public:
 	// landed instead of presetting Variable2SPMAddr.
 	void EmitLayoutObservation(class DFG *dfg, string fileName);
 
+	// Per-phase mapping stats: op counts (compute vector/scalar, load, store,
+	// iter_ctrl), scalar-equivalent ALU count from arch JSON, util_phase.
+	// Written next to the mapping output so runners / sweep tools can aggregate.
+	void EmitMappingStats(class DFG *dfg, int II, const string &fileName);
+
 	// Post-mapping layout solver knobs and state.
 	struct LayoutSolverOpts {
 		bool enable = false;

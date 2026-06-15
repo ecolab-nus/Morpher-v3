@@ -961,17 +961,17 @@ void DFGPartPred::generateTrigDFGDOT(Function &F) {
 	removeAlloc();
 	connectBBTrig();
 	createCtrlBROrTree();
-	printDOT(this->name + "bef_handlePHINodes_PartPredDFG.dot");
+	if (!this->suppressDOT) printDOT(this->name + "bef_handlePHINodes_PartPredDFG.dot");
 	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][handlePHINodes begin]\n");
 	handlePHINodes(this->loopBB);
 
 	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][handlePHINodes end]\n");
-	printDOT(this->name + "after_handlePHINodes_PartPredDFG.dot");
+	if (!this->suppressDOT) printDOT(this->name + "after_handlePHINodes_PartPredDFG.dot");
 	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][handleSELECTNodes begin]\n");
 	handleSELECTNodes();
 
 	LLVM_DEBUG(dbgs() << "\n[DFGPartPred.cpp][handleSELECTNodes end]\n");
-	printDOT(this->name + "after_handleSELECTNodes_PartPredDFG.dot");
+	if (!this->suppressDOT) printDOT(this->name + "after_handleSELECTNodes_PartPredDFG.dot");
 
 	//exit(true);
 

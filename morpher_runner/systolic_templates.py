@@ -241,6 +241,324 @@ def gemm_fanout(dim_x: int, dim_y: int, iter_max: int,
 
 
 # ---------------------------------------------------------------------------
+# Template: gemm_output_stationary
+# ---------------------------------------------------------------------------
+#
+# True output-stationary GEMM systolic mapping:
+#
+#   - Per cycle, every cell (r, c) accumulates A[r,k] * B[k,c] into its TREG.
+#   - A is broadcast across columns: H A-LOADs per cycle (one per row, fanning
+#     out to all W cells in that row, type I1).
+#   - B is broadcast across rows: W B-LOADs per cycle (one per column, fanning
+#     out to all H cells in that column, type I2).
+#   - W*H MAC cells, each with I1=A[r], I2=B[c], TREG=accumulator. No stores
+#     in the main DFG: the output is drained by a separate epilogue.
+#
+# Per-iter input count: H + W loads (vs gemm_fanout's H). Output drain is
+# deferred to gemm_output_stationary_epilogue, which has W*H one-shot stores.
+#
+# Simulator caveat: the artifact simulator's MAC accumulates correctly via
+# `previousValues_[mac.idx]`, but with no stores the accumulator never reaches
+# the `MemoryImage`. An epilogue cannot read the previous DFG's per-node
+# accumulator (cross-DFG state is not propagated). For end-to-end functional
+# validation today you still need a per-iter STORE (see gemm_fanout). For
+# hardware artifact emission and mapping/util numbers, this template is the
+# right shape.
+# ---------------------------------------------------------------------------
+
+
+def gemm_output_stationary(dim_x: int, dim_y: int, iter_max: int,
+                            op_kind: str = "MAC",
+                            useful_cells: int | None = None,
+                            simd_lanes: int = 1) -> str:
+  """Output-stationary main DFG. `op_kind` should be MAC; ADD is allowed for
+  templates that need a non-multiply accumulator. No per-iter stores."""
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+
+  # idx layout: a-loads [0..H-1], b-loads [H..H+W-1], cells [H+W..H+W+W*H-1]
+  def a_load_idx(r: int) -> int:
+    return r
+
+  def b_load_idx(c: int) -> int:
+    return H + c
+
+  def cell_idx(r: int, c: int) -> int:
+    return H + W + r * W + c
+
+  # A-LOADs (one per row, broadcast across columns).
+  for r in range(H):
+    outs: List[Tuple[int, str]] = []
+    for c in range(W):
+      gi = r * W + c
+      if gi < useful_cells:
+        outs.append((cell_idx(r, c), "I1"))
+    nodes.append(_node_xml(a_load_idx(r), _v_op("LOAD", simd_lanes),
+                           asap=0, alap=0,
+                           inputs=[], outputs=outs,
+                           simd_lanes=simd_lanes,
+                           base_name="var_a"))
+
+  # B-LOADs (one per column, broadcast across rows).
+  for c in range(W):
+    outs2: List[Tuple[int, str]] = []
+    for r in range(H):
+      gi = r * W + c
+      if gi < useful_cells:
+        outs2.append((cell_idx(r, c), "I2"))
+    nodes.append(_node_xml(b_load_idx(c), _v_op("LOAD", simd_lanes),
+                           asap=0, alap=0,
+                           inputs=[], outputs=outs2,
+                           simd_lanes=simd_lanes,
+                           base_name="var_b"))
+
+  # Compute cells. No outputs — TREG accumulator stays in-cell across iters
+  # (the artifact simulator's MAC reads `previousValues_[node.idx]`).
+  for r in range(H):
+    for c in range(W):
+      gi = r * W + c
+      cur_idx = cell_idx(r, c)
+      if gi >= useful_cells:
+        nodes.append(_node_xml(cur_idx, "NOP", asap=1, alap=1,
+                               inputs=[], outputs=[]))
+        continue
+      ins = [a_load_idx(r), b_load_idx(c)]
+      nodes.append(_node_xml(cur_idx, _v_op(op_kind, simd_lanes),
+                             asap=1, alap=1,
+                             inputs=ins, outputs=[],
+                             simd_lanes=simd_lanes))
+
+  return _wrap_dfg(nodes, iter_max)
+
+
+def gemm_output_stationary_cells(dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+# ---------------------------------------------------------------------------
+# Template: gemm_output_stationary_epilogue
+# ---------------------------------------------------------------------------
+#
+# One-shot drain of W*H TREG accumulators to memory.
+#
+# Each useful cell emits one STORE node. In real hardware, the STORE reads
+# the cell PE's TREG and writes it to var_c[r*W+c]. In the DFG XML, we use
+# CONST=0 + GEPOffset to make the STORE structurally valid; the actual value
+# being drained is the *same PE's* TREG (a hardware-implicit input, not
+# representable in the current DFG XML format).
+#
+# Mapping correctness requirement: the epilogue's STORE nodes must land on
+# the same PEs as the corresponding main MACs so that the PE's TREG carries
+# the right value. This needs cross-DFG PE assignment, which we do not yet
+# enforce (see PLAN.md / REFERENCE.md). The mapper today places each phase
+# independently, so the resulting binaries are NOT functionally chained;
+# they are emitted for util accounting and hardware-shape reference.
+# ---------------------------------------------------------------------------
+
+
+def gemm_output_stationary_epilogue(dim_x: int, dim_y: int, iter_max: int,
+                                     op_kind: str = "MAC",
+                                     useful_cells: int | None = None,
+                                     simd_lanes: int = 1) -> str:
+  _ = op_kind
+  _ = iter_max  # one-shot
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+  bytes_per_word = 4 * max(1, simd_lanes)
+  base_size = max(256, useful_cells * bytes_per_word)
+
+  for i in range(useful_cells):
+    parts: List[str] = []
+    attrs = ('idx="%d" ASAP="0" ALAP="0" BB="0" CONST="0" SHIFT="0" OFFSET="0"'
+             % i)
+    if simd_lanes > 1:
+      attrs += ' simd_packed="true" simd_lanes="%d"' % simd_lanes
+    parts.append('  <Node %s>' % attrs)
+    parts.append('    <OP>%s</OP>' % _v_op("STORE", simd_lanes))
+    parts.append('    <Inputs/>')
+    parts.append('    <Outputs/>')
+    parts.append('    <RecParents/>')
+    parts.append('    <BasePointerName size="%d">var_c</BasePointerName>'
+                 % base_size)
+    parts.append('    <GEPOffset>%d</GEPOffset>' % (i * bytes_per_word))
+    parts.append('  </Node>')
+    nodes.append("\n".join(parts))
+
+  return _wrap_dfg(nodes, iter_max=1)
+
+
+def gemm_output_stationary_epilogue_cells(dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+# ---------------------------------------------------------------------------
+# Template: gemm_weight_stationary
+# ---------------------------------------------------------------------------
+#
+# Weight-stationary mapping:
+#
+#   - Each cell holds one weight in its TREG (loaded once by the prologue).
+#   - Per cycle: ONE input load (A) per row, multiplied with the cell's
+#     stationary weight; outputs stream out per cycle (one STORE per cell
+#     per cycle).
+#   - iter_max = K input samples streamed through.
+#
+# Without a 3-input MAC (see REFERENCE.md), the stationary weight is modeled
+# as an implicit TREG value preloaded by the prologue. The main DFG's MAC
+# nodes read I1=A_load, I2=A_load (degenerate), and TREG=weight. Output is
+# MAC's result, sent to STORE.
+#
+# Simulator caveat: same cross-DFG TREG limitation as OS — the simulator
+# can't access the prologue's TREG state from a separate DFG. For shape and
+# util reference only.
+# ---------------------------------------------------------------------------
+
+
+def gemm_weight_stationary(dim_x: int, dim_y: int, iter_max: int,
+                            op_kind: str = "MAC",
+                            useful_cells: int | None = None,
+                            simd_lanes: int = 1) -> str:
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+
+  # idx layout: input-loads [0..H-1], cells [H..H+W*H-1], stores [H+W*H..]
+  def in_load_idx(r: int) -> int:
+    return r
+
+  def cell_idx(r: int, c: int) -> int:
+    return H + r * W + c
+
+  store_base = H + W * H
+
+  # Input LOADs (one per row, broadcast across columns of cells in that row).
+  for r in range(H):
+    outs: List[Tuple[int, str]] = []
+    for c in range(W):
+      gi = r * W + c
+      if gi < useful_cells:
+        outs.append((cell_idx(r, c), "I1"))
+    nodes.append(_node_xml(in_load_idx(r), _v_op("LOAD", simd_lanes),
+                           asap=0, alap=0,
+                           inputs=[], outputs=outs,
+                           simd_lanes=simd_lanes,
+                           base_name="var_a"))
+
+  # Compute cells: MAC(input, input, stationary_weight). The weight is in
+  # TREG (loaded by the prologue). Each cell's STORE consumes its output.
+  for r in range(H):
+    for c in range(W):
+      gi = r * W + c
+      cur_idx = cell_idx(r, c)
+      if gi >= useful_cells:
+        nodes.append(_node_xml(cur_idx, "NOP", asap=1, alap=1,
+                               inputs=[], outputs=[]))
+        continue
+      # Single-input cell with TREG accumulator: feed LOAD as both I1 and I2
+      # so the MAC's product becomes A*A (representative shape; the real
+      # hardware behavior is A*weight via the implicit 3rd MAC input).
+      ins = [in_load_idx(r)]
+      outs2: List[Tuple[int, str]] = [(store_base + gi, "I1")]
+      nodes.append(_node_xml(cur_idx, _v_op(op_kind, simd_lanes),
+                             asap=1, alap=1,
+                             inputs=ins, outputs=outs2,
+                             simd_lanes=simd_lanes))
+
+  # STOREs (one per useful cell, drained every cycle — WS streams outputs).
+  bytes_per_word = 4 * max(1, simd_lanes)
+  for i in range(useful_cells):
+    nodes.append(_node_xml(store_base + i, _v_op("STORE", simd_lanes),
+                           asap=2, alap=2,
+                           inputs=[cell_idx(i // W, i % W)],
+                           outputs=[],
+                           simd_lanes=simd_lanes,
+                           base_name="var_c",
+                           base_size=max(256, useful_cells * bytes_per_word)))
+
+  return _wrap_dfg(nodes, iter_max)
+
+
+def gemm_weight_stationary_cells(dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+def gemm_weight_stationary_prologue(dim_x: int, dim_y: int, iter_max: int,
+                                     op_kind: str = "MAC",
+                                     useful_cells: int | None = None,
+                                     simd_lanes: int = 1) -> str:
+  """Load one weight per useful cell from var_b into the cell's TREG slot.
+
+  Modeled in the DFG as one LOAD → STORE pair per useful cell, where the
+  STORE writes the weight to a designated `var_b_stat` memory location.
+  The mapper places each pair on a PE; in hardware the PE's TREG should
+  end up holding the loaded weight (requires cross-phase PE assignment;
+  not enforced today).
+  """
+  _ = op_kind
+  _ = iter_max  # one-shot
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+  bytes_per_word = 4 * max(1, simd_lanes)
+  base_size = max(256, useful_cells * bytes_per_word)
+
+  # 2 nodes per cell: LOAD weight from var_b[i] → STORE to var_b_stat[i].
+  # var_b_stat is a separate base; on real hardware it would map to the
+  # PE-local TREG location for that cell.
+  for i in range(useful_cells):
+    load_idx = 2 * i
+    store_idx = 2 * i + 1
+    nodes.append(_node_xml(load_idx, _v_op("LOAD", simd_lanes),
+                           asap=0, alap=0,
+                           inputs=[], outputs=[(store_idx, "I1")],
+                           simd_lanes=simd_lanes,
+                           base_name="var_b",
+                           base_size=base_size))
+    # STORE the loaded weight into the cell's stationary slot.
+    parts: List[str] = []
+    attrs = ('idx="%d" ASAP="1" ALAP="1" BB="0" CONST="0" SHIFT="0" OFFSET="0"'
+             % store_idx)
+    if simd_lanes > 1:
+      attrs += ' simd_packed="true" simd_lanes="%d"' % simd_lanes
+    parts.append('  <Node %s>' % attrs)
+    parts.append('    <OP>%s</OP>' % _v_op("STORE", simd_lanes))
+    parts.append('    <Inputs>')
+    parts.append('      <Input idx="%d"/>' % load_idx)
+    parts.append('    </Inputs>')
+    parts.append('    <Outputs/>')
+    parts.append('    <RecParents/>')
+    parts.append('    <BasePointerName size="%d">var_b_stat</BasePointerName>'
+                 % base_size)
+    parts.append('    <GEPOffset>%d</GEPOffset>' % (i * bytes_per_word))
+    parts.append('  </Node>')
+    nodes.append("\n".join(parts))
+
+  return _wrap_dfg(nodes, iter_max=1)
+
+
+def gemm_weight_stationary_prologue_cells(dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+# ---------------------------------------------------------------------------
 # Template: gemm_chain (mirrors gemm_systolic_1.xml)
 # ---------------------------------------------------------------------------
 #   Linear chain: each LOAD passes through a chain of W compute nodes per row,
@@ -452,11 +770,108 @@ def matvec_parallel_cells(dim_x: int, dim_y: int) -> int:
   return dim_x * dim_y
 
 
+# ---------------------------------------------------------------------------
+# Output-stationary accumulator-init prologue
+# ---------------------------------------------------------------------------
+#
+# Emits a one-shot DFG that writes the value 0 to a designated accumulator-init
+# memory location for each useful compute cell. Intended to precede a main
+# systolic DFG that accumulates partial sums per cell:
+#
+#   prologue:  for each cell c in useful_cells:
+#                 STORE 0 -> var_c[c]      # clear accumulator location
+#   main:      <MAC chain that accumulates into var_c[c] across iter_max cycles>
+#   epilogue:  (optional drain — see gemm_fanout_epilogue)
+#
+# Each prologue node is a STORE whose value is the constant 0. The node has no
+# data inputs; the simulator's executeNode returns the node's CONST when
+# `hasConst && inputs.empty()`. Each STORE targets a distinct GEPOffset within
+# `var_c` so the mapper places useful_cells distinct memory ops.
+#
+# Limitations:
+#   - This prologue clears MEMORY, not the PE's TREG. For *true* hardware
+#     output-stationary (accumulator lives in TREG), the prologue should also
+#     route the const-0 into the same PE's TREG as a downstream MAC. That
+#     requires the prologue and main mappings to share PE assignments (a Phase
+#     2c-equivalent constraint). Today the artifact simulator's MAC already
+#     zero-inits `previousValues_[mac.idx]` on iter 0, so the simulator does
+#     not require the prologue for functional correctness; the prologue is
+#     emitted primarily as a hardware artifact / utilization reference point.
+#   - The mapper does not know that the prologue and main should land on
+#     overlapping PEs; today the prologue's util is reported but its mapping
+#     is independent.
+# ---------------------------------------------------------------------------
+
+
+def gemm_fanout_prologue(dim_x: int, dim_y: int, iter_max: int,
+                         op_kind: str = "ADD", useful_cells: int | None = None,
+                         simd_lanes: int = 1) -> str:
+  """One-shot accumulator-init: write 0 to var_c[0..useful_cells-1].
+
+  Honors the same (W, H, useful_cells, simd_lanes) shape as `gemm_fanout`
+  so the prologue produces one zero-init slot per main-DFG useful cell.
+  `op_kind` and `iter_max` are accepted for signature uniformity; the
+  prologue itself always runs a single iteration and ignores op_kind.
+  """
+  _ = op_kind
+  _ = iter_max  # prologue is one-shot
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+  # `var_c` array size in bytes — must be constant across every node with
+  # base_pointer_name=var_c (the mapper's DFG parser asserts on inconsistent
+  # sizes per name, see DFG.cpp:148). Sized for `useful_cells` SIMD-words
+  # at 4 bytes/lane, padded to the nearest power-of-two slot to give the
+  # mapper room.
+  bytes_per_word = 4 * max(1, simd_lanes)
+  base_size = max(256, useful_cells * bytes_per_word)
+
+  for i in range(useful_cells):
+    # STORE node with CONST=0 and no data inputs. The artifact simulator's
+    # executeNode returns the node's constant when `hasConst && inputs.empty`
+    # (see SimulatorBase.cpp:317), and routes that value into the memory
+    # write path because op startswith STORE/VSTORE. Each cell gets a
+    # distinct GEPOffset slot — i*bytes_per_word — so the resulting store
+    # addresses don't collide. All nodes share size=base_size; the offset
+    # field carries the per-cell distinguishing address.
+    parts: List[str] = []
+    attrs = ('idx="%d" ASAP="0" ALAP="0" BB="0" CONST="0" SHIFT="0" OFFSET="0"'
+             % i)
+    if simd_lanes > 1:
+      attrs += ' simd_packed="true" simd_lanes="%d"' % simd_lanes
+    parts.append('  <Node %s>' % attrs)
+    parts.append('    <OP>%s</OP>' % _v_op("STORE", simd_lanes))
+    parts.append('    <Inputs/>')
+    parts.append('    <Outputs/>')
+    parts.append('    <RecParents/>')
+    parts.append('    <BasePointerName size="%d">var_c</BasePointerName>'
+                 % base_size)
+    parts.append('    <GEPOffset>%d</GEPOffset>' % (i * bytes_per_word))
+    parts.append('  </Node>')
+    nodes.append("\n".join(parts))
+
+  return _wrap_dfg(nodes, iter_max=1)
+
+
+def gemm_fanout_prologue_cells(dim_x: int, dim_y: int) -> int:
+  """useful-cell count for the prologue is the same as its main counterpart."""
+  return dim_x * dim_y
+
+
 TEMPLATES = {
     "gemm_fanout": gemm_fanout,
     "gemm_chain": gemm_chain,
     "matvec_row": matvec_row,
     "matvec_parallel": matvec_parallel,
+    "gemm_fanout_prologue": gemm_fanout_prologue,
+    "gemm_output_stationary": gemm_output_stationary,
+    "gemm_output_stationary_epilogue": gemm_output_stationary_epilogue,
+    "gemm_weight_stationary": gemm_weight_stationary,
+    "gemm_weight_stationary_prologue": gemm_weight_stationary_prologue,
 }
 
 # Per-template "useful compute cells when useful_cells=None (full template)".
@@ -468,6 +883,41 @@ TEMPLATE_DEFAULT_CELLS = {
     "gemm_chain": gemm_chain_cells,
     "matvec_row": matvec_row_cells,
     "matvec_parallel": matvec_parallel_cells,
+    "gemm_fanout_prologue": gemm_fanout_prologue_cells,
+    "gemm_output_stationary": gemm_output_stationary_cells,
+    "gemm_output_stationary_epilogue": gemm_output_stationary_epilogue_cells,
+    "gemm_weight_stationary": gemm_weight_stationary_cells,
+    "gemm_weight_stationary_prologue": gemm_weight_stationary_prologue_cells,
+}
+
+
+# Maps each main-template to its prologue template. Used by the orchestrator
+# when --emit-prologue is set: the main template selects a paired prologue.
+# Absent entries mean "no prologue defined for that main shape".
+PROLOGUE_FOR_TEMPLATE = {
+    "gemm_fanout": "gemm_fanout_prologue",
+    "gemm_chain": "gemm_fanout_prologue",  # same accumulator-init shape
+    "matvec_parallel": "gemm_fanout_prologue",
+    # matvec_row uses a 1D accumulator line; for now a row-scoped prologue
+    # would help, but the gemm_fanout_prologue's per-cell zero-init is a
+    # superset (writes more slots than needed, which is harmless).
+    "matvec_row": "gemm_fanout_prologue",
+    # Output-stationary main needs the same zero-init prologue: clear every
+    # cell's accumulator slot before the K-cycle stream begins.
+    "gemm_output_stationary": "gemm_fanout_prologue",
+    # Weight-stationary main needs a *different* prologue: load weights from
+    # var_b into each cell's stationary slot, not zero them out.
+    "gemm_weight_stationary": "gemm_weight_stationary_prologue",
+}
+
+
+# Maps each main-template to its epilogue template. `--emit-epilogue` maps
+# the listed epilogue as a third phase after main (or second when no
+# prologue). Today only output-stationary has an epilogue; the streaming
+# main templates (gemm_fanout, gemm_chain, matvec_*) drain via per-iter
+# stores already, and weight-stationary streams outputs out per cycle.
+EPILOGUE_FOR_TEMPLATE = {
+    "gemm_output_stationary": "gemm_output_stationary_epilogue",
 }
 
 

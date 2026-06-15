@@ -111,6 +111,9 @@ static cl::opt<unsigned> dp_policy ("dppolicy", cl::init(0), cl::desc("data plac
 static cl::opt<bool> RemoveAGI(
     "remove-agi", cl::init(false),
     cl::desc("Remove address generation instructions (GEPs and helpers) from DFG"));
+static cl::opt<bool> SuppressDFGDot(
+    "suppress-dfg-dot", cl::init(false),
+    cl::desc("Do not emit DFG DOT files; XML and mem allocation outputs are still emitted"));
 
 STATISTIC(LoopsAnalyzed, "Number of loops analyzed for vectorization");
 
@@ -2530,6 +2533,42 @@ std::string getMappingUnitNameUsingTokenFunction(Function &F)
 		"please_map_me() was found but its basic block does not belong to any known mapping unit");
 }
 
+// Optional variant: returns the mapping unit name owning a call to `markerName`
+// (e.g. "please_map_me_peel"), or empty string if no such call exists. Used by
+// the loop-peel P/E path -- the peel marker is only present when the LLVM
+// unroll pass detected a non-divisible trip count and converted the remainder
+// loop's marker (see retagRemainderMarkersAsPeel in morpherLoopUnrollPass.cpp).
+// Erases the marker call on success so it does not contaminate later codegen.
+std::string findMappingUnitForOptionalMarker(Function &F, const std::string &markerName)
+{
+	BasicBlock *MUBB = nullptr;
+	Instruction *checker_ins = nullptr;
+	for (auto &BB : F)
+	{
+		for (auto &I : BB)
+		{
+			if (CallBase *CB = dyn_cast<CallBase>(&I))
+			{
+				Function *calledFn = resolveCalledFunction(CB);
+				if (calledFn && calledFn->getName() == markerName)
+				{
+					MUBB = &BB;
+					checker_ins = cast<Instruction>(CB);
+				}
+			}
+		}
+	}
+	if (!MUBB || !checker_ins)
+		return std::string();
+	checker_ins->eraseFromParent();
+	for (auto it = mappingUnitMap.begin(); it != mappingUnitMap.end(); it++)
+	{
+		if (it->second.allBlocks.count(MUBB) > 0)
+			return it->first;
+	}
+	return std::string();
+}
+
 void AllocateSPMBanks(std::unordered_set<Value *> &outer_vals,
 		std::unordered_map<Value *, GetElementPtrInst *> &mem_ptrs,
 		std::unordered_map<Value *, int> &acc,
@@ -2882,12 +2921,26 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 		LLVM_DEBUG(dbgs() << "--------MAPPING-------" << munitName << " of " << F.getName() << "---------------\n");
 		LLVM_DEBUG(dbgs() << "--------------------------------------------------------------\n");
 
+		// Loop-peel P/E: pick up the optional remainder marker emitted by
+		// `retagRemainderMarkersAsPeel` in the unroll pass. Present only when
+		// LLVM's `UnrollLoop` generated a runtime remainder (TC % U != 0).
+		// We emit a second DFG XML for it in addition to the kernel.
+		std::string peelMunitName = findMappingUnitForOptionalMarker(F, "please_map_me_peel");
+		if (!peelMunitName.empty()) {
+			errs() << "[dfggen] loop-peel: kernel_munit=" << munitName
+				   << " peel_munit=" << peelMunitName << "\n";
+		} else {
+			LLVM_DEBUG(dbgs() << "[dfggen] loop-peel: no remainder loop\n");
+		}
+
 		// Validate loop body for unsupported patterns
 		for (BasicBlock *BB : mappingUnitMap[munitName].allBlocks) {
 			for (Instruction &I : *BB) {
 				if (CallBase *CB = dyn_cast<CallBase>(&I)) {
 					Function *calledFn = resolveCalledFunction(CB);
-					if (calledFn && !calledFn->isIntrinsic() && calledFn->getName() != "please_map_me") {
+					if (calledFn && !calledFn->isIntrinsic()
+					    && calledFn->getName() != "please_map_me"
+					    && calledFn->getName() != "please_map_me_peel") {
 						errs() << "Warning: function call to '" << calledFn->getName()
 							   << "' found in loop body; this may cause issues in DFG generation\n";
 					}
@@ -2896,22 +2949,38 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 		}
 
 		//-----------------------------------
-		// New Code for 2018 work
+		// Per-phase DFG emission (kernel + optional peel).
+		//
+		// Phase 2b note: each phase currently runs its own AllocateSPMBanks.
+		// Both kernel and peel access the same source-level arrays, so a
+		// deterministic allocator that iterates the same array-key set gives
+		// the same answer for both phases. However, the inputs to
+		// AllocateSPMBanks live in unordered containers keyed on LLVM
+		// `Value*`, which differ between the kernel (the unrolled clone)
+		// and the peel (a separate clone), and hash-ordering can therefore
+		// drift. Phase 2c will lift this to a shared allocation pre-computed
+		// across both mapping units; until then peel SPM addresses may not
+		// match kernel for the same array. See PLAN.md / REFERENCE.md.
 		//-----------------------------------
-		{
-			DFGPartPred *LoopDFG = new DFGPartPred(F.getName().str() + "_" + munitName, &loopNames, mappingUnitMap[munitName].lp);
+		auto emitDFGForMappingUnit = [&](const std::string &mname,
+		                                  const std::string &kernelNameSuffix) {
+			DFGPartPred *LoopDFG = new DFGPartPred(
+				F.getName().str() + "_" + mname,
+				&loopNames,
+				mappingUnitMap[mname].lp);
 			LoopDFG->removeAGI = RemoveAGI;
-			LoopDFG->setKernelName(F.getName().str());
+			LoopDFG->suppressDOT = SuppressDFGDot;
+			LoopDFG->setKernelName(F.getName().str() + kernelNameSuffix);
 			LoopDFG->SE = SEPtr;
 			LoopDFG->DT = DTPtr;
 
 			LoopDFG->setBBSuccBasicBlocks(BBSuccBasicBlocks);
 			LoopDFG->sizeArrMap = sizeArrMap;
-			LLVM_DEBUG(dbgs() << "Currently mapping unit : " << munitName << "\n");
-			assert(!mappingUnitMap[munitName].allBlocks.empty());
-			LoopDFG->setLoopBB(mappingUnitMap[munitName].allBlocks,
-					mappingUnitMap[munitName].entryBlocks,
-					mappingUnitMap[munitName].exitBlocks);
+			LLVM_DEBUG(dbgs() << "Currently mapping unit : " << mname << "\n");
+			assert(!mappingUnitMap[mname].allBlocks.empty());
+			LoopDFG->setLoopBB(mappingUnitMap[mname].allBlocks,
+					mappingUnitMap[mname].entryBlocks,
+					mappingUnitMap[mname].exitBlocks);
 			insMap.clear();
 			LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][traverseDefTree begin]\n");
 			for (BasicBlock *B : *LoopDFG->getLoopBB())
@@ -2919,12 +2988,10 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 				int Icount = 0;
 				for (auto &I : *B)
 				{
-
 					if (insMap.find(&I) != insMap.end())
 					{
 						continue;
 					}
-
 					int depth = 0;
 					traverseDefTree(&I, depth, LoopDFG, &insMap, BBSuccBasicBlocks, *LoopDFG->getLoopBB());
 				}
@@ -2934,7 +3001,6 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 			LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][addMemRecDepEdgesNew begin]\n");
 			LoopDFG->addMemRecDepEdgesNew(DIPtr);
 			LLVM_DEBUG(dbgs() << "[Skeleton.cpp][addMemRecDepEdgesNew end]\n\n");
-
 
 			LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][generateTrigDFGDOT begin]\n");
 			LoopDFG->generateTrigDFGDOT(F);
@@ -3026,8 +3092,13 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 			LoopDFG->PrintOuts();
 			LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][PrintOuts] end\n");
 			delete (LoopDFG);
-			return true;
+		};
+
+		emitDFGForMappingUnit(munitName, std::string());
+		if (!peelMunitName.empty()) {
+			emitDFGForMappingUnit(peelMunitName, std::string("_peel"));
 		}
+		return true;
 	  } catch (const DFGGenerationError &e) {
 		errs() << "Error: " << e.what() << "\n";
 		return false;
