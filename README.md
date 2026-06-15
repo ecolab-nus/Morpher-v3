@@ -458,13 +458,13 @@ Useful sweep flags:
 
 ```bash
 python3 scripts/run_arch_sweeps.py --manifest scripts/arch_sweeps.yaml
-python3 scripts/run_arch_sweeps.py --experiment-filter 'unroll_simd4'
+python3 scripts/run_arch_sweeps.py --experiment-filter 'simd4_vred'
 python3 scripts/run_arch_sweeps.py --benchmark-filter '^polybench/' --max-benches 5
-python3 scripts/run_arch_sweeps.py --jobs 4 --timeout-sec 600 --runmode runall
+python3 scripts/run_arch_sweeps.py --jobs 4 --timeout-sec 900 --runmode runall
 python3 scripts/run_arch_sweeps.py --output-dir generated/morpher_runs/arch_sweeps/custom
 ```
 
-Manifest knobs live in `scripts/arch_sweeps.yaml`: suite-level `base_config`, `runmode`, `jobs`, `timeout_sec`, `filters`, `max_benches`, `common_overrides`, `arches`, and per-variant `name`, `description`, `base_config`, `overrides`. The sweep script deep-merges config overrides and sets `arch_template_json` for each architecture.
+Manifest knobs live in `scripts/arch_sweeps.yaml`: suite-level `base_config`, `runmode`, `jobs`, `timeout_sec`, `filters`, `max_benches`, `common_overrides`, `arches`, and per-variant `name`, `description`, `base_config`, `arch_filter`, `overrides`. The sweep script deep-merges config overrides and sets `arch_template_json` for each architecture. SIMD is inferred from the selected architecture JSON; do not use legacy top-level `simd.*` overrides in sweep variants.
 
 Available sweep suites from `scripts/arch_sweeps.yaml`:
 

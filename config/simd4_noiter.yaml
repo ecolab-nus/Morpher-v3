@@ -13,5 +13,4 @@ remove_iter: true
 auto_unroll:
   enabled: false
   factors: [1]
-  remainder_policy: preserve
   stop_on_degradation: true

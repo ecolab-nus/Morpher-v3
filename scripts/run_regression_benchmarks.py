@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -13,6 +15,40 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def terminate_process_group(process: subprocess.Popen, grace_sec: float = 3.0) -> None:
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        process.wait(timeout=grace_sec)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait()
+
+
+def run_process_group(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+    process = subprocess.Popen(cmd, cwd=cwd, start_new_session=True)
+    try:
+        process.wait()
+    except BaseException:
+        terminate_process_group(process)
+        raise
+    return subprocess.CompletedProcess(cmd, process.returncode)
 
 
 @dataclass(frozen=True)
@@ -240,7 +276,7 @@ def main() -> int:
     )
     print("\n$ " + " ".join(cmd))
     sys.stdout.flush()
-    completed = subprocess.run(cmd, cwd=repo_root, check=False)
+    completed = run_process_group(cmd, cwd=repo_root)
     if args.dry_run:
         return completed.returncode
 

@@ -1,0 +1,18 @@
+memory_mode: auto
+arch_template_json: hycube_edgePEMEMs.json
+mapper_subfolder: hycube
+mapper_preset: "fast"
+init_II: 1
+multihop: 4
+max_test_samples: 2
+enable_simulation: true
+validation_mode: functional
+spm_mode: 'off'
+remove_agi: true
+remove_iter: true
+layout_solver: true
+replicate_data: false
+auto_unroll:
+  enabled: true
+  factors: [2]
+  stop_on_degradation: false
