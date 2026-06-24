@@ -44,6 +44,10 @@ SimulatorBase::SimulatorBase(DFGGraph graph, Mapping mapping, MemAlloc alloc,
       externalAddressOffsets_(),
       externalValueOffsets_() {}
 
+const TraceImage &SimulatorBase::traceImage() const {
+  return trace_;
+}
+
 Value SimulatorBase::inputValue(const DFGNode &node, size_t index) const {
   if (index >= node.inputs.size()) {
     if (node.hasConst) {
@@ -114,7 +118,10 @@ bool SimulatorBase::predicateAllows(const DFGNode &node) const {
   bool allowed = false;
   for (size_t i = 0; i < node.inputs.size(); ++i) {
     const EdgeRef &edge = node.inputs[i];
-    if (edge.type != "P" && edge.type != "PS") {
+    // PS edges carry memory/address sequencing in pruned Morpher DFGs.  They
+    // are not boolean guards; treating them as predicates skips valid memory
+    // events whenever the producer's data value is zero.
+    if (edge.type != "P") {
       continue;
     }
     sawPredicate = true;
@@ -221,7 +228,8 @@ std::vector<uint32_t> SimulatorBase::memoryAddresses(const DFGNode &node) {
   return addresses;
 }
 
-Value SimulatorBase::executeNode(const DFGNode &node) {
+Value SimulatorBase::executeNode(const DFGNode &node,
+                                 const Value *physicalMacAccumulator) {
   if (isLoadOp(node.op)) {
     if (!predicateAllows(node)) {
       return Value::invalid();
@@ -314,7 +322,8 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
     return data;
   }
 
-  if (node.hasConst && node.inputs.empty()) {
+  if (node.hasConst && node.inputs.empty()
+      && node.op != "MAC" && node.op != "VMAC") {
     return node.simdPacked ? Value::broadcast(node.constValue, node.simdLanes) : Value(node.constValue);
   }
 
@@ -387,11 +396,20 @@ Value SimulatorBase::executeNode(const DFGNode &node) {
       return Value::invalid();
     }
     Value acc;
-    auto prevIt = previousValues_.find(node.idx);
-    if (prevIt != previousValues_.end() && prevIt->second.isValid()) {
-      acc = prevIt->second;
+    if (physicalMacAccumulator != nullptr
+        && physicalMacAccumulator->isValid()) {
+      acc = *physicalMacAccumulator;
     } else {
-      acc = node.simdPacked ? Value::broadcast(0u, node.simdLanes) : Value(0u);
+      auto prevIt = previousValues_.find(node.idx);
+      if (physicalMacAccumulator == nullptr
+          && prevIt != previousValues_.end()
+          && prevIt->second.isValid()) {
+        acc = prevIt->second;
+      } else {
+        acc = node.simdPacked
+                  ? Value::broadcast(0u, node.simdLanes)
+                  : Value(0u);
+      }
     }
     Value product = binaryOp(a, b, "MUL");
     return binaryOp(product, acc, "ADD");
@@ -473,7 +491,18 @@ SimResult SimulatorBase::compare() const {
   SimResult result;
   for (const auto &entry : trace_.expected) {
     if (!isStoreCovered(entry.first)) continue;
-    if (!writtenAddresses_.empty() && !writtenAddresses_.count(entry.first)) continue;
+    if (storedBases.empty() && !writtenAddresses_.count(entry.first)) {
+      continue;
+    }
+    if (!storedBases.empty() && !writtenAddresses_.count(entry.first)) {
+      if (result.mismatches < 16) {
+        std::cerr << "Mismatch addr=" << entry.first
+                  << " was not written; expected="
+                  << static_cast<unsigned>(entry.second) << "\n";
+      }
+      result.mismatches++;
+      continue;
+    }
     uint8_t actual = trace_.initial.getByte(entry.first);
     if (actual == entry.second) {
       result.matches++;

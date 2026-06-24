@@ -63,7 +63,7 @@ MemAlloc parseMemAlloc(const std::string &path) {
       continue;
     }
     auto parts = splitCsv(line);
-    if (parts.size() < 2 || parts[0] == "var_name") {
+    if (parts.size() < 2 || parts[0] == "var_name" || parts[0] == "var") {
       continue;
     }
     alloc.base[parts[0]] = static_cast<uint32_t>(std::stoul(parts[1]));

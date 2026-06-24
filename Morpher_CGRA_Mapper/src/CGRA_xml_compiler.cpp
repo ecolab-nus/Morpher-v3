@@ -64,6 +64,7 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "off_spm_mem_candidate_topk=" << args.off_spm_mem_candidate_topk << "\n";
 	std::cout << "spm_mode=" << args.spm_mode << "\n";
 	std::cout << "arch_name=" << args.arch_name << "\n\n";
+	std::cout << "fanout_route_policy=" << args.fanout_route_policy << "\n\n";
 	std::cout << std::flush;
 }
 }
@@ -231,6 +232,8 @@ int main(int argn, char *argc[])
 	sa_mapper->backTrackLimit = args.backtracklimit;
 	pf_mapper->proximitySort = args.proximity_sort;
 	sa_mapper->proximitySort = args.proximity_sort;
+	pf_mapper->setFanoutRoutePolicy(args.fanout_route_policy);
+	sa_mapper->setFanoutRoutePolicy(args.fanout_route_policy);
 	pf_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;
 	sa_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;
 

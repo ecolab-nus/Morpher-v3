@@ -39,10 +39,15 @@ protected:
   Value secondDataInput(const DFGNode &node) const;
   bool predicateAllows(const DFGNode &node) const;
   std::vector<uint32_t> memoryAddresses(const DFGNode &node);
-  Value executeNode(const DFGNode &node);
+  Value executeNode(const DFGNode &node,
+                    const Value *physicalMacAccumulator = nullptr);
   bool shouldStop() const;
   SimResult compare() const;
 
+public:
+  const TraceImage &traceImage() const;
+
+protected:
   DFGGraph graph_;
   Mapping mapping_;
   MemAlloc alloc_;

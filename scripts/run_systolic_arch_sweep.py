@@ -33,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BENCH_ROOT = REPO_ROOT / "Morpher_DFG_Generator" / "benchmarks"
 PLUGIN = REPO_ROOT / "Morpher_DFG_Generator" / "build" / "src" / "libdfggenPass.so"
 SYNTH = REPO_ROOT / "scripts" / "synthesize_systolic.py"
+SOURCE_LOWER = REPO_ROOT / "scripts" / "lower_source_systolic.py"
 DEFAULT_CONFIG = REPO_ROOT / "config" / "default.yaml"
 DEFAULT_OUTPUT = REPO_ROOT / "generated" / "morpher_runs" / "systolic_arch_sweep"
 
@@ -279,6 +280,15 @@ _SYNTH_ROW_RE = re.compile(
 )
 
 
+def _float_or_none(text: object) -> float | None:
+    try:
+        if text in ("", "-", None):
+            return None
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_synth_rows(log_file: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     if not log_file.exists():
@@ -288,6 +298,34 @@ def parse_synth_rows(log_file: Path) -> list[dict[str, str]]:
         if not match:
             continue
         rows.append(match.groupdict())
+    return rows
+
+
+def parse_source_lower_rows(log_file: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if not log_file.exists():
+        return rows
+    for line in log_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("kernel "):
+            continue
+        parts = line.split(maxsplit=9)
+        if len(parts) < 10:
+            continue
+        rows.append(
+            {
+                "kernel": parts[0],
+                "map_status": parts[1],
+                "ii": "" if parts[2] == "-" else parts[2],
+                "util_phase": "" if parts[3] == "-" else parts[3],
+                "source_equivalent": parts[4],
+                "verified": parts[5],
+                "matches": parts[6],
+                "mismatches": parts[7],
+                "family": parts[8],
+                "reject_reason": "" if parts[9] == "-" else parts[9].strip('"'),
+            }
+        )
     return rows
 
 
@@ -336,6 +374,18 @@ def run_synth_task(
                 "ii": "",
                 "map_status": empty_status,
                 "comp_util": "",
+                "winner": "regular_dfg",
+                "source_equivalent": "false",
+                "systolic_verified": "false",
+                "systolic_verify_matches": "0",
+                "systolic_verify_mismatches": "0",
+                "systolic_lowering_family": "",
+                "systolic_reject_reason": "shape-template row is not source-equivalent",
+                "regular_util_phase": "",
+                "systolic_util_phase": "",
+                "regular_normalized_score": "",
+                "systolic_normalized_score": "",
+                "adoption_reason": "shape-template rows cannot be unified winners",
                 "return_code": rc,
                 "timeout": timed_out,
                 "elapsed_sec": f"{elapsed:.3f}",
@@ -357,6 +407,108 @@ def run_synth_task(
                 "ii": "" if row["ii"] == "-" else row["ii"],
                 "map_status": row["map_status"],
                 "comp_util": "" if row["util"] == "-" else row["util"],
+                "winner": "regular_dfg",
+                "source_equivalent": "false",
+                "systolic_verified": "false",
+                "systolic_verify_matches": "0",
+                "systolic_verify_mismatches": "0",
+                "systolic_lowering_family": "",
+                "systolic_reject_reason": "shape-template row is not source-equivalent",
+                "regular_util_phase": "",
+                "systolic_util_phase": "",
+                "regular_normalized_score": "",
+                "systolic_normalized_score": "",
+                "adoption_reason": "shape-template rows cannot be unified winners",
+                "return_code": rc,
+                "timeout": timed_out,
+                "elapsed_sec": f"{elapsed:.3f}",
+                "log_file": str(log_file),
+            }
+        )
+    return rows
+
+
+def run_source_lower_task(
+    task: SynthTask,
+    *,
+    config: Path,
+    timeout_sec: int,
+) -> list[dict[str, object]]:
+    arch_stem = Path(task.arch).stem
+    bench_stem = without_c_suffix(task.benchmark.rel_source.replace("/", "__"))
+    out = task.output_dir / "source_lowered" / arch_stem / bench_stem
+    log_file = out / "source_lower.log"
+    cmd = [
+        sys.executable,
+        str(SOURCE_LOWER),
+        "--report",
+        str(task.report),
+        "--output-dir",
+        str(out),
+        "--config",
+        str(config),
+        "--arch",
+        task.arch,
+    ]
+    rc, timed_out, elapsed = run_logged(
+        cmd, cwd=REPO_ROOT, log_file=log_file, timeout_sec=timeout_sec
+    )
+    parsed = parse_source_lower_rows(log_file)
+    if not parsed:
+        status = "timeout" if timed_out else ("failed" if rc != 0 else "no_source_candidates")
+        parsed = [
+            {
+                "kernel": "",
+                "map_status": status,
+                "ii": "",
+                "util_phase": "",
+                "source_equivalent": "false",
+                "verified": "false",
+                "matches": "0",
+                "mismatches": "0",
+                "family": "",
+                "reject_reason": status,
+            }
+        ]
+    rows: list[dict[str, object]] = []
+    for row in parsed:
+        systolic_score = _float_or_none(row.get("ii"))
+        adoption_reason = row.get("reject_reason") or "source-equivalent systolic did not beat regular DFG"
+        winner = "regular_dfg"
+        if (
+            row.get("source_equivalent") == "true"
+            and row.get("verified") == "true"
+            and row.get("map_status") == "success"
+        ):
+            # The regular DFG score is not produced by this historical
+            # synth-only sweep driver. Do not allow adoption without that
+            # comparison; unified arch sweeps can fill the regular columns.
+            adoption_reason = "regular DFG score unavailable in this sweep; fallback"
+        rows.append(
+            {
+                "benchmark": task.benchmark.rel_source,
+                "function": task.benchmark.function,
+                "arch": task.arch,
+                "kernel": row.get("kernel", ""),
+                "verdict": "",
+                "template": "source_lowered",
+                "cells": "",
+                "nops": "",
+                "ii": row.get("ii", ""),
+                "map_status": row.get("map_status", ""),
+                "comp_util": "",
+                "winner": winner,
+                "source_equivalent": row.get("source_equivalent", "false"),
+                "systolic_verified": row.get("verified", "false"),
+                "systolic_verify_matches": row.get("matches", "0"),
+                "systolic_verify_mismatches": row.get("mismatches", "0"),
+                "systolic_lowering_family": row.get("family", ""),
+                "systolic_reject_reason": row.get("reject_reason", ""),
+                "regular_util_phase": "",
+                "systolic_util_phase": row.get("util_phase", ""),
+                "regular_normalized_score": "",
+                "systolic_normalized_score": "" if systolic_score is None else f"{systolic_score:.6f}",
+                "adoption_reason": adoption_reason,
                 "return_code": rc,
                 "timeout": timed_out,
                 "elapsed_sec": f"{elapsed:.3f}",
@@ -398,6 +550,11 @@ def parse_args() -> argparse.Namespace:
         default="none",
     )
     parser.add_argument("--prefer-parallel-matvec", action="store_true")
+    parser.add_argument(
+        "--candidate-only",
+        action="store_true",
+        help="Generate candidate reports/summary and stop before template mapping",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -461,6 +618,9 @@ def main() -> int:
             "log_file",
         ],
     )
+    if args.candidate_only:
+        print(f"Candidate CSV: {candidate_csv}")
+        return 0
 
     report_by_bench = {
         (str(row["benchmark"]), str(row["function"])): Path(row["report"])
@@ -516,6 +676,32 @@ def main() -> int:
             )
             sys.stdout.flush()
 
+    print(f"Mapping source-equivalent systolic lowerings for {len(tasks)} benchmark/arch pairs...")
+    sys.stdout.flush()
+    source_rows: list[dict[str, object]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        future_to_task = {
+            pool.submit(
+                run_source_lower_task,
+                task,
+                config=config,
+                timeout_sec=args.synth_timeout_sec,
+            ): task
+            for task in tasks
+        }
+        for idx, future in enumerate(concurrent.futures.as_completed(future_to_task), start=1):
+            task = future_to_task[future]
+            rows = future.result()
+            source_rows.extend(rows)
+            ok = sum(1 for row in rows if row.get("map_status") == "success")
+            print(
+                f"[source {idx}/{len(tasks)}] {task.benchmark.rel_source} "
+                f"{task.arch}: rows={len(rows)} success={ok}"
+            )
+            sys.stdout.flush()
+
+    result_rows.extend(source_rows)
+
     results_csv = output_dir / "systolic_arch_results.csv"
     write_csv(
         results_csv,
@@ -532,6 +718,18 @@ def main() -> int:
             "ii",
             "map_status",
             "comp_util",
+            "winner",
+            "source_equivalent",
+            "systolic_verified",
+            "systolic_verify_matches",
+            "systolic_verify_mismatches",
+            "systolic_lowering_family",
+            "systolic_reject_reason",
+            "regular_util_phase",
+            "systolic_util_phase",
+            "regular_normalized_score",
+            "systolic_normalized_score",
+            "adoption_reason",
             "return_code",
             "timeout",
             "elapsed_sec",

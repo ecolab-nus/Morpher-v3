@@ -256,6 +256,12 @@ public:
 		FAIL_SANITY,
 		FAIL_BINARY_EMIT
 	};
+	enum class FanoutRoutePolicy
+	{
+		ADAPTIVE = 0,
+		BROADCAST,
+		CHAINED
+	};
 
 	PathFinderMapper(std::string fName)
 	{
@@ -281,6 +287,7 @@ public:
 	int backTrackLimit = 4;
 	bool proximitySort = true;
 	int offSpmMemCandidateTopK = 0;
+	FanoutRoutePolicy fanoutRoutePolicy = FanoutRoutePolicy::ADAPTIVE;
 
 	int upperboundII = 1000000;
 	int upperboundIter = -1;
@@ -325,6 +332,21 @@ public:
 	bool canExitCurrPE(LatPort p);
 	static bool checkMEMOp(string op);
 	void setMaxIter(int m){maxIter = m;}
+	void setFanoutRoutePolicy(const std::string &policy)
+	{
+		if (policy == "broadcast")
+		{
+			fanoutRoutePolicy = FanoutRoutePolicy::BROADCAST;
+		}
+		else if (policy == "chained")
+		{
+			fanoutRoutePolicy = FanoutRoutePolicy::CHAINED;
+		}
+		else
+		{
+			fanoutRoutePolicy = FanoutRoutePolicy::ADAPTIVE;
+		}
+	}
 
 	bool Check_DFG_CGRA_Compatibility();
 

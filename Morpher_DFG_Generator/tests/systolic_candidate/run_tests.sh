@@ -31,6 +31,7 @@ declare -A EXPECTED_VERDICT=(
   [ssa_reduction]=maybe
   [bicg]=maybe
   [jacobi_2d]=maybe
+  [conv2d_2x2]=maybe
 )
 
 declare -A EXPECTED_REJECT=(
@@ -89,6 +90,23 @@ for fixture in "${!EXPECTED_VERDICT[@]}"; do
       FAIL_COUNT=$((FAIL_COUNT + 1))
       continue
     fi
+  fi
+
+  if [[ "${fixture}" == "conv2d_2x2" ]]; then
+    for needle in \
+      '"weighted_terms":4' \
+      '"coefficients_known":true' \
+      '"coefficient":-3' \
+      '"coefficient":2' \
+      '"coefficient":5' \
+      '"coefficient":6'; do
+      if ! grep -q "${needle}" "${report}"; then
+        echo "FAIL ${fixture}: expected source expression fact ${needle}, got:"
+        cat "${report}" | head -5
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        continue 2
+      fi
+    done
   fi
 
   echo "PASS ${fixture}: verdict=${expected_verdict}"

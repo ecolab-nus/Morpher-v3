@@ -29,7 +29,9 @@
 #include "llvm/Transforms/Utils/LCSSA.h"
 #include "llvm/Transforms/Utils/LoopSimplify.h"
 
+#include <algorithm>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -58,7 +60,13 @@ struct MemopInfo {
   Instruction *inst = nullptr;
   bool isStore = false;
   Value *basePtr = nullptr;
+  const SCEV *ptrSCEV = nullptr;
   DenseSet<const Loop *> deps; // nest loops this memop's pointer SCEV depends on
+};
+
+struct WeightedTerm {
+  const LoadInst *load = nullptr;
+  int64_t coefficient = 0;
 };
 
 // ----------------------------------------------------------------------------
@@ -68,7 +76,8 @@ struct MemopInfo {
 // Phase 3 relaxation: enumerate every innermost loop and walk up to its
 // outermost ancestor. This finds nest candidates even when outer levels have
 // multiple subloop children (e.g., 2mm's shared outer loop hosting two
-// sibling inner contractions). Each innermost loop yields one nest.
+// sibling inner contractions). A single loop is also a valid candidate for
+// 1-D convolutions and independent dot products.
 SmallVector<NestRecord, 4> findNests(LoopInfo &LI) {
   SmallVector<NestRecord, 4> out;
   for (Loop *L : LI.getLoopsInPreorder()) {
@@ -77,8 +86,6 @@ SmallVector<NestRecord, 4> findNests(LoopInfo &LI) {
     SmallVector<Loop *, 4> chain;
     for (Loop *cur = L; cur != nullptr; cur = cur->getParentLoop())
       chain.push_back(cur);
-    if (chain.size() < 2)
-      continue;
     NestRecord rec;
     rec.outer = chain.back();
     for (auto it = chain.rbegin(); it != chain.rend(); ++it)
@@ -269,6 +276,7 @@ bool collectMemops(NestRecord &rec, ScalarEvolution &SE,
       mi.inst = &I;
       mi.isStore = isStore;
       mi.basePtr = resolveBasePointer(ptrOp);
+      mi.ptrSCEV = ptrSCEV;
       mi.deps = std::move(*depsOpt);
       out.push_back(std::move(mi));
     }
@@ -435,10 +443,13 @@ bool isIVUpdate(Instruction *I) {
 // loaded values; characteristic of stencil reduction trees like
 // out = in[i-1][j] + in[i+1][j] + ...). Not double-counted with MACs.
 void countBodyOps(Loop *inner, unsigned &outMacs, unsigned &outStencil,
-                  unsigned &outTotal) {
+                  unsigned &outTotal, unsigned &outMulOps,
+                  unsigned &outAddOps) {
   outMacs = 0;
   outStencil = 0;
   outTotal = 0;
+  outMulOps = 0;
+  outAddOps = 0;
   for (BasicBlock *BB : inner->getBlocks()) {
     for (Instruction &I : *BB) {
       // fmuladd/fma intrinsic: counts as one MAC and one arith op.
@@ -447,6 +458,8 @@ void countBodyOps(Loop *inner, unsigned &outMacs, unsigned &outStencil,
         if (id == Intrinsic::fmuladd || id == Intrinsic::fma) {
           outTotal++;
           outMacs++;
+          outMulOps++;
+          outAddOps++;
           continue;
         }
       }
@@ -457,6 +470,10 @@ void countBodyOps(Loop *inner, unsigned &outMacs, unsigned &outStencil,
       if (isAddressArith(&I))
         continue;
       outTotal++;
+      if (isMulShape(I.getOpcode()))
+        outMulOps++;
+      if (isAddShape(I.getOpcode()))
+        outAddOps++;
       if (!isAddShape(I.getOpcode()))
         continue;
       // MAC pattern: add(mul, x) where the mul has a single use.
@@ -493,6 +510,72 @@ void countBodyOps(Loop *inner, unsigned &outMacs, unsigned &outStencil,
         outStencil++;
     }
   }
+}
+
+bool collectIntegerWeightedTerms(Value *V, int64_t scale,
+                                 SmallVectorImpl<WeightedTerm> &terms,
+                                 unsigned depthBudget = 32) {
+  if (depthBudget == 0)
+    return false;
+  if (auto *cast = dyn_cast<CastInst>(V))
+    return collectIntegerWeightedTerms(cast->getOperand(0), scale, terms,
+                                       depthBudget - 1);
+  if (auto *load = dyn_cast<LoadInst>(V)) {
+    terms.push_back({load, scale});
+    return true;
+  }
+  auto *bin = dyn_cast<BinaryOperator>(V);
+  if (!bin)
+    return false;
+  if (bin->getOpcode() == Instruction::Add) {
+    return collectIntegerWeightedTerms(bin->getOperand(0), scale, terms,
+                                       depthBudget - 1) &&
+           collectIntegerWeightedTerms(bin->getOperand(1), scale, terms,
+                                       depthBudget - 1);
+  }
+  if (bin->getOpcode() == Instruction::Sub) {
+    if (scale == std::numeric_limits<int64_t>::min())
+      return false;
+    return collectIntegerWeightedTerms(bin->getOperand(0), scale, terms,
+                                       depthBudget - 1) &&
+           collectIntegerWeightedTerms(bin->getOperand(1), -scale, terms,
+                                       depthBudget - 1);
+  }
+  if (bin->getOpcode() == Instruction::Mul) {
+    for (unsigned constantOperand = 0; constantOperand < 2;
+         ++constantOperand) {
+      auto *constant = dyn_cast<ConstantInt>(bin->getOperand(constantOperand));
+      if (!constant || constant->getBitWidth() > 64)
+        continue;
+      int64_t product = 0;
+      if (__builtin_mul_overflow(scale, constant->getSExtValue(), &product))
+        return false;
+      return collectIntegerWeightedTerms(
+          bin->getOperand(1 - constantOperand), product, terms,
+          depthBudget - 1);
+    }
+    return false;
+  }
+  if (bin->getOpcode() == Instruction::Shl) {
+    auto *shift = dyn_cast<ConstantInt>(bin->getOperand(1));
+    if (!shift || shift->getValue().uge(63))
+      return false;
+    int64_t factor = int64_t{1} << shift->getZExtValue();
+    int64_t product = 0;
+    if (__builtin_mul_overflow(scale, factor, &product))
+      return false;
+    return collectIntegerWeightedTerms(bin->getOperand(0), product, terms,
+                                       depthBudget - 1);
+  }
+  return false;
+}
+
+const MemopInfo *findMemopForInstruction(
+    const SmallVectorImpl<MemopInfo> &memops, const Instruction *inst) {
+  for (const MemopInfo &memop : memops)
+    if (memop.inst == inst)
+      return &memop;
+  return nullptr;
 }
 
 // ----------------------------------------------------------------------------
@@ -680,12 +763,68 @@ void writeQuoted(raw_ostream &OS, StringRef S) {
   OS << '"';
 }
 
+std::string valueName(Value *V, StringRef fallback) {
+  if (V && V->hasName())
+    return V->getName().str();
+  return fallback.str();
+}
+
+std::string opcodeSummary(const Instruction *I) {
+  if (!I)
+    return "unknown";
+  if (auto *LD = dyn_cast<LoadInst>(I))
+    return (Twine("load.") + Twine(LD->getType()->getScalarSizeInBits())).str();
+  if (auto *ST = dyn_cast<StoreInst>(I))
+    return (Twine("store.") +
+            Twine(ST->getValueOperand()->getType()->getScalarSizeInBits())).str();
+  return I->getOpcodeName();
+}
+
+std::optional<uint64_t> constantTripCount(Loop *L, ScalarEvolution &SE) {
+  const SCEV *backedge = SE.getBackedgeTakenCount(L);
+  if (auto *C = dyn_cast<SCEVConstant>(backedge)) {
+    const APInt &v = C->getAPInt();
+    if (!v.isNegative())
+      return v.getZExtValue() + 1;
+  }
+  unsigned small = SE.getSmallConstantTripCount(L);
+  if (small > 0)
+    return small;
+  return std::nullopt;
+}
+
+StringRef loweringFamilyFor(Function &F, const NestRecord &rec,
+                            const DenseSet<const Loop *> &reductionLoops,
+                            unsigned macs, unsigned stencilPairs,
+                            bool exactWeightedSum) {
+  (void)F;
+  unsigned parallel = 0;
+  for (Loop *L : rec.levels)
+    if (!reductionLoops.count(L))
+      parallel++;
+  if (parallel == 1 && reductionLoops.size() == 1 && macs > 0)
+    return "dot_1d_reduction";
+  if (parallel >= 1 && reductionLoops.empty() &&
+      (macs > 0 || stencilPairs > 0 || exactWeightedSum))
+    return parallel == 2 ? "stencil2d_weighted_sum" : "fixed_weighted_sum";
+  if (parallel == 2 && reductionLoops.size() == 1 && macs > 0)
+    return "gemm_like_2d_reduction";
+  return "unsupported";
+}
+
+bool sourceEquivalentCandidateFor(StringRef family, StringRef verdict,
+                                  StringRef rejectReason) {
+  return verdict != "no" && rejectReason.empty() && family != "unsupported";
+}
+
 void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
+               ScalarEvolution &SE,
                StringRef verdict, ArrayRef<std::string> hints,
                const SmallVectorImpl<MemopInfo> &memops,
                const DenseSet<const Loop *> &reductionLoops,
                const DenseSet<const Loop *> &outputDeps, unsigned macs,
-               unsigned stencilPairs, unsigned totalArith,
+               unsigned stencilPairs, unsigned totalArith, unsigned mulOps,
+               unsigned addOps,
                ArrayRef<const MemopInfo *> stores,
                unsigned triangularLoops, double kernelShapeFactor,
                StringRef rejectReason) {
@@ -697,6 +836,21 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
   OS << ",\"verdict\":";
   writeQuoted(OS, verdict);
   OS << ",\"depth\":" << rec.levels.size();
+  OS << ",\"trip_counts\":[";
+  for (unsigned i = 0; i < rec.levels.size(); ++i) {
+    if (i) OS << ",";
+    OS << "{\"level\":" << i;
+    OS << ",\"iv\":";
+    writeQuoted(OS, rec.ivNames[i]);
+    OS << ",\"trip_count\":";
+    auto tc = constantTripCount(rec.levels[i], SE);
+    if (tc)
+      OS << *tc;
+    else
+      OS << "null";
+    OS << "}";
+  }
+  OS << "]";
   OS << ",\"loop_classes\":[";
   for (unsigned i = 0; i < rec.levels.size(); ++i) {
     if (i) OS << ",";
@@ -713,7 +867,96 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
   OS << ",\"mac_pairs\":" << macs;
   OS << ",\"stencil_pairs\":" << stencilPairs;
   OS << ",\"total_arith\":" << totalArith;
+  OS << ",\"arithmetic_summary\":{";
+  OS << "\"mac_pairs\":" << macs;
+  OS << ",\"stencil_pairs\":" << stencilPairs;
+  OS << ",\"total_arith\":" << totalArith;
+  OS << ",\"mul_ops\":" << mulOps;
+  OS << ",\"add_ops\":" << addOps;
+  // Constant multiplications may be strength-reduced into shifts/adds before
+  // this pass.  For a fixed weighted sum, add-tree arity is therefore often
+  // stronger evidence than the number of surviving MUL instructions.
+  unsigned weightedTerms = std::max(mulOps, addOps > 0 ? addOps + 1 : 0);
+  OS << ",\"weighted_terms\":" << weightedTerms;
+  SmallVector<WeightedTerm, 8> weightedSumTerms;
+  bool coefficientsKnown = false;
+  if (reductionLoops.empty() && stores.size() == 1) {
+    if (auto *store = dyn_cast<StoreInst>(stores[0]->inst)) {
+      coefficientsKnown = collectIntegerWeightedTerms(
+          store->getValueOperand(), 1, weightedSumTerms);
+      if (!coefficientsKnown)
+        weightedSumTerms.clear();
+    }
+  }
+  OS << ",\"coefficients_known\":"
+     << (coefficientsKnown ? "true" : "false");
+  OS << ",\"weighted_sum_terms\":[";
+  for (unsigned i = 0; i < weightedSumTerms.size(); ++i) {
+    if (i)
+      OS << ",";
+    const WeightedTerm &term = weightedSumTerms[i];
+    const MemopInfo *memop = findMemopForInstruction(memops, term.load);
+    OS << "{\"coefficient\":" << term.coefficient;
+    OS << ",\"base\":";
+    writeQuoted(OS, memop ? valueName(memop->basePtr, "anon") : "unknown");
+    OS << ",\"pointer_scev\":";
+    if (memop && memop->ptrSCEV) {
+      std::string scevText;
+      raw_string_ostream scevOS(scevText);
+      memop->ptrSCEV->print(scevOS);
+      scevOS.flush();
+      writeQuoted(OS, scevText);
+    } else {
+      OS << "null";
+    }
+    OS << "}";
+  }
+  OS << "]";
+  OS << ",\"supported_ops\":[";
+  bool wroteOp = false;
+  if (macs > 0) {
+    writeQuoted(OS, "mul_add");
+    wroteOp = true;
+  }
+  if (stencilPairs > 0) {
+    if (wroteOp) OS << ",";
+    writeQuoted(OS, "add_tree");
+  }
+  OS << "]}";
   OS << ",\"memops\":" << memops.size();
+  OS << ",\"affine_accesses\":[";
+  for (unsigned i = 0; i < memops.size(); ++i) {
+    if (i) OS << ",";
+    const MemopInfo &m = memops[i];
+    OS << "{\"kind\":";
+    writeQuoted(OS, m.isStore ? "store" : "load");
+    OS << ",\"base\":";
+    writeQuoted(OS, valueName(m.basePtr, (Twine("anon") + Twine(i)).str()));
+    OS << ",\"opcode\":";
+    writeQuoted(OS, opcodeSummary(m.inst));
+    OS << ",\"pointer_scev\":";
+    if (m.ptrSCEV) {
+      std::string scevText;
+      raw_string_ostream scevOS(scevText);
+      m.ptrSCEV->print(scevOS);
+      scevOS.flush();
+      writeQuoted(OS, scevText);
+    } else {
+      OS << "null";
+    }
+    OS << ",\"loop_coefficients\":{";
+    bool first = true;
+    for (unsigned l = 0; l < rec.levels.size(); ++l) {
+      if (!m.deps.count(rec.levels[l]))
+        continue;
+      if (!first) OS << ",";
+      first = false;
+      writeQuoted(OS, rec.ivNames[l]);
+      OS << ":1";
+    }
+    OS << "}}";
+  }
+  OS << "]";
   OS << ",\"triangular_loops\":" << triangularLoops;
   // Emit as fixed-point float so downstream JSON parsers see a number.
   char buf[32];
@@ -736,6 +979,19 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
     writeQuoted(OS, hints[i]);
   }
   OS << "]";
+  StringRef family = loweringFamilyFor(F, rec, reductionLoops, macs,
+                                       stencilPairs, coefficientsKnown);
+  OS << ",\"lowering_family\":";
+  writeQuoted(OS, family);
+  OS << ",\"source_equivalent_candidate\":"
+     << (sourceEquivalentCandidateFor(family, verdict, rejectReason) ? "true" : "false");
+  OS << ",\"systolic_reject_reason\":";
+  if (sourceEquivalentCandidateFor(family, verdict, rejectReason))
+    OS << "null";
+  else if (!rejectReason.empty())
+    writeQuoted(OS, rejectReason);
+  else
+    writeQuoted(OS, "unsupported source-equivalent lowering family");
   if (verdict != "no") {
     OS << ",\"recommended_flags\":{\"remove_iter\":true,\"remove_agi\":true}";
   }
@@ -789,6 +1045,8 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
       unsigned macs = 0;
       unsigned stencilPairs = 0;
       unsigned totalArith = 0;
+      unsigned mulOps = 0;
+      unsigned addOps = 0;
       SmallVector<const MemopInfo *, 4> stores;
       unsigned triangularLoops = 0;
       double kernelShapeFactor = 1.0;
@@ -796,8 +1054,9 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
       auto reportThis = [&]() {
         std::string buf;
         raw_string_ostream OS(buf);
-        writeJSON(OS, F, rec, verdict, hints, memops, reductionLoops,
-                  outputDeps, macs, stencilPairs, totalArith, stores,
+        writeJSON(OS, F, rec, SE, verdict, hints, memops, reductionLoops,
+                  outputDeps, macs, stencilPairs, totalArith, mulOps, addOps,
+                  stores,
                   triangularLoops, kernelShapeFactor, rejectReason);
         OS.flush();
         emitReport(buf);
@@ -883,7 +1142,8 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
       }
 
       // Body composition.
-      countBodyOps(rec.levels.back(), macs, stencilPairs, totalArith);
+      countBodyOps(rec.levels.back(), macs, stencilPairs, totalArith,
+                   mulOps, addOps);
 
       // Dependence check on distinct-base memop pairs.
       bool depFail = false;
@@ -910,11 +1170,20 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
       //           niceties — e.g., 1-D output (matvec), no reduction (stencil),
       //           multi-store kernels, or stencil-only body.
       //   no    = anything that hit a hard reject (handled earlier).
+      bool exactWeightedSum = false;
+      if (reductionLoops.empty() && stores.size() == 1) {
+        if (auto *store = dyn_cast<StoreInst>(stores[0]->inst)) {
+          SmallVector<WeightedTerm, 8> terms;
+          exactWeightedSum = collectIntegerWeightedTerms(
+              store->getValueOperand(), 1, terms) && terms.size() >= 2;
+        }
+      }
+
       bool twoParallel = (outputDeps.size() >= 2);
       bool macDominated = (macs > 0) && (2 * macs >= totalArith);
       bool stencilDominated = (stencilPairs > 0) && (macs == 0) &&
                               (2 * stencilPairs >= totalArith);
-      if (macs == 0 && stencilPairs == 0) {
+      if (macs == 0 && stencilPairs == 0 && !exactWeightedSum) {
         verdict = "no";
         rejectReason = "no MAC or stencil-shape compute in body";
         reportThis();

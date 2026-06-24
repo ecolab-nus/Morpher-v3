@@ -564,13 +564,35 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 		{ //already mapped
 			LOG(ROUTE) << "add parent to starts = " << parent->idx << "\n";
 			assert(parent->rootDP->getOutputDP()->getOutPort("T"));
-			possibleStarts[parent].push_back(parent->rootDP->getOutputDP()->getOutPort("T"));
 
+			std::vector<Port *> routedTreeStarts;
 			for (std::pair<Port *, int> pair : parent->routingPorts)
 			{
 				Port *p = pair.first;
 				assert(p->getLat() != -1);
-				//				possibleStarts[parent].push_back(p);
+				routedTreeStarts.push_back(p);
+			}
+
+			// Fanout route policy:
+			//   broadcast: always restart from the producer output.
+			//   chained: branch from the existing routed tree when one exists.
+			//   adaptive: consider both starts and let A* cost/timing choose.
+			// Chained mode falls back to the producer for the first sink because
+			// there is no routed tree yet.
+			const bool hasRoutedTree = !routedTreeStarts.empty();
+			if (fanoutRoutePolicy == FanoutRoutePolicy::BROADCAST ||
+			    fanoutRoutePolicy == FanoutRoutePolicy::ADAPTIVE ||
+			    !hasRoutedTree)
+			{
+				possibleStarts[parent].push_back(parent->rootDP->getOutputDP()->getOutPort("T"));
+			}
+			if (fanoutRoutePolicy == FanoutRoutePolicy::CHAINED ||
+			    fanoutRoutePolicy == FanoutRoutePolicy::ADAPTIVE)
+			{
+				for (Port *p : routedTreeStarts)
+				{
+					possibleStarts[parent].push_back(p);
+				}
 			}
 		}
 	}

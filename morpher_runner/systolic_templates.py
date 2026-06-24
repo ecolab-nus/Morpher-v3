@@ -32,7 +32,9 @@ def _node_xml(idx: int, op: str, asap: int, alap: int,
               rec_parents: Iterable[Tuple[int, str]] = (),
               base_name: str = "",
               base_size: int = 256,
-              simd_lanes: int = 1) -> str:
+              simd_lanes: int = 1,
+              const_value: int = 0,
+              gep_offset: int | None = None) -> str:
   """Emit one <Node> block.
 
   inputs:  iterable of parent idx (Input).
@@ -47,8 +49,8 @@ def _node_xml(idx: int, op: str, asap: int, alap: int,
               the <Node>. Caller is responsible for using V-prefix ops
               (VLOAD/VMAC/VADD/VSTORE) so the arch's vector FU is selected.
   """
-  attrs = 'idx="%d" ASAP="%d" ALAP="%d" BB="0" CONST="0" SHIFT="0" OFFSET="0"' % (
-      idx, asap, alap)
+  attrs = 'idx="%d" ASAP="%d" ALAP="%d" BB="0" CONST="%d" SHIFT="0" OFFSET="0"' % (
+      idx, asap, alap, const_value)
   if simd_lanes > 1:
     attrs += ' simd_packed="true" simd_lanes="%d"' % simd_lanes
   parts = [
@@ -89,6 +91,8 @@ def _node_xml(idx: int, op: str, asap: int, alap: int,
   if base_name:
     parts.append('    <BasePointerName size="%d">%s</BasePointerName>'
                  % (base_size, base_name))
+  if gep_offset is not None:
+    parts.append('    <GEPOffset>%d</GEPOffset>' % gep_offset)
   parts.append("  </Node>")
   return "\n".join(parts)
 
@@ -299,7 +303,7 @@ def gemm_output_stationary(dim_x: int, dim_y: int, iter_max: int,
       if gi < useful_cells:
         outs.append((cell_idx(r, c), "I1"))
     nodes.append(_node_xml(a_load_idx(r), _v_op("LOAD", simd_lanes),
-                           asap=0, alap=0,
+                           asap=r, alap=r,
                            inputs=[], outputs=outs,
                            simd_lanes=simd_lanes,
                            base_name="var_a"))
@@ -312,7 +316,7 @@ def gemm_output_stationary(dim_x: int, dim_y: int, iter_max: int,
       if gi < useful_cells:
         outs2.append((cell_idx(r, c), "I2"))
     nodes.append(_node_xml(b_load_idx(c), _v_op("LOAD", simd_lanes),
-                           asap=0, alap=0,
+                           asap=c, alap=c,
                            inputs=[], outputs=outs2,
                            simd_lanes=simd_lanes,
                            base_name="var_b"))
@@ -324,12 +328,13 @@ def gemm_output_stationary(dim_x: int, dim_y: int, iter_max: int,
       gi = r * W + c
       cur_idx = cell_idx(r, c)
       if gi >= useful_cells:
-        nodes.append(_node_xml(cur_idx, "NOP", asap=1, alap=1,
+        nodes.append(_node_xml(cur_idx, "NOP", asap=r + c + 1,
+                               alap=r + c + 1,
                                inputs=[], outputs=[]))
         continue
       ins = [a_load_idx(r), b_load_idx(c)]
       nodes.append(_node_xml(cur_idx, _v_op(op_kind, simd_lanes),
-                             asap=1, alap=1,
+                             asap=r + c + 1, alap=r + c + 1,
                              inputs=ins, outputs=[],
                              simd_lanes=simd_lanes))
 
@@ -337,6 +342,164 @@ def gemm_output_stationary(dim_x: int, dim_y: int, iter_max: int,
 
 
 def gemm_output_stationary_cells(dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+# ---------------------------------------------------------------------------
+# Template: gemm_two_stream_store
+# ---------------------------------------------------------------------------
+#
+# Source-role-compatible GEMM dataflow:
+#
+#   - H A-LOADs per cycle, one per output row, broadcast across columns.
+#   - W B-LOADs per cycle, one per output column, broadcast across rows.
+#   - W*H MAC cells, each accumulating one C[r,c].
+#   - One STORE per useful cell per cycle, writing the current accumulated C.
+#
+# This is intentionally more memory-heavy than gemm_fanout, but it exposes the
+# three source roles (A/B/C) in the DFG so a source-aware lowering can bind real
+# base names and address schedules. It is the mapper-feasibility target for
+# 3-side memory architectures.
+# ---------------------------------------------------------------------------
+
+
+def gemm_two_stream_store(dim_x: int, dim_y: int, iter_max: int,
+                          op_kind: str = "MAC",
+                          useful_cells: int | None = None,
+                          simd_lanes: int = 1) -> str:
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+
+  def a_load_idx(r: int) -> int:
+    return r
+
+  def b_load_idx(c: int) -> int:
+    return H + c
+
+  def cell_idx(r: int, c: int) -> int:
+    return H + W + r * W + c
+
+  store_base = H + W + W * H
+  bytes_per_word = 4 * max(1, simd_lanes)
+  base_size = max(256, useful_cells * bytes_per_word)
+
+  for r in range(H):
+    outs: List[Tuple[int, str]] = []
+    for c in range(W):
+      gi = r * W + c
+      if gi < useful_cells:
+        outs.append((cell_idx(r, c), "I1"))
+    nodes.append(_node_xml(a_load_idx(r), _v_op("LOAD", simd_lanes),
+                           asap=0, alap=0,
+                           inputs=[], outputs=outs,
+                           simd_lanes=simd_lanes,
+                           base_name="var_a"))
+
+  for c in range(W):
+    outs: List[Tuple[int, str]] = []
+    for r in range(H):
+      gi = r * W + c
+      if gi < useful_cells:
+        outs.append((cell_idx(r, c), "I2"))
+    nodes.append(_node_xml(b_load_idx(c), _v_op("LOAD", simd_lanes),
+                           asap=0, alap=0,
+                           inputs=[], outputs=outs,
+                           simd_lanes=simd_lanes,
+                           base_name="var_b"))
+
+  for r in range(H):
+    for c in range(W):
+      gi = r * W + c
+      cur = cell_idx(r, c)
+      if gi >= useful_cells:
+        nodes.append(_node_xml(cur, "NOP", asap=1, alap=1,
+                               inputs=[], outputs=[]))
+        continue
+      nodes.append(_node_xml(cur, _v_op(op_kind, simd_lanes),
+                             asap=1, alap=1,
+                             inputs=[a_load_idx(r), b_load_idx(c)],
+                             outputs=[(store_base + gi, "I1")],
+                             simd_lanes=simd_lanes))
+
+  for i in range(useful_cells):
+    nodes.append(_node_xml(store_base + i, _v_op("STORE", simd_lanes),
+                           asap=2, alap=2,
+                           inputs=[cell_idx(i // W, i % W)],
+                           outputs=[],
+                           simd_lanes=simd_lanes,
+                           base_name="var_c",
+                           base_size=base_size))
+
+  return _wrap_dfg(nodes, iter_max)
+
+
+def gemm_two_stream_store_cells(dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+# ---------------------------------------------------------------------------
+# Template: batched_dot_output_stationary
+# ---------------------------------------------------------------------------
+#
+# A source-bindable output-stationary grid for independent dot products:
+#
+#   - one source-value LOAD per active output cell
+#   - one shared coefficient LOAD per cycle
+#   - one MAC per active output cell, accumulating in that PE's TREG
+#   - no steady-state stores; final values require a drain phase
+#
+# This is the natural transformed shape for matrix-vector products and
+# single-filter fixed weighted sums such as conv2d after patch extraction.
+# Unlike matvec_parallel, it does not hide the source bandwidth: a full 4x4
+# grid has 17 loads/cycle, so a 12-memory-PE architecture cannot sustain II=1
+# without an additional line-buffer/data-reuse transformation.
+# ---------------------------------------------------------------------------
+
+
+def batched_dot_output_stationary(dim_x: int, dim_y: int, iter_max: int,
+                                  op_kind: str = "MAC",
+                                  useful_cells: int | None = None,
+                                  simd_lanes: int = 1) -> str:
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+  coeff_idx = useful_cells
+  cell_base = coeff_idx + 1
+
+  for i in range(useful_cells):
+    nodes.append(_node_xml(
+        i, _v_op("LOAD", simd_lanes), asap=0, alap=0,
+        inputs=[], outputs=[(cell_base + i, "I1")],
+        base_name="var_a", simd_lanes=simd_lanes))
+
+  coeff_outputs = [(cell_base + i, "I2") for i in range(useful_cells)]
+  # Coefficients are scalar across SIMD output lanes. Vector architectures in
+  # this repository advertise SCALAR_BROADCAST, so keep this as a scalar LOAD
+  # feeding VMAC I2 rather than incorrectly loading adjacent coefficients.
+  nodes.append(_node_xml(
+      coeff_idx, "LOAD", asap=0, alap=0,
+      inputs=[], outputs=coeff_outputs,
+      base_name="var_b", simd_lanes=1))
+
+  for i in range(useful_cells):
+    nodes.append(_node_xml(
+        cell_base + i, _v_op(op_kind, simd_lanes), asap=1, alap=1,
+        inputs=[i, coeff_idx], outputs=[],
+        simd_lanes=simd_lanes))
+
+  return _wrap_dfg(nodes, iter_max)
+
+
+def batched_dot_output_stationary_cells(dim_x: int, dim_y: int) -> int:
   return dim_x * dim_y
 
 
@@ -399,6 +562,70 @@ def gemm_output_stationary_epilogue(dim_x: int, dim_y: int, iter_max: int,
 
 def gemm_output_stationary_epilogue_cells(dim_x: int, dim_y: int) -> int:
   return dim_x * dim_y
+
+
+def gemm_output_stationary_treg_drain_epilogue(
+    dim_x: int, dim_y: int, iter_max: int,
+    op_kind: str = "MAC",
+    useful_cells: int | None = None,
+    simd_lanes: int = 1) -> str:
+  """Drain PE-local output-stationary accumulators through pinned MAC nodes.
+
+  Each logical output cell emits a MAC with CONST=0 and no inputs. In the
+  arch-aware simulator and intended hardware model, that computes
+  ``0 * 0 + TREG`` on the pinned PE, preserving the accumulator value and
+  forwarding it to a STORE. Correctness requires each drain MAC to be pinned
+  to the same PE as the corresponding main-phase MAC.
+  """
+  _ = dim_y
+  _ = iter_max
+  _ = op_kind
+  total_cells = dim_x * dim_y
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+  store_base = useful_cells
+  bytes_per_word = 4 * max(1, simd_lanes)
+  base_size = max(256, useful_cells * bytes_per_word)
+
+  for i in range(useful_cells):
+    nodes.append(_node_xml(
+        i, _v_op("MAC", simd_lanes), asap=0, alap=0,
+        inputs=[], outputs=[(store_base + i, "I1")],
+        simd_lanes=simd_lanes, const_value=0))
+  for i in range(useful_cells):
+    nodes.append(_node_xml(
+        store_base + i, _v_op("STORE", simd_lanes), asap=1, alap=1,
+        inputs=[i], outputs=[], base_name="var_c", base_size=base_size,
+        simd_lanes=simd_lanes, gep_offset=i * bytes_per_word))
+
+  return _wrap_dfg(nodes, iter_max=1)
+
+
+def gemm_output_stationary_treg_drain_epilogue_cells(
+    dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
+def main_phase_cell_node_ids(template: str, dim_x: int, dim_y: int,
+                             useful_cells: int) -> tuple[int, ...]:
+  useful_cells = max(0, min(useful_cells, dim_x * dim_y))
+  if template == "gemm_output_stationary":
+    return tuple(dim_y + dim_x + i for i in range(useful_cells))
+  if template == "batched_dot_output_stationary":
+    return tuple(useful_cells + 1 + i for i in range(useful_cells))
+  return ()
+
+
+def treg_drain_cell_node_ids(template: str, useful_cells: int) -> tuple[int, ...]:
+  if template in {
+      "gemm_output_stationary",
+      "batched_dot_output_stationary",
+  }:
+    return tuple(range(max(0, useful_cells)))
+  return ()
 
 
 # ---------------------------------------------------------------------------
@@ -869,10 +1096,46 @@ TEMPLATES = {
     "matvec_parallel": matvec_parallel,
     "gemm_fanout_prologue": gemm_fanout_prologue,
     "gemm_output_stationary": gemm_output_stationary,
+    "gemm_two_stream_store": gemm_two_stream_store,
+    "batched_dot_output_stationary": batched_dot_output_stationary,
     "gemm_output_stationary_epilogue": gemm_output_stationary_epilogue,
+    "gemm_output_stationary_treg_drain_epilogue": (
+        gemm_output_stationary_treg_drain_epilogue
+    ),
     "gemm_weight_stationary": gemm_weight_stationary,
     "gemm_weight_stationary_prologue": gemm_weight_stationary_prologue,
 }
+
+# Public template catalog.  Source-bound templates whose construction needs
+# affine source records or mandatory placement constraints are deliberately
+# catalogued here without being inserted into TEMPLATES: the generic callable
+# API cannot instantiate them correctly.
+TEMPLATE_CATALOG = {
+    name: {
+        "kind": "shape_template",
+        "builder": f"morpher_runner.systolic_templates.{fn.__name__}",
+        "requires_source_record": False,
+        "requires_node_pinning": False,
+        "functionally_verified": False,
+    }
+    for name, fn in TEMPLATES.items()
+}
+TEMPLATE_CATALOG.update({
+    "port_balanced_batched_dot_output_stationary": {
+        "kind": "source_bound_policy",
+        "builder": (
+            "morpher_runner.systolic_templates."
+            "batched_dot_output_stationary"
+        ),
+        "requires_source_record": True,
+        "requires_node_pinning": False,
+        "functionally_verified": False,
+        "notes": (
+            "Selects active output lanes from available memory ports; one "
+            "source stream per lane plus one broadcast coefficient stream."
+        ),
+    },
+})
 
 # Per-template "useful compute cells when useful_cells=None (full template)".
 # This is what the template emits as actual MAC/ADD nodes on the dim_x*dim_y
@@ -885,7 +1148,12 @@ TEMPLATE_DEFAULT_CELLS = {
     "matvec_parallel": matvec_parallel_cells,
     "gemm_fanout_prologue": gemm_fanout_prologue_cells,
     "gemm_output_stationary": gemm_output_stationary_cells,
+    "gemm_two_stream_store": gemm_two_stream_store_cells,
+    "batched_dot_output_stationary": batched_dot_output_stationary_cells,
     "gemm_output_stationary_epilogue": gemm_output_stationary_epilogue_cells,
+    "gemm_output_stationary_treg_drain_epilogue": (
+        gemm_output_stationary_treg_drain_epilogue_cells
+    ),
     "gemm_weight_stationary": gemm_weight_stationary_cells,
     "gemm_weight_stationary_prologue": gemm_weight_stationary_prologue_cells,
 }
@@ -905,6 +1173,7 @@ PROLOGUE_FOR_TEMPLATE = {
     # Output-stationary main needs the same zero-init prologue: clear every
     # cell's accumulator slot before the K-cycle stream begins.
     "gemm_output_stationary": "gemm_fanout_prologue",
+    "batched_dot_output_stationary": "gemm_fanout_prologue",
     # Weight-stationary main needs a *different* prologue: load weights from
     # var_b into each cell's stationary slot, not zero them out.
     "gemm_weight_stationary": "gemm_weight_stationary_prologue",
@@ -917,7 +1186,8 @@ PROLOGUE_FOR_TEMPLATE = {
 # main templates (gemm_fanout, gemm_chain, matvec_*) drain via per-iter
 # stores already, and weight-stationary streams outputs out per cycle.
 EPILOGUE_FOR_TEMPLATE = {
-    "gemm_output_stationary": "gemm_output_stationary_epilogue",
+    "gemm_output_stationary": "gemm_output_stationary_treg_drain_epilogue",
+    "batched_dot_output_stationary": "gemm_output_stationary_treg_drain_epilogue",
 }
 
 

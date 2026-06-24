@@ -648,10 +648,11 @@ def _read_simd_width(arch_json: Path | None) -> int:
 
 
 def _read_pe_mems(arch_json: Path) -> list[tuple[int, int]]:
-  """Return PE_MEM (X, Y) coords from the arch JSON in left-column-first,
-  then right-column, then top/bottom-rows order. This ordering matches the
-  natural LOAD-row → mem-PE mapping for our gemm_fanout/gemm_chain templates
-  whose LOADs fan out horizontally from a single edge column.
+  """Return PE_MEM coordinates with perpendicular injection sides first.
+
+  One-stream templates consume the first vertical edge. Two-stream systolic
+  templates then consume a horizontal edge, so A and B do not enter from
+  opposite parallel sides.
   """
   try:
     with open(arch_json, "r", encoding="utf-8") as f:
@@ -670,8 +671,8 @@ def _read_pe_mems(arch_json: Path) -> list[tuple[int, int]]:
   ys = sorted({y for _, y in mems})
   xmin, xmax = xs[0], xs[-1]
   ymin, ymax = ys[0], ys[-1]
-  # Bucket by side: left column first (X=xmin), then right column (X=xmax),
-  # then bottom row (Y=ymin) skipping already-claimed corners, then top row.
+  # Bucket by side: left then top, followed by right then bottom. This keeps
+  # the first two populated sides perpendicular on 3/4-side architectures.
   ordered = []
   seen = set()
 
@@ -684,12 +685,12 @@ def _read_pe_mems(arch_json: Path) -> list[tuple[int, int]]:
   mems_set = set(mems)
   for y in sorted(ys):
     add((xmin, y))
+  for x in sorted(xs):
+    add((x, ymax))
   for y in sorted(ys):
     add((xmax, y))
   for x in sorted(xs):
     add((x, ymin))
-  for x in sorted(xs):
-    add((x, ymax))
   # Anything not yet picked up (interior PE_MEM, unusual layouts).
   for coord in mems:
     add(coord)
@@ -761,10 +762,8 @@ def build_load_pin_string(xml: str, arch_json: Path | None,
     return ""
   if strategy == "first":
     return "%d:%d:%d" % (loads[0], mems[0][0], mems[0][1])
-  # strategy == "all": pin LOADs in systolic row-order to the first side
-  # in scan order (left column first). _read_pe_mems orders left→right→
-  # bottom→top so loads[i] → mems[i] gives row-major LOAD placement on
-  # the natural source edge.
+  # strategy == "all": one input stream enters from the left edge; a second
+  # stream continues on the perpendicular top edge when more pins are needed.
   if len(loads) > len(mems):
     return ""
   pins = ["%d:%d:%d" % (loads[i], mems[i][0], mems[i][1])

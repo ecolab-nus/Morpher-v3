@@ -49,6 +49,7 @@ struct arguments
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
+	std::string fanout_route_policy = "adaptive"; // broadcast | chained | adaptive
 	std::string node_pin = ""; // pin a DFG node to a PE: "node_idx:X:Y"
 	int layout_solver = 0; // 1: enable post-mapping data layout solver
 	int replicate_data = 0; // 1: allow replicating read-only arrays across banks
@@ -91,6 +92,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
+				.add_option<std::string>("", "--fanout_route_policy", "fanout route policy: adaptive|broadcast|chained", "adaptive")
 				.add_option<std::string>("", "--node_pin", "pin a DFG node: 'node_idx:X:Y'", "")
 				.add_option<int>("", "--layout_solver", "enable post-mapping layout solver (1=on, 0=off)", 0)
 				.add_option<int>("", "--replicate_data", "allow replicating read-only arrays across banks (1=on, 0=off)", 0)
@@ -125,6 +127,14 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.use_json = true;
 	ret.arch_name = args.get_option<std::string>("--arch_name");
 	ret.proximity_sort = args.get_option<int>("--proximity_sort") != 0;
+	ret.fanout_route_policy = args.get_option<std::string>("--fanout_route_policy");
+	if (ret.fanout_route_policy != "adaptive" &&
+	    ret.fanout_route_policy != "broadcast" &&
+	    ret.fanout_route_policy != "chained")
+	{
+		std::cerr << "Error: --fanout_route_policy must be one of: adaptive, broadcast, chained.\n";
+		exit(EXIT_FAILURE);
+	}
 	ret.node_pin = args.get_option<std::string>("--node_pin");
 	ret.layout_solver = args.get_option<int>("--layout_solver");
 	ret.replicate_data = args.get_option<int>("--replicate_data");

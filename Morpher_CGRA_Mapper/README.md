@@ -31,3 +31,17 @@ running command: cgra_xml_mapper -d dfg.xml -j arch.json.
     ./build/src/cgra_xml_mapper -d ./applications/pedometer/pedometer_INNERMOST_LN1_PartPred_DFG.xml -j  json_arch/hycube_original.json 
 
 *-verbose.json is the output of mapper, not the input architecture file.
+
+## Fanout Routing Policy
+
+For a producer with multiple consumers, the mapper can choose where each
+additional fanout route starts:
+
+- `--fanout_route_policy broadcast`: always route from the original producer
+  output. This favors direct multihop broadcast from the source.
+- `--fanout_route_policy chained`: route from the already-routed fanout tree
+  when one exists, falling back to the producer for the first consumer. This
+  favors local/chained delivery under tight hop budgets.
+- `--fanout_route_policy adaptive` (default): consider both broadcast and
+  chained starts and let the A* route cost, timing, hop limit, and congestion
+  choose the cheapest legal route.
