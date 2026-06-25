@@ -503,6 +503,56 @@ def batched_dot_output_stationary_cells(dim_x: int, dim_y: int) -> int:
   return dim_x * dim_y
 
 
+def fixed_coeff_batched_dot_output_stationary(
+    dim_x: int,
+    dim_y: int,
+    iter_max: int,
+    op_kind: str = "MAC",
+    useful_cells: int | None = None,
+    simd_lanes: int = 1,
+    coefficient: int = 1,
+) -> str:
+  """Experimental fixed-coefficient variant of batched-dot.
+
+  This models stencil/conv kernels whose coefficients are compile-time
+  constants. It removes the shared coefficient LOAD from
+  batched_dot_output_stationary and places the coefficient in each MAC's CONST
+  field, reducing steady-state memory pressure from active+1 loads/cycle to
+  active loads/cycle.
+
+  This is mapper-feasibility only until source-derived byte schedules and
+  coefficient binding are emitted by the source-lowering path.
+  """
+  W, H = dim_x, dim_y
+  total_cells = W * H
+  if useful_cells is None:
+    useful_cells = total_cells
+  useful_cells = max(0, min(useful_cells, total_cells))
+
+  nodes: List[str] = []
+  cell_base = useful_cells
+
+  for i in range(useful_cells):
+    nodes.append(_node_xml(
+        i, _v_op("LOAD", simd_lanes), asap=0, alap=0,
+        inputs=[], outputs=[(cell_base + i, "I1")],
+        base_name="var_a", simd_lanes=simd_lanes))
+
+  for i in range(useful_cells):
+    nodes.append(_node_xml(
+        cell_base + i, _v_op(op_kind, simd_lanes), asap=1, alap=1,
+        inputs=[i], outputs=[],
+        simd_lanes=simd_lanes,
+        const_value=coefficient))
+
+  return _wrap_dfg(nodes, iter_max)
+
+
+def fixed_coeff_batched_dot_output_stationary_cells(
+    dim_x: int, dim_y: int) -> int:
+  return dim_x * dim_y
+
+
 # ---------------------------------------------------------------------------
 # Template: gemm_output_stationary_epilogue
 # ---------------------------------------------------------------------------
@@ -1098,6 +1148,9 @@ TEMPLATES = {
     "gemm_output_stationary": gemm_output_stationary,
     "gemm_two_stream_store": gemm_two_stream_store,
     "batched_dot_output_stationary": batched_dot_output_stationary,
+    "fixed_coeff_batched_dot_output_stationary": (
+        fixed_coeff_batched_dot_output_stationary
+    ),
     "gemm_output_stationary_epilogue": gemm_output_stationary_epilogue,
     "gemm_output_stationary_treg_drain_epilogue": (
         gemm_output_stationary_treg_drain_epilogue
@@ -1150,6 +1203,9 @@ TEMPLATE_DEFAULT_CELLS = {
     "gemm_output_stationary": gemm_output_stationary_cells,
     "gemm_two_stream_store": gemm_two_stream_store_cells,
     "batched_dot_output_stationary": batched_dot_output_stationary_cells,
+    "fixed_coeff_batched_dot_output_stationary": (
+        fixed_coeff_batched_dot_output_stationary_cells
+    ),
     "gemm_output_stationary_epilogue": gemm_output_stationary_epilogue_cells,
     "gemm_output_stationary_treg_drain_epilogue": (
         gemm_output_stationary_treg_drain_epilogue_cells

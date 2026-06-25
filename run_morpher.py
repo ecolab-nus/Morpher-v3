@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import csv
 import datetime
+import json
 import os
 import re
 import shutil
@@ -13,10 +14,19 @@ from pathlib import Path
 import yaml
 
 from morpher_runner.context import build_context
+from morpher_runner.context import resolve_arch_template_path
 from morpher_runner.artifact_simulator import run_artifact_simulator
+from morpher_runner.dfg_generator import build_ir_generation_commands
 from morpher_runner.dfg_generator import run_dfg_generator
 from morpher_runner.dfg_generator import simd_packing_active_for_factor
+from morpher_runner.exec import Command
+from morpher_runner.exec import run_commands
 from morpher_runner.mapper import run_mapper
+from morpher_runner.systolic_binding import read_arch_facts
+from morpher_runner.template_lowering import lower_template_record
+from morpher_runner.template_lowering import write_lowering_artifacts
+from morpher_runner.utils import build_llvm_tool_env
+from morpher_runner.utils import resolve_llvm_tool
 
 DEFAULT_CONFIG_PATH = "config/default.yaml"
 RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"}
@@ -45,6 +55,14 @@ def _usage():
     "                         Each run writes to <root>/<suite>/<kernel>/<timestamp>/.\n"
     "                         Ignored when --run-tag is provided (batch mode).\n"
     "  --mem-alloc <path>     Mem-alloc file for XML input mode.\n\n"
+    "  --source-template-report <path>\n"
+    "                         Try source-bound template lowering from a SystolicCandidatePass JSONL report.\n"
+    "                         Use 'auto' to generate the report first in the run directory.\n"
+    "                         Accepted records stage XML for the mapper; conditional/rejected records fall back.\n"
+    "  --source-template-record <index>\n"
+    "                         Report record index to try first (default: first record for the function, else 0).\n"
+    "  --source-template-active-cell-limit <n>\n"
+    "                         Optional active-cell cap for source-bound template lowering.\n\n"
     "Run modes: runall, dfg_gen_only, mapper_only, sim_only, artifact_sim_only, runall_artifact_sim\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
@@ -56,6 +74,9 @@ def _parse_cli(argv):
   mem_alloc_path = None
   run_tag = ""
   output_root = "generated"
+  source_template_report = None
+  source_template_record = None
+  source_template_active_cell_limit = None
 
   i = 0
   while i < len(argv):
@@ -78,6 +99,34 @@ def _parse_cli(argv):
       mem_alloc_path = argv[i + 1]
       i += 2
       continue
+    if token == "--source-template-report":
+      if i + 1 >= len(argv):
+        raise RuntimeError("Missing value for --source-template-report.\n\n%s" % _usage())
+      source_template_report = argv[i + 1]
+      i += 2
+      continue
+    if token == "--source-template-record":
+      if i + 1 >= len(argv):
+        raise RuntimeError("Missing value for --source-template-record.\n\n%s" % _usage())
+      try:
+        source_template_record = int(argv[i + 1])
+      except ValueError:
+        raise RuntimeError("--source-template-record must be an integer.")
+      if source_template_record < 0:
+        raise RuntimeError("--source-template-record must be non-negative.")
+      i += 2
+      continue
+    if token == "--source-template-active-cell-limit":
+      if i + 1 >= len(argv):
+        raise RuntimeError("Missing value for --source-template-active-cell-limit.\n\n%s" % _usage())
+      try:
+        source_template_active_cell_limit = int(argv[i + 1])
+      except ValueError:
+        raise RuntimeError("--source-template-active-cell-limit must be an integer.")
+      if source_template_active_cell_limit <= 0:
+        raise RuntimeError("--source-template-active-cell-limit must be positive.")
+      i += 2
+      continue
     if token.startswith("--"):
       raise RuntimeError("Unknown option: %s\n\n%s" % (token, _usage()))
     positional.append(token)
@@ -90,6 +139,8 @@ def _parse_cli(argv):
   is_xml_mode = first.lower().endswith(".xml")
 
   if is_xml_mode:
+    if source_template_report:
+      raise RuntimeError("--source-template-report cannot be combined with XML input mode.")
     if len(positional) > 4:
       raise RuntimeError("Too many positional arguments for XML mode.\n\n%s" % _usage())
 
@@ -104,7 +155,11 @@ def _parse_cli(argv):
       )
 
     csource = "xml_inputs/%s/%s.c" % (function, function)
-    return csource, function, config, runmode, xml_path, mem_alloc_path, run_tag, output_root
+    return (
+      csource, function, config, runmode, xml_path, mem_alloc_path, run_tag,
+      output_root, source_template_report, source_template_record,
+      source_template_active_cell_limit,
+    )
 
   if len(positional) < 2 or len(positional) > 4:
     raise RuntimeError("Invalid arguments.\n\n%s" % _usage())
@@ -115,7 +170,11 @@ def _parse_cli(argv):
   function = positional[1]
   config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
   runmode = positional[3] if len(positional) >= 4 else "runall"
-  return csource, function, config, runmode, None, None, run_tag, output_root
+  return (
+    csource, function, config, runmode, None, None, run_tag, output_root,
+    source_template_report, source_template_record,
+    source_template_active_cell_limit,
+  )
 
 
 def _resolve_mem_alloc_for_xml(xml_path, kernel, explicit_mem_alloc):
@@ -162,6 +221,170 @@ def _stage_mapper_inputs_from_xml(context, xml_path, mem_alloc_path=None):
   mem_dst = os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % context.kernel)
   shutil.copy2(mem_src, mem_dst)
   print("Staged mapper mem-alloc: %s" % mem_dst)
+
+
+def _load_template_report_records(report_path):
+  path = Path(report_path)
+  if not path.is_file():
+    raise RuntimeError("Source-template report not found: %s" % report_path)
+  records = []
+  with path.open("r", encoding="utf-8") as report_file:
+    for line_no, line in enumerate(report_file, 1):
+      line = line.strip()
+      if not line:
+        continue
+      try:
+        records.append((len(records), json.loads(line)))
+      except json.JSONDecodeError as exc:
+        raise RuntimeError(
+          "Invalid JSON object at %s:%d: %s" % (report_path, line_no, exc)
+        )
+  return [
+    (idx, record) for idx, record in records
+    if isinstance(record, dict)
+  ]
+
+
+def _select_template_record(records, function, record_index):
+  if record_index is not None:
+    for idx, record in records:
+      if idx == record_index:
+        return idx, record
+    raise RuntimeError("Source-template report has no record index %d." % record_index)
+
+  for idx, record in records:
+    if str(record.get("function") or "") == function:
+      return idx, record
+  if records:
+    return records[0]
+  raise RuntimeError("Source-template report contains no candidate records.")
+
+
+def _candidate_template_records(records, function, record_index):
+  if record_index is not None:
+    return [_select_template_record(records, function, record_index)]
+  matches = [
+    (idx, record) for idx, record in records
+    if str(record.get("function") or "") == function
+  ]
+  return matches if matches else records
+
+
+def _generate_source_template_report(context):
+  report_path = Path(context.dfg_gen_kernel) / ("%s_systolic_candidates.jsonl" % context.kernel)
+  report_path.parent.mkdir(parents=True, exist_ok=True)
+  if report_path.exists():
+    report_path.unlink()
+
+  print("Generating SystolicCandidatePass report: %s\n" % report_path)
+  run_commands(build_ir_generation_commands(context))
+  run_commands([
+    Command(
+      argv=[
+        resolve_llvm_tool("opt"),
+        "-load-pass-plugin",
+        "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
+        "-passes=morpher-systolic-candidate",
+        "-morpher-systolic-report=%s" % report_path,
+        "%s_opt.ll" % context.kernel,
+        "-disable-output",
+      ],
+      cwd=context.dfg_gen_kernel,
+      env=build_llvm_tool_env(),
+    )
+  ])
+  return str(report_path)
+
+
+def _source_template_dims(context, arch):
+  compute_pes = getattr(arch, "mac_pes", 0) or 0
+  side = int(compute_pes ** 0.5)
+  if side > 0 and side * side == compute_pes:
+    return side, side
+  return context.config.xdim, context.config.ydim
+
+
+def _write_template_fallback_metadata(context, result, report_path, record_index):
+  meta = dict(result.metadata)
+  meta["source_report"] = os.path.abspath(report_path)
+  meta["record_index"] = record_index
+  meta["runner_action"] = "normal_dfg_fallback"
+  path = Path(context.dfg_gen_kernel) / ("%s_source_template_metadata.json" % context.kernel)
+  path.parent.mkdir(parents=True, exist_ok=True)
+  path.write_text(
+    json.dumps(meta, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+  )
+  return path
+
+
+def _try_stage_source_template(
+  context,
+  report_path,
+  record_index=None,
+  active_cell_limit=None,
+):
+  records = _load_template_report_records(report_path)
+  candidates = _candidate_template_records(records, context.kernel, record_index)
+  arch_path = resolve_arch_template_path(
+    context.morpher_home,
+    context.mapper_home,
+    context.config.arch_template_json,
+  )
+  arch = read_arch_facts(Path(arch_path))
+  template_dim_x, template_dim_y = _source_template_dims(context, arch)
+
+  first_result = None
+  first_index = None
+  selected_index = None
+  result = None
+  for candidate_index, record in candidates:
+    candidate_result = lower_template_record(
+      record,
+      candidate_index,
+      dim_x=template_dim_x,
+      dim_y=template_dim_y,
+      arch=arch,
+      source_report=os.path.abspath(report_path),
+      active_cell_limit=active_cell_limit,
+    )
+    if first_result is None:
+      first_result = candidate_result
+      first_index = candidate_index
+    if candidate_result.accepted:
+      result = candidate_result
+      selected_index = candidate_index
+      break
+
+  if result is None:
+    result = first_result
+    selected_index = first_index
+  if result is None or selected_index is None:
+    raise RuntimeError("Source-template report contains no candidate records.")
+
+  template_dir = Path(context.dfg_gen_kernel) / "source_template"
+  if not result.accepted:
+    meta_path = _write_template_fallback_metadata(context, result, report_path, selected_index)
+    print(
+      "Source-template lowering %s for record %d: %s" %
+      (result.status, selected_index, result.reason)
+    )
+    print("Fallback metadata: %s" % meta_path)
+    print("Continuing through normal DFG generation.\n")
+    return False
+
+  xml_path, mem_path, meta_path = write_lowering_artifacts(
+    result,
+    template_dir,
+    context.kernel,
+  )
+  _stage_mapper_inputs_from_xml(context, str(xml_path), str(mem_path))
+  print(
+    "Source-template lowering accepted for record %d: %s" %
+    (selected_index, result.reason)
+  )
+  print("Source-template metadata: %s" % meta_path)
+  return True
 
 
 def _latest_mapper_result(context, start_time):
@@ -406,6 +629,9 @@ def main(
   dfg_xml_path=None,
   mem_alloc_path=None,
   run_tag="",
+  source_template_report=None,
+  source_template_record=None,
+  source_template_active_cell_limit=None,
 ):
   print(r"""
     __  ___                 __                 ________________  ___       ____            _                ______                                             __  
@@ -441,10 +667,29 @@ def main(
     _stage_mapper_inputs_from_xml(context, dfg_xml_path, mem_alloc_path)
     print("Skipping DFG generation stage (XML input mode).\n")
 
+  source_template_staged = False
+  if source_template_report:
+    if runmode not in ("runall", "dfg_gen_only"):
+      raise RuntimeError(
+        "--source-template-report supports runmode runall or dfg_gen_only (got: %s)."
+        % runmode
+      )
+    resolved_template_report = (
+      _generate_source_template_report(context)
+      if source_template_report == "auto" else source_template_report
+    )
+    source_template_staged = _try_stage_source_template(
+      context,
+      resolved_template_report,
+      source_template_record,
+      source_template_active_cell_limit,
+    )
+
   if (
     context.config.auto_unroll_enabled
     and runmode == "runall"
     and not dfg_xml_path
+    and not source_template_staged
   ):
     _run_auto_unroll(context)
     return
@@ -461,7 +706,11 @@ def main(
     run_artifact_simulator(context, context.config.validation_mode)
     return
 
-  if (runmode == "runall" or runmode == "dfg_gen_only") and not dfg_xml_path:
+  if (
+    (runmode == "runall" or runmode == "dfg_gen_only")
+    and not dfg_xml_path
+    and not source_template_staged
+  ):
     run_dfg_generator(context)
 
   if runmode == "runall" or runmode == "mapper_only":
@@ -548,7 +797,11 @@ if __name__ == "__main__":
   _inner_exc = None
 
   try:
-    csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag, output_root = _parse_cli(sys.argv[1:])
+    (
+      csource, function, config, runmode, dfg_xml_path, mem_alloc_path,
+      run_tag, output_root, source_template_report, source_template_record,
+      source_template_active_cell_limit,
+    ) = _parse_cli(sys.argv[1:])
     _csource, _function, _config = csource, function, config
 
     is_direct = not run_tag
@@ -558,7 +811,18 @@ if __name__ == "__main__":
     _run_tag = run_tag
 
     _start = time.time()
-    main(csource, function, config, runmode, dfg_xml_path, mem_alloc_path, run_tag)
+    main(
+      csource,
+      function,
+      config,
+      runmode,
+      dfg_xml_path,
+      mem_alloc_path,
+      run_tag,
+      source_template_report,
+      source_template_record,
+      source_template_active_cell_limit,
+    )
 
   except subprocess.CalledProcessError as e:
     _status = "failed"

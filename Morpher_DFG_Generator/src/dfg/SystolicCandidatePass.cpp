@@ -100,10 +100,15 @@ SmallVector<NestRecord, 4> findNests(LoopInfo &LI) {
 // ----------------------------------------------------------------------------
 
 bool recoverIVs(NestRecord &rec, ScalarEvolution &SE) {
+  rec.ivs.clear();
+  rec.ivNames.clear();
   for (Loop *L : rec.levels) {
     PHINode *iv = L->getInductionVariable(SE);
-    if (!iv || !iv->getType()->isIntegerTy())
+    if (!iv || !iv->getType()->isIntegerTy()) {
+      rec.ivs.clear();
+      rec.ivNames.clear();
       return false;
+    }
     rec.ivs.push_back(iv);
     rec.ivNames.push_back(iv->hasName() ? iv->getName().str()
                                         : ("iv" + std::to_string(rec.ivs.size() - 1)));
@@ -589,7 +594,10 @@ bool hasImpureCalls(Loop *inner) {
       if (!CB)
         continue;
       // Morpher marker call is a no-op annotation, not real compute.
-      if (Function *F = CB->getCalledFunction())
+      Function *F = CB->getCalledFunction();
+      if (!F)
+        F = dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
+      if (F)
         if (F->getName() == "please_map_me")
           continue;
       if (CB->onlyReadsMemory() || CB->doesNotAccessMemory())
@@ -841,7 +849,10 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
     if (i) OS << ",";
     OS << "{\"level\":" << i;
     OS << ",\"iv\":";
-    writeQuoted(OS, rec.ivNames[i]);
+    std::string ivName = i < rec.ivNames.size()
+                             ? rec.ivNames[i]
+                             : ("iv" + std::to_string(i));
+    writeQuoted(OS, ivName);
     OS << ",\"trip_count\":";
     auto tc = constantTripCount(rec.levels[i], SE);
     if (tc)
@@ -860,7 +871,10 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
     if (reductionLoops.count(rec.levels[i])) kind = "REDUCTION";
     writeQuoted(OS, kind);
     OS << ",\"iv\":";
-    writeQuoted(OS, rec.ivNames[i]);
+    std::string ivName = i < rec.ivNames.size()
+                             ? rec.ivNames[i]
+                             : ("iv" + std::to_string(i));
+    writeQuoted(OS, ivName);
     OS << "}";
   }
   OS << "]";
@@ -951,7 +965,10 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
         continue;
       if (!first) OS << ",";
       first = false;
-      writeQuoted(OS, rec.ivNames[l]);
+      std::string ivName = l < rec.ivNames.size()
+                               ? rec.ivNames[l]
+                               : ("iv" + std::to_string(l));
+      writeQuoted(OS, ivName);
       OS << ":1";
     }
     OS << "}}";
