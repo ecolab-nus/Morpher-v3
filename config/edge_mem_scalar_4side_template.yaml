@@ -1,0 +1,16 @@
+memory_mode: "auto"
+arch_template_json: "edge_mem_4x4/scalar_4side.json"
+mapper_subfolder: "hycube"
+mapper_preset: "fast"
+init_II: 1
+multihop: 4
+max_test_samples: 5
+enable_simulation: false
+validation_mode: "functional"
+spm_mode: "off"
+remove_agi: true
+remove_iter: true
+auto_unroll:
+  enabled: false
+  factors: [1]
+  stop_on_degradation: true

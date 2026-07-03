@@ -62,6 +62,7 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "sa_temp_min=" << args.sa_temp_min << "\n";
 	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n";
 	std::cout << "off_spm_mem_candidate_topk=" << args.off_spm_mem_candidate_topk << "\n";
+	std::cout << "pf_candidate_topk=" << args.pf_candidate_topk << "\n";
 	std::cout << "spm_mode=" << args.spm_mode << "\n";
 	std::cout << "arch_name=" << args.arch_name << "\n\n";
 	std::cout << "fanout_route_policy=" << args.fanout_route_policy << "\n\n";
@@ -236,6 +237,8 @@ int main(int argn, char *argc[])
 	sa_mapper->setFanoutRoutePolicy(args.fanout_route_policy);
 	pf_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;
 	sa_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;
+	pf_mapper->pfCandidateTopK = args.pf_candidate_topk;
+	sa_mapper->pfCandidateTopK = args.pf_candidate_topk;
 
 	//cout << "json_file_name = " << json_file_name << "\n";
 	// exit(EXIT_SUCCESS);

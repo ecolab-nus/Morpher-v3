@@ -52,12 +52,116 @@ struct hash_LatPort {
     } 
 }; 
 
+void CGRAXMLCompile::PathFinderMapper::beginIterationProgress(int iteration, size_t mappedCount, size_t unmappedCount)
+{
+	progressIteration = iteration;
+	progressPhase = "iteration";
+	progressNode = nullptr;
+	progressMappedCount = mappedCount;
+	progressUnmappedCount = unmappedCount;
+	progressCandidateCount = 0;
+	progressAstarCalls = 0;
+	progressAstarExpanded = 0;
+	progressAstarMaxQueue = 0;
+	progressLastHeartbeatSec = -1;
+	progressIterationStart = std::chrono::steady_clock::now();
+	nextPortsCache.clear();
+	conflictPortsCache.clear();
+}
+
+void CGRAXMLCompile::PathFinderMapper::updateAttemptProgress(const char *phase, DFGNode *node, size_t mappedCount, size_t unmappedCount, size_t candidateCount)
+{
+	progressPhase = phase;
+	progressNode = node;
+	progressMappedCount = mappedCount;
+	progressUnmappedCount = unmappedCount;
+	progressCandidateCount = candidateCount;
+}
+
+bool CGRAXMLCompile::PathFinderMapper::iterationGuardHit(const char *phase)
+{
+	if (progressIteration < 0)
+	{
+		return false;
+	}
+	const int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::steady_clock::now() - progressIterationStart).count());
+	bool emitHeartbeat = false;
+	{
+		if (elapsed >= 10 && (progressLastHeartbeatSec < 0 || elapsed - progressLastHeartbeatSec >= 10))
+		{
+			progressLastHeartbeatSec = elapsed;
+			emitHeartbeat = true;
+		}
+	}
+	if (emitHeartbeat)
+	{
+		std::cout << "PF heartbeat: II = " << (cgra ? cgra->get_t_max() : -1)
+		          << ", Iteration = " << progressIteration
+		          << ", phase = " << phase
+		          << ", node = " << (progressNode ? progressNode->idx : -1)
+		          << ", op = " << (progressNode ? progressNode->op : std::string("-"))
+		          << ", mapped = " << progressMappedCount
+		          << ", unmapped = " << progressUnmappedCount
+		          << ", candidates = " << progressCandidateCount
+		          << ", astar_calls = " << progressAstarCalls
+		          << ", astar_expanded = " << progressAstarExpanded
+		          << ", astar_max_queue = " << progressAstarMaxQueue
+		          << ", elapsed = " << elapsed << " sec\n";
+	}
+	if (elapsed > progressMaxSecondsInIter)
+	{
+		std::cout << "PF iteration guard hit inside " << phase
+		          << " at II = " << (cgra ? cgra->get_t_max() : -1)
+		          << ", Iteration = " << progressIteration
+		          << ", elapsed = " << elapsed << " sec. Failing this attempt.\n";
+		setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
+		return true;
+	}
+	return false;
+}
+
+std::vector<CGRAXMLCompile::LatPort> CGRAXMLCompile::PathFinderMapper::getNextPortsCached(LatPort port)
+{
+	auto found = nextPortsCache.find(port);
+	if (found != nextPortsCache.end())
+	{
+		return found->second;
+	}
+	std::vector<LatPort> nextPorts = port.second->getMod()->getNextPorts(port, this);
+	nextPortsCache[port] = nextPorts;
+	return nextPorts;
+}
+
+std::set<CGRAXMLCompile::Port *> CGRAXMLCompile::PathFinderMapper::getConflictPortsCached(Port *port)
+{
+	auto found = conflictPortsCache.find(port);
+	if (found != conflictPortsCache.end())
+	{
+		return found->second;
+	}
+	std::set<Port *> conflictPorts = port->getMod()->getConflictPorts(port);
+	conflictPortsCache[port] = conflictPorts;
+	return conflictPorts;
+}
+
+void CGRAXMLCompile::PathFinderMapper::clearAttemptCaches()
+{
+	nextPortsCache.clear();
+	conflictPortsCache.clear();
+}
+
 bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 														  LatPort end, DataPath *endDP, std::vector<LatPort> &path, int &cost, DFGNode *node,
 														  std::map<Port *, std::set<DFGNode *>> &mutexPaths, DFGNode *currNode)
 {
 
 	//	LOG(ROUTE) << "LeastCoastPath started with start=" << start->getFullName() << " to end=" << end->getFullName() << "\n";
+	progressAstarCalls++;
+	if (iterationGuardHit("LeastCostPathAstar"))
+	{
+		return false;
+	}
 
 	std::unordered_map<LatPort, int, hash_LatPort> cost_to_port;
 	std::unordered_map<LatPort, LatPort, hash_LatPort> cameFrom;
@@ -158,13 +262,35 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 	std::vector<LatPort> finalPath;
 
 	Port *newNodeDPOut = endDP->getPotOutputPort(currNode);
-	std::set<Port *> newNodeDPOutCP = newNodeDPOut->getMod()->getConflictPorts(newNodeDPOut);
-	std::set<Port *> endPortCP = end.second->getMod()->getConflictPorts(end.second);
+	std::set<Port *> newNodeDPOutCP = getConflictPortsCached(newNodeDPOut);
+	std::set<Port *> endPortCP = getConflictPortsCached(end.second);
 
 	int curr_least_cost_to_end = INT32_MAX;
+	size_t expandedStates = 0;
 
 	while (!q.empty())
 	{
+		expandedStates++;
+		progressAstarExpanded++;
+		progressAstarMaxQueue = std::max(progressAstarMaxQueue, q.size());
+		if ((expandedStates % 1024) == 0)
+		{
+			if (iterationGuardHit("LeastCostPathAstar"))
+			{
+				return false;
+			}
+			if (pfAstarExpansionBudget > 0 && expandedStates > static_cast<size_t>(pfAstarExpansionBudget))
+			{
+				std::cout << "PF A* expansion budget hit: node = "
+				          << (currNode ? currNode->idx : -1)
+				          << ", start = " << start.second->getFullName()
+				          << ", end = " << end.second->getFullName()
+				          << ", expanded = " << expandedStates
+				          << ", budget = " << pfAstarExpansionBudget << "\n";
+				setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
+				return false;
+			}
+		}
 		port_heuristic curr = q.top();
 		currPort = curr.p;
 		q.pop();
@@ -217,7 +343,7 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 		//				}
 		//			}
 		//		}
-		std::vector<LatPort> nextPorts = currPort.second->getMod()->getNextPorts(currPort, this);
+		std::vector<LatPort> nextPorts = getNextPortsCached(currPort);
 
 		//		LOG(ROUTE) << "nextPorts size = " << nextPorts.size() << "\n";
 		int q_len = q.size();
@@ -253,7 +379,7 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 				{
 					continue;
 				}
-				for (Port *cp : nextPort->getMod()->getConflictPorts(nextPort))
+				for (Port *cp : getConflictPortsCached(nextPort))
 				{
 					if (currPath->find(cp) != currPath->end())
 					{
@@ -549,6 +675,12 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 													   DFGNode **failedNode)
 {
 
+	updateAttemptProgress("estimateRouting", node, progressMappedCount, progressUnmappedCount);
+	if (iterationGuardHit("estimateRouting"))
+	{
+		return false;
+	}
+
 	std::map<DFGNode *, std::vector<Port *>> possibleStarts;
 	std::map<DFGNode *, Port *> alreadyMappedChildPorts;
 
@@ -756,9 +888,17 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	bool changed = false;
 	LOG(ROUTE)<< "modifyMaxLatCandDest\n";
 	candidateDests = modifyMaxLatCandDest(minLatDests, node, changed);
-	if (!cgra->is_spm_modelled && checkMEMOp(node->op) &&
-	    offSpmMemCandidateTopK > 0 &&
-	    candidateDests.size() > static_cast<size_t>(offSpmMemCandidateTopK))
+	const bool isMemOp = checkMEMOp(node->op);
+	const size_t candidateCountBeforeCap = candidateDests.size();
+	int candidateTopK = isMemOp ? ((!cgra->is_spm_modelled) ? offSpmMemCandidateTopK : 0) : pfCandidateTopK;
+	if (!isMemOp && candidateTopK == -1)
+	{
+		const int quarterCandidates = static_cast<int>((candidateCountBeforeCap + 3) / 4);
+		candidateTopK = std::min(32, std::max(8, quarterCandidates));
+	}
+	const char *candidateCapLabel = isMemOp ? "off-SPM memory" : "PathFinder";
+	if (candidateTopK > 0 &&
+	    candidateDests.size() > static_cast<size_t>(candidateTopK))
 	{
 		int cx = 0, cy = 0, n = 0;
 		for (auto &kv : possibleStarts)
@@ -790,12 +930,15 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 					          return da < db;
 			          }
 			          return a->getFullName() < b->getFullName();
-		          });
-		candidateDests.resize(static_cast<size_t>(offSpmMemCandidateTopK));
-		LOG(ROUTE) << "Capped off-SPM memory candidates for node " << node->idx
-		           << " to " << candidateDests.size() << "\n";
+		});
+		candidateDests.resize(static_cast<size_t>(candidateTopK));
+		LOG(ROUTE) << "Capped " << candidateCapLabel << " candidates for node " << node->idx
+		           << " from " << candidateCountBeforeCap
+		           << " to " << candidateDests.size()
+		           << " (pruned " << (candidateCountBeforeCap - candidateDests.size()) << ")\n";
 	}
 	LOG(ROUTE)<< "Candidate Dests = " << candidateDests.size() << "\n";
+	updateAttemptProgress("estimateRouting", node, progressMappedCount, progressUnmappedCount, candidateDests.size());
 	int ii = this->cgra->get_t_max();
 
 	int minLatSucc = 1000000000;
@@ -807,11 +950,19 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	//Route Estimation
 	for (int i = 0; i < iterations; ++i)
 	{
+		if (iterationGuardHit("estimateRouting"))
+		{
+			return false;
+		}
 		bool pathFromParentExist = false;
 		bool pathExistMappedChild = false;
 
 		for (DataPath *dest : candidateDests)
 		{
+			if (iterationGuardHit("estimateRouting"))
+			{
+				return false;
+			}
 			int minLatDestVal_prime = minLatDests[dest] + ii * i;
 			std::stringstream output_stream;
 			output_stream << "Candidate Dest =" ;
@@ -840,7 +991,7 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 
 				for (Port *startCand : pair.second)
 				{
-					int cost;
+					int cost = 0;
 					std::vector<LatPort> path;
 					std::map<Port *, std::set<DFGNode *>> mutexPaths;
 					LOG(ROUTE)<< "par Estimating Path" << startCand->getFullName() << "," << startCand->getLat() << ","
@@ -873,6 +1024,10 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 					}
 
 					pathExist = pathExist & LeastCostPathAstar(startCandLat, destPortLat, dest, path, cost, parent, mutexPaths, node);
+					if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+					{
+						return false;
+					}
 					path.clear();
 					if (!pathExist)
 					{
@@ -940,6 +1095,10 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 				LatPort destPortLat = std::make_pair(minLatDestVal + latency, destPort);
 
 				pathExistMappedChild = pathExistMappedChild & LeastCostPathAstar(destPortLat, childDestPortLat, childDP, path, cost, node, mutexPaths, child);
+				if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+				{
+					return false;
+				}
 
 				if (!pathExistMappedChild)
 				{
@@ -990,6 +1149,11 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 											 DFGNode **failedNode)
 {
 
+	updateAttemptProgress("Route", node, progressMappedCount, progressUnmappedCount, estimatedRoutes.size());
+	if (iterationGuardHit("Route"))
+	{
+		return false;
+	}
 	LOG(ROUTE) << "Route begin...\n";
 
 	int parentRoutingPortCount = 0;
@@ -1019,6 +1183,10 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 	dest_with_cost currDest;
 	while (!estimatedRoutes.empty())
 	{
+		if (iterationGuardHit("Route"))
+		{
+			return false;
+		}
 		currDest = estimatedRoutes.top();
 		estimatedRoutes.pop();
 
@@ -1053,11 +1221,19 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			std::vector<LatPort> pathTmp;
 			for (LatPort p : possibleStarts)
 			{
+				if (iterationGuardHit("Route"))
+				{
+					return false;
+				}
 				int cost;
 				if (LeastCostPathAstar(p, dest_child_with_cost_ins.childDest, dest_child_with_cost_ins.childDP, pathTmp, cost, node, mutexPathsTmp, dest_child_with_cost_ins.child))
 				{
 					pathTmp.clear();
 					q.push(cand_src_with_cost(p, dest_child_with_cost_ins.childDest, cost));
+				}
+				if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+				{
+					return false;
 				}
 			}
 
@@ -1072,6 +1248,10 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 				q.pop();
 				std::map<Port *, std::set<DFGNode *>> mutexPaths;
 				alreadMappedChildRouteSucc = LeastCostPathAstar(head.src, dest, dest_child_with_cost_ins.childDP, path, cost, node, mutexPaths, dest_child_with_cost_ins.child);
+				if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+				{
+					return false;
+				}
 				if (alreadMappedChildRouteSucc)
 				{
 					assignPath(node, dest_child_with_cost_ins.child, path);
@@ -1161,6 +1341,10 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			bool succ = false;
 			while (!q.empty())
 			{
+				if (iterationGuardHit("Route"))
+				{
+					return false;
+				}
 				cand_src_with_cost cand_src_with_cost_ins = q.top();
 				q.pop();
 				LatPort src = cand_src_with_cost_ins.src;
@@ -1169,6 +1353,10 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 				std::map<Port *, std::set<DFGNode *>> mutexPath;
 				int cost;
 				succ = LeastCostPathAstar(src, dest, currDest.dest, path, cost, parent, mutexPath, node);
+				if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+				{
+					return false;
+				}
 				if (succ)
 				{
 
@@ -1339,7 +1527,7 @@ int CGRAXMLCompile::PathFinderMapper::calculateCost(LatPort src,
 		for (Port *p : nextPE->outputPorts)
 		{
 			Module *parent = nextPE->getParent();
-			if (parent->getNextPorts(std::make_pair(next_to_src.first, p), this).empty())
+			if (getNextPortsCached(std::make_pair(next_to_src.first, p)).empty())
 				continue;
 			if (p->getNode() == NULL)
 			{
@@ -1483,6 +1671,9 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		size_t nodeAttemptsInIter = 0;
 		int lastPrintedElapsedSec = -1;
 		auto iterStartTime = std::chrono::steady_clock::now();
+		beginIterationProgress(i, mappedNodes.size(), unmappedNodes.size());
+		progressMaxSecondsInIter = maxSecondsInIter;
+		progressIterationStart = iterStartTime;
 
 		std::string mappingLogFileName_withIter = mappingLogFileName + "_Iter=" + std::to_string(i) + ".mapping.csv";
 		std::string mappingLog2FileName_withIter = mappingLog2FileName + "_Iter=" + std::to_string(i) + ".routeInfo.log";
@@ -1559,6 +1750,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 			DFGNode *node = unmappedNodes.top();
 			unmappedNodes.pop();
+			updateAttemptProgress("node", node, mappedNodes.size(), unmappedNodes.size());
 
 			std::stringstream MapHeader;
 			MapHeader << "current node = " << node->idx;
@@ -1594,10 +1786,21 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				//the routes are not estimated.
 				std::priority_queue<dest_with_cost> estimatedRoutes;
 				DFGNode *failedNode;
+				updateAttemptProgress("estimateRouting", node, mappedNodes.size(), unmappedNodes.size());
 				isEstRouteSucc = estimateRouting(node, estimatedRoutes, &failedNode);
 
 				if (!isEstRouteSucc)
 				{
+					if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+					{
+						mappingLog << "PF iteration guard hit during route estimation; failing this attempt.\n";
+						mappingLog2 << "PF iteration guard hit during route estimation; failing this attempt.\n";
+						mappingLog4 << "PF iteration guard hit during route estimation; failing this attempt.\n";
+						mappingLog.close();
+						mappingLog2.close();
+						mappingLog4.close();
+						return false;
+					}
 					printMappingLog();
 					printMappingLog2();
 					if (enableBackTracking)
@@ -1669,7 +1872,18 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 			mappingLog << "estimatedRouteInfo[node].size = " << estimatedRouteInfo[node].size() << "\n";
 			if (!estimatedRouteInfo[node].empty())
 			{
+				updateAttemptProgress("Route", node, mappedNodes.size(), unmappedNodes.size(), estimatedRouteInfo[node].size());
 				isRouteSucc = Route(node, estimatedRouteInfo[node], &failedNode);
+				if (!isRouteSucc && getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
+				{
+					mappingLog << "PF iteration guard hit during final routing; failing this attempt.\n";
+					mappingLog2 << "PF iteration guard hit during final routing; failing this attempt.\n";
+					mappingLog4 << "PF iteration guard hit during final routing; failing this attempt.\n";
+					mappingLog.close();
+					mappingLog2.close();
+					mappingLog4.close();
+					return false;
+				}
 				if (!isRouteSucc)
 					std::cout << "Route Failed!\n";
 			}

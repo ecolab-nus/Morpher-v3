@@ -74,6 +74,7 @@ MAPPER_PRESETS = {
     "sa_temp_min": 20.0,
     "sa_candidate_topk": 4,
     "off_spm_mem_candidate_topk": "auto_fast",
+    "pf_candidate_topk": "auto_fast",
     "proximity_sort": True,
   },
   "balanced": {
@@ -91,6 +92,7 @@ MAPPER_PRESETS = {
     "sa_temp_min": 10.0,
     "sa_candidate_topk": 8,
     "off_spm_mem_candidate_topk": "auto_balanced",
+    "pf_candidate_topk": 0,
     "proximity_sort": True,
   },
   "quality": {
@@ -108,6 +110,7 @@ MAPPER_PRESETS = {
     "sa_temp_min": 5.0,
     "sa_candidate_topk": 12,
     "off_spm_mem_candidate_topk": 0,
+    "pf_candidate_topk": 0,
     "proximity_sort": True,
   },
   "exhaust": {
@@ -125,6 +128,7 @@ MAPPER_PRESETS = {
     "sa_temp_min": 3.0,
     "sa_candidate_topk": 16,
     "off_spm_mem_candidate_topk": 0,
+    "pf_candidate_topk": 0,
     "proximity_sort": False,
   },
 }
@@ -154,6 +158,7 @@ def _parse_mapper_preset(config_dict):
     "sa_temp_min",
     "sa_candidate_topk",
     "off_spm_mem_candidate_topk",
+    "pf_candidate_topk",
     "proximity_sort",
   ]
   used_overrides = []
@@ -393,6 +398,43 @@ def _resolve_off_spm_mem_candidate_topk(value, mem_pe_count):
   return topk
 
 
+def _resolve_nonnegative_int(value, key):
+  try:
+    parsed = int(value)
+  except (TypeError, ValueError):
+    raise RuntimeError("%s must be an integer." % key)
+  if parsed < 0:
+    raise RuntimeError("%s must be >= 0." % key)
+  return parsed
+
+
+def _resolve_positive_int(value, key):
+  try:
+    parsed = int(value)
+  except (TypeError, ValueError):
+    raise RuntimeError("%s must be an integer." % key)
+  if parsed < 1:
+    raise RuntimeError("%s must be >= 1." % key)
+  return parsed
+
+
+def _resolve_pf_candidate_topk(value):
+  if isinstance(value, str):
+    policy = value.strip().lower().replace("-", "_")
+    if policy in ("", "0", "none", "off", "unbounded"):
+      return 0
+    if policy == "auto_fast":
+      return "auto_fast"
+    raise RuntimeError("pf_candidate_topk must be an integer or one of: auto_fast, 0.")
+  try:
+    parsed = int(value)
+  except (TypeError, ValueError):
+    raise RuntimeError("pf_candidate_topk must be an integer or auto_fast.")
+  if parsed < 0:
+    raise RuntimeError("pf_candidate_topk must be >= 0, or auto_fast.")
+  return parsed
+
+
 VECTOR_OP_PREFIX = "V"
 VECTOR_MEMORY_OP_PREFIXES = ("VLOAD", "VSTORE", "VOLOAD", "VOSTORE")
 
@@ -555,6 +597,7 @@ class RunnerConfig:
   sa_temp_min: float
   sa_candidate_topk: int
   off_spm_mem_candidate_topk: int
+  pf_candidate_topk: int
   enable_simulation: bool
   generate_dfg_pdf: bool
   suppress_dfg_dot: bool
@@ -741,6 +784,9 @@ class RunnerConfig:
       off_spm_mem_candidate_topk=_resolve_off_spm_mem_candidate_topk(
         mapper_tuning.get("off_spm_mem_candidate_topk", 0),
         inferred_mem_pes,
+      ),
+      pf_candidate_topk=_resolve_pf_candidate_topk(
+        mapper_tuning.get("pf_candidate_topk", 0),
       ),
       enable_simulation=config_dict.get("enable_simulation", True),
       generate_dfg_pdf=bool(config_dict.get("generate_dfg_pdf", True)),

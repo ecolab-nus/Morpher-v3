@@ -6,11 +6,11 @@ mapper_preset: "fast"
 init_II: 1
 multihop: 4
 max_test_samples: 5
-enable_simulation: false
+enable_simulation: true
 validation_mode: "functional"
 spm_mode: 'off'
-remove_agi: true
-remove_iter: true
+remove_agi: false
+remove_iter: false
 auto_unroll:
   enabled: true
   factors: [4]

@@ -21,6 +21,8 @@
 #include <math.h>
 #include <sstream>
 #include <string>
+#include <chrono>
+#include <unordered_map>
 
 constexpr int kMaxResourceCost = 100000;     // was MRC
 constexpr int kUnusedOpPenalty = 1000;        // was UOP
@@ -31,6 +33,14 @@ namespace CGRAXMLCompile
 
 //struct definitions
 class PathFinderMapper;
+
+struct LatPortHash
+{
+	size_t operator()(const LatPort &p) const
+	{
+		return std::hash<int>{}(p.first) ^ std::hash<Port *>{}(p.second);
+	}
+};
 
 struct dest_child_with_cost
 {
@@ -287,6 +297,8 @@ public:
 	int backTrackLimit = 4;
 	bool proximitySort = true;
 	int offSpmMemCandidateTopK = 0;
+	int pfCandidateTopK = 0;
+	int pfAstarExpansionBudget = 200000;
 	FanoutRoutePolicy fanoutRoutePolicy = FanoutRoutePolicy::ADAPTIVE;
 
 	int upperboundII = 1000000;
@@ -359,6 +371,12 @@ public:
 	void setAttemptOutcome(AttemptOutcome outcome){lastAttemptOutcome = outcome;}
 	AttemptOutcome getAttemptOutcome() const { return lastAttemptOutcome; }
 	void resetAttemptOutcome(){lastAttemptOutcome = AttemptOutcome::UNKNOWN;}
+	void beginIterationProgress(int iteration, size_t mappedCount, size_t unmappedCount);
+	void updateAttemptProgress(const char *phase, DFGNode *node, size_t mappedCount, size_t unmappedCount, size_t candidateCount = 0);
+	bool iterationGuardHit(const char *phase);
+	std::vector<LatPort> getNextPortsCached(LatPort port);
+	std::set<Port *> getConflictPortsCached(Port *port);
+	void clearAttemptCaches();
 
 	int getIndexOfBin(int t, int y, int x){
 		return t * cgra->get_y_max() * cgra->get_x_max() + y * cgra->get_x_max() + x;
@@ -397,6 +415,20 @@ protected:
 	int restartOffset = 0;
 	bool strictBookkeeping = true;
 	AttemptOutcome lastAttemptOutcome = AttemptOutcome::UNKNOWN;
+	int progressIteration = -1;
+	const char *progressPhase = "idle";
+	DFGNode *progressNode = nullptr;
+	size_t progressMappedCount = 0;
+	size_t progressUnmappedCount = 0;
+	size_t progressCandidateCount = 0;
+	size_t progressAstarCalls = 0;
+	size_t progressAstarExpanded = 0;
+	size_t progressAstarMaxQueue = 0;
+	int progressLastHeartbeatSec = -1;
+	int progressMaxSecondsInIter = 120;
+	std::chrono::steady_clock::time_point progressIterationStart;
+	std::unordered_map<LatPort, std::vector<LatPort>, LatPortHash> nextPortsCache;
+	std::unordered_map<Port *, std::set<Port *>> conflictPortsCache;
 
 	std::map<int, int> conflictedTimeStepMap;
 

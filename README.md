@@ -250,7 +250,7 @@ The SIMD packer rewrites eligible scalar DFG XML nodes into vector nodes and can
 | `quality` | Higher mapping effort, more SA restarts/moves, larger II search range. |
 | `exhaust` | Largest built-in search budget; useful for difficult kernels, but slow. |
 
-Advanced tuning keys available for overriding presets: `mapping_method`, `backtrack_limit`, `max_mapper_iter`, `max_II`, `ii_restarts`, `skip_ii_estimation`, `print_dfg`, `sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_temp_max`, `sa_temp_min`, `sa_candidate_topk`, and `proximity_sort`.
+Advanced tuning keys available for overriding presets: `mapping_method`, `backtrack_limit`, `max_mapper_iter`, `max_II`, `ii_restarts`, `skip_ii_estimation`, `print_dfg`, `sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_temp_max`, `sa_temp_min`, `sa_candidate_topk`, `off_spm_mem_candidate_topk`, `pf_candidate_topk` (`0` uncapped, `auto_fast` size-aware), and `proximity_sort`.
 
 ### Environment toggles
 
