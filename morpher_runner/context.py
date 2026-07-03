@@ -611,6 +611,7 @@ class RunnerConfig:
   arch_simd_width: int
   arch_scalar_broadcast: bool
   arch_vector_ops: frozenset
+  source_template_mode: str = "off"
 
   @staticmethod
   def _parse_auto_unroll(config_dict):
@@ -655,6 +656,28 @@ class RunnerConfig:
     stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", True))
     return enabled, factors, fuse_innermost_loops, stop_on_degradation
 
+  @staticmethod
+  def _parse_source_template(config_dict):
+    source_cfg = config_dict.get("source_template", {})
+    if source_cfg is None:
+      source_cfg = {}
+    if isinstance(source_cfg, bool):
+      return "auto" if source_cfg else "off"
+    if not isinstance(source_cfg, dict):
+      raise RuntimeError("Config key 'source_template' must be a mapping or boolean.")
+
+    enabled = source_cfg.get("enabled", "off")
+    if isinstance(enabled, bool):
+      return "auto" if enabled else "off"
+    mode = str(enabled).strip().lower()
+    if mode in ("true", "on", "yes"):
+      return "auto"
+    if mode in ("false", "off", "no", ""):
+      return "off"
+    if mode != "auto":
+      raise RuntimeError("source_template.enabled must be one of: off, auto.")
+    return mode
+
   @classmethod
   def from_yaml(cls, config_path):
     with open(config_path, "r", encoding="utf-8") as stream:
@@ -671,6 +694,7 @@ class RunnerConfig:
       auto_unroll_fuse_innermost_loops,
       auto_unroll_stop_on_degradation,
     ) = cls._parse_auto_unroll(config_dict)
+    source_template_mode = cls._parse_source_template(config_dict)
     _print_deprecation_warning(config_dict)
     validation_mode = str(config_dict.get("validation_mode", "functional")).strip().lower()
     if validation_mode == "event-driven":
@@ -796,6 +820,7 @@ class RunnerConfig:
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
+      source_template_mode=source_template_mode,
       arch_simd_enabled=arch_simd.enabled,
       arch_simd_width=arch_simd.width,
       arch_scalar_broadcast=arch_simd.scalar_broadcast,

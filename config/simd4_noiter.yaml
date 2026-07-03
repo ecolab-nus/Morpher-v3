@@ -1,5 +1,5 @@
 memory_mode: auto
-arch_template_json: hycube_original_updatemem.json
+arch_template_json: "edge_mem_4x4/scalar_3side.json"
 mapper_subfolder: hycube
 mapper_preset: "fast"
 init_II: 1
@@ -10,7 +10,9 @@ validation_mode: functional
 spm_mode: 'off'
 remove_agi: true
 remove_iter: true
+source_template:
+  enabled: auto
 auto_unroll:
-  enabled: false
-  factors: [1]
+  enabled: true
+  factors: [8]
   stop_on_degradation: true

@@ -323,8 +323,15 @@ def _try_stage_source_template(
   report_path,
   record_index=None,
   active_cell_limit=None,
+  allow_empty_fallback=False,
 ):
   records = _load_template_report_records(report_path)
+  if not records and allow_empty_fallback:
+    print(
+      "Source-template report contains no candidate records; "
+      "continuing through normal DFG generation.\n"
+    )
+    return False
   candidates = _candidate_template_records(records, context.kernel, record_index)
   arch_path = resolve_arch_template_path(
     context.morpher_home,
@@ -360,6 +367,12 @@ def _try_stage_source_template(
     result = first_result
     selected_index = first_index
   if result is None or selected_index is None:
+    if allow_empty_fallback:
+      print(
+        "Source-template report has no selectable records; "
+        "continuing through normal DFG generation.\n"
+      )
+      return False
     raise RuntimeError("Source-template report contains no candidate records.")
 
   template_dir = Path(context.dfg_gen_kernel) / "source_template"
@@ -382,6 +395,15 @@ def _try_stage_source_template(
   print(
     "Source-template lowering accepted for record %d: %s" %
     (selected_index, result.reason)
+  )
+  template_name = result.metadata.get("template", "unknown")
+  print(
+    "Template mapping found and used: template=%s, record=%d, mapper_xml=%s\n"
+    % (
+      template_name,
+      selected_index,
+      os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel),
+    )
   )
   print("Source-template metadata: %s" % meta_path)
   return True
@@ -668,6 +690,16 @@ def main(
     print("Skipping DFG generation stage (XML input mode).\n")
 
   source_template_staged = False
+  source_template_from_config = False
+  if (
+    source_template_report is None
+    and not dfg_xml_path
+    and runmode in ("runall", "dfg_gen_only")
+    and context.config.source_template_mode == "auto"
+  ):
+    source_template_report = "auto"
+    source_template_from_config = True
+
   if source_template_report:
     if runmode not in ("runall", "dfg_gen_only"):
       raise RuntimeError(
@@ -683,6 +715,7 @@ def main(
       resolved_template_report,
       source_template_record,
       source_template_active_cell_limit,
+      allow_empty_fallback=source_template_from_config,
     )
 
   if (

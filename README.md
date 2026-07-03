@@ -109,6 +109,7 @@ Options:
 | `--run-tag <tag>` | Non-empty tag string; sanitized to `[A-Za-z0-9._-]` | timestamp if omitted | Reuse a stable tag under `workspace/morpher_runs/<tag>/`; batch runners use this to avoid collisions. |
 | `--output-root <path>` | Directory path | `generated` | For direct single-kernel C runs, write `result.csv` and copied `config.yaml` under `<root>/<suite>/<kernel>/<timestamp>/`. Ignored when `--run-tag` is supplied. |
 | `--mem-alloc <path>` | Existing file path | none | XML input mode only: explicit mapper memory-allocation file. |
+| `--source-template-report <path\|auto>` | Existing JSONL report or `auto` | none | Try source-bound systolic-template lowering before normal DFG generation. Accepted records stage synthesized XML; rejected/conditional records fall back. |
 
 `runmode` values (default: `runall`):
 
@@ -185,6 +186,7 @@ Default config: `config/default.yaml`. Provided configs include:
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
 | `remove_agi` | Boolean: `true` or `false` | `false` | Remove address-generation nodes from the DFG; assumes a scalar/AGU path handles addresses. |
 | `remove_iter` | Boolean: `true` or `false` | `false` | Remove loop-control and PHI-merge nodes from packed DFGs; assumes external iteration/control hardware. If SIMD packing is inactive, this knob is ignored with a warning. |
+| `source_template.enabled` | `off`, `auto`, Boolean | `off` | For C-source `runall` / `dfg_gen_only`, `auto` generates a SystolicCandidatePass report and tries source-bound template lowering before normal DFG generation. Empty default-generated reports fall back normally. |
 | `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |
 | `replicate_data` | Boolean: `true` or `false` | `false` | With `layout_solver: true`, allow read-only array replication across banks. |
 
