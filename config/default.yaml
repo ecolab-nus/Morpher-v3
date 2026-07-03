@@ -9,8 +9,8 @@ max_test_samples: 5
 enable_simulation: true
 validation_mode: "functional"
 spm_mode: 'off'
-remove_agi: false
-remove_iter: false
+remove_agi: True
+remove_iter: True
 auto_unroll:
   enabled: true
   factors: [4]

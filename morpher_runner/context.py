@@ -2,7 +2,6 @@ import os
 import re
 import shutil
 import json
-import math
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -92,7 +91,7 @@ MAPPER_PRESETS = {
     "sa_temp_min": 10.0,
     "sa_candidate_topk": 8,
     "off_spm_mem_candidate_topk": "auto_balanced",
-    "pf_candidate_topk": 0,
+    "pf_candidate_topk": "auto_balanced",
     "proximity_sort": True,
   },
   "quality": {
@@ -372,20 +371,15 @@ def infer_arch_mem_pe_count(morpher_home, mapper_home, arch_template_json):
   return count if count > 0 else None
 
 
-def _resolve_off_spm_mem_candidate_topk(value, mem_pe_count):
+def _resolve_off_spm_mem_candidate_topk(value, _mem_pe_count):
   if isinstance(value, str):
     policy = value.strip().lower().replace("-", "_")
     if policy in ("", "0", "none", "off", "unbounded"):
       return 0
-    if mem_pe_count is None or mem_pe_count < 1:
-      raise RuntimeError(
-        "off_spm_mem_candidate_topk=%s requires an architecture JSON with inferable memory PE count."
-        % value
-      )
     if policy == "auto_fast":
-      return max(1, int(math.ceil((2.0 * mem_pe_count) / 3.0)))
+      return "auto_fast"
     if policy in ("auto_balanced", "auto_mempes", "auto_mem_pes"):
-      return int(mem_pe_count)
+      return "auto_balanced"
     raise RuntimeError(
       "off_spm_mem_candidate_topk must be an integer or one of: auto_fast, auto_balanced, 0."
     )
@@ -423,15 +417,15 @@ def _resolve_pf_candidate_topk(value):
     policy = value.strip().lower().replace("-", "_")
     if policy in ("", "0", "none", "off", "unbounded"):
       return 0
-    if policy == "auto_fast":
-      return "auto_fast"
-    raise RuntimeError("pf_candidate_topk must be an integer or one of: auto_fast, 0.")
+    if policy in ("auto_fast", "auto_balanced"):
+      return policy
+    raise RuntimeError("pf_candidate_topk must be an integer or one of: auto_fast, auto_balanced, 0.")
   try:
     parsed = int(value)
   except (TypeError, ValueError):
-    raise RuntimeError("pf_candidate_topk must be an integer or auto_fast.")
+    raise RuntimeError("pf_candidate_topk must be an integer, auto_fast, or auto_balanced.")
   if parsed < 0:
-    raise RuntimeError("pf_candidate_topk must be >= 0, or auto_fast.")
+    raise RuntimeError("pf_candidate_topk must be >= 0, auto_fast, or auto_balanced.")
   return parsed
 
 

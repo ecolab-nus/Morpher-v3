@@ -45,8 +45,8 @@ struct arguments
 	float sa_temp_max = 200.0f;
 	float sa_temp_min = 10.0f;
 	int sa_candidate_topk = 8;
-	int off_spm_mem_candidate_topk = 0; // 0=unbounded; cap PF memory candidates when SPM modelling is off
-	int pf_candidate_topk = 0; // 0=unbounded, -1=auto_fast; cap non-memory PF candidates during route estimation
+	int off_spm_mem_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap PF memory candidates when SPM modelling is off
+	int pf_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap non-memory PF candidates during route estimation
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
@@ -89,8 +89,8 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<std::string>("", "--sa_temp_max", "SA maximum temperature", "200")
 					.add_option<std::string>("", "--sa_temp_min", "SA minimum temperature", "10")
 					.add_option<int>("", "--sa_candidate_topk", "SA top-K candidate DPs sampled stochastically", 8)
-					.add_option<int>("", "--off_spm_mem_candidate_topk", "cap PathFinder memory candidates when spm_mode=off (0=unbounded)", 0)
-					.add_option<std::string>("", "--pf_candidate_topk", "cap non-memory PathFinder candidates during route estimation (0=unbounded, auto_fast=size-aware)", "0")
+					.add_option<std::string>("", "--off_spm_mem_candidate_topk", "cap PathFinder memory candidates when spm_mode=off (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
+					.add_option<std::string>("", "--pf_candidate_topk", "cap non-memory PathFinder candidates during route estimation (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
@@ -124,11 +124,40 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.sa_temp_max = std::stof(args.get_option<std::string>("--sa_temp_max"));
 	ret.sa_temp_min = std::stof(args.get_option<std::string>("--sa_temp_min"));
 	ret.sa_candidate_topk = args.get_option<int>("--sa_candidate_topk");
-	ret.off_spm_mem_candidate_topk = args.get_option<int>("--off_spm_mem_candidate_topk");
+	std::string off_spm_mem_candidate_topk_arg = args.get_option<std::string>("--off_spm_mem_candidate_topk");
+	if (off_spm_mem_candidate_topk_arg == "auto_fast")
+	{
+		ret.off_spm_mem_candidate_topk = -1;
+	}
+	else if (off_spm_mem_candidate_topk_arg == "auto_balanced")
+	{
+		ret.off_spm_mem_candidate_topk = -2;
+	}
+	else
+	{
+		try
+		{
+			ret.off_spm_mem_candidate_topk = std::stoi(off_spm_mem_candidate_topk_arg);
+		}
+		catch (...)
+		{
+			std::cerr << "Error: --off_spm_mem_candidate_topk must be an integer, auto_fast, or auto_balanced.\n";
+			exit(EXIT_FAILURE);
+		}
+	}
+	if (ret.off_spm_mem_candidate_topk < -2)
+	{
+		std::cerr << "Error: --off_spm_mem_candidate_topk must be >= 0, auto_fast, or auto_balanced.\n";
+		exit(EXIT_FAILURE);
+	}
 	std::string pf_candidate_topk_arg = args.get_option<std::string>("--pf_candidate_topk");
 	if (pf_candidate_topk_arg == "auto_fast")
 	{
 		ret.pf_candidate_topk = -1;
+	}
+	else if (pf_candidate_topk_arg == "auto_balanced")
+	{
+		ret.pf_candidate_topk = -2;
 	}
 	else
 	{
@@ -138,13 +167,13 @@ inline arguments parse_arguments(int argn, char *argc[]){
 		}
 		catch (...)
 		{
-			std::cerr << "Error: --pf_candidate_topk must be an integer, or auto_fast.\n";
+			std::cerr << "Error: --pf_candidate_topk must be an integer, auto_fast, or auto_balanced.\n";
 			exit(EXIT_FAILURE);
 		}
 	}
-	if (ret.pf_candidate_topk < -1)
+	if (ret.pf_candidate_topk < -2)
 	{
-		std::cerr << "Error: --pf_candidate_topk must be >= 0, or auto_fast.\n";
+		std::cerr << "Error: --pf_candidate_topk must be >= 0, auto_fast, or auto_balanced.\n";
 		exit(EXIT_FAILURE);
 	}
 	ret.spm_mode = args.get_option<std::string>("--spm_mode");

@@ -35,37 +35,79 @@ using namespace CGRAXMLCompile;
 
 namespace
 {
+std::string format_pf_candidate_topk(int topk)
+{
+	if (topk == 0)
+	{
+		return "unbounded";
+	}
+	if (topk == -1)
+	{
+		return "auto_fast -> per-node min(32, max(8, ceil(candidates/4)))";
+	}
+	if (topk == -2)
+	{
+		return "auto_balanced -> per-node min(64, max(16, ceil(candidates/2)))";
+	}
+	return std::to_string(topk);
+}
+
+std::string format_off_spm_mem_candidate_topk(int topk)
+{
+	if (topk == 0)
+	{
+		return "unbounded";
+	}
+	if (topk == -1)
+	{
+		return "auto_fast -> per-node min(16, max(4, ceil(candidates/3)))";
+	}
+	if (topk == -2)
+	{
+		return "auto_balanced -> per-node min(32, max(8, ceil(candidates/2)))";
+	}
+	return std::to_string(topk);
+}
+
 void print_mapper_arguments(const arguments &args)
 {
-	std::cout << "Mapper arguments:\n";
+	std::cout << "Mapper metadata:\n\n";
+	std::cout << "[DFG]\n";
+	std::cout << "dfg=" << args.dfg_filename << "\n";
+	std::cout << "print_dfg=" << args.print_dfg << "\n";
+	std::cout << "emit_binary=" << args.emit_binary << "\n\n";
+
+	std::cout << "[Architecture]\n";
+	std::cout << "json_arch=" << args.json_file_name << "\n";
+	std::cout << "arch_name=" << args.arch_name << "\n";
 	std::cout << "xdim=" << args.xdim << "\n";
 	std::cout << "ydim=" << args.ydim << "\n";
-	std::cout << "json_arch=" << args.json_file_name << "\n";
-	std::cout << "dfg=" << args.dfg_filename << "\n";
 	std::cout << "petype=" << args.PEType << "\n";
-	std::cout << "ii=" << args.userII << "\n";
-	std::cout << "mapping=" << args.mapping_method << "\n";
 	std::cout << "datapath_number=" << args.ndps << "\n";
-	std::cout << "max_iter=" << args.maxiter << "\n";
-	std::cout << "hops=" << args.max_hops << "\n";
-	std::cout << "noMutexPaths=" << (args.noMutexPaths ? "true" : "false") << "\n";
-	std::cout << "backtrack_limit=" << args.backtracklimit << "\n";
+	std::cout << "spm_mode=" << args.spm_mode << "\n\n";
+
+	std::cout << "[PathFinder mapper]\n";
+	std::cout << "mapping=" << args.mapping_method << "\n";
+	std::cout << "ii=" << args.userII << "\n";
 	std::cout << "max_II=" << args.max_II << "\n";
 	std::cout << "ii_restarts=" << args.ii_restarts << "\n";
 	std::cout << "skip_ii_estimation=" << args.skip_ii_estimation << "\n";
-	std::cout << "print_dfg=" << args.print_dfg << "\n";
-	std::cout << "emit_binary=" << args.emit_binary << "\n";
+	std::cout << "max_iter=" << args.maxiter << "\n";
+	std::cout << "backtrack_limit=" << args.backtracklimit << "\n";
+	std::cout << "hops=" << args.max_hops << "\n";
+	std::cout << "noMutexPaths=" << (args.noMutexPaths ? "true" : "false") << "\n";
+	std::cout << "off_spm_mem_candidate_topk=" << format_off_spm_mem_candidate_topk(args.off_spm_mem_candidate_topk) << "\n";
+	std::cout << "pf_candidate_topk=" << format_pf_candidate_topk(args.pf_candidate_topk) << "\n";
+	std::cout << "proximity_sort=" << args.proximity_sort << "\n";
+	std::cout << "fanout_route_policy=" << args.fanout_route_policy << "\n\n";
+
+	std::cout << "[SA mapper]\n";
 	std::cout << "sa_seed=" << args.sa_seed << "\n";
 	std::cout << "sa_restarts=" << args.sa_restarts << "\n";
 	std::cout << "sa_moves_per_temp=" << args.sa_moves_per_temp << "\n";
 	std::cout << "sa_temp_max=" << args.sa_temp_max << "\n";
 	std::cout << "sa_temp_min=" << args.sa_temp_min << "\n";
-	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n";
-	std::cout << "off_spm_mem_candidate_topk=" << args.off_spm_mem_candidate_topk << "\n";
-	std::cout << "pf_candidate_topk=" << args.pf_candidate_topk << "\n";
-	std::cout << "spm_mode=" << args.spm_mode << "\n";
-	std::cout << "arch_name=" << args.arch_name << "\n\n";
-	std::cout << "fanout_route_policy=" << args.fanout_route_policy << "\n\n";
+	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n\n";
 	std::cout << std::flush;
 }
 }

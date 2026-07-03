@@ -891,10 +891,25 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	const bool isMemOp = checkMEMOp(node->op);
 	const size_t candidateCountBeforeCap = candidateDests.size();
 	int candidateTopK = isMemOp ? ((!cgra->is_spm_modelled) ? offSpmMemCandidateTopK : 0) : pfCandidateTopK;
-	if (!isMemOp && candidateTopK == -1)
+	if (isMemOp && candidateTopK == -1)
+	{
+		const int thirdCandidates = static_cast<int>((candidateCountBeforeCap + 2) / 3);
+		candidateTopK = std::min(16, std::max(4, thirdCandidates));
+	}
+	else if (isMemOp && candidateTopK == -2)
+	{
+		const int halfCandidates = static_cast<int>((candidateCountBeforeCap + 1) / 2);
+		candidateTopK = std::min(32, std::max(8, halfCandidates));
+	}
+	else if (!isMemOp && candidateTopK == -1)
 	{
 		const int quarterCandidates = static_cast<int>((candidateCountBeforeCap + 3) / 4);
 		candidateTopK = std::min(32, std::max(8, quarterCandidates));
+	}
+	else if (!isMemOp && candidateTopK == -2)
+	{
+		const int halfCandidates = static_cast<int>((candidateCountBeforeCap + 1) / 2);
+		candidateTopK = std::min(64, std::max(16, halfCandidates));
 	}
 	const char *candidateCapLabel = isMemOp ? "off-SPM memory" : "PathFinder";
 	if (candidateTopK > 0 &&
