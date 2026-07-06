@@ -120,8 +120,20 @@ def simd_packing_active_for_factor(config, unroll_factor):
 def build_unroll_command(context, unroll_factor):
   kernel = context.kernel
   simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
-  reduction_lanes = context.config.arch_simd_width if simd_active else 1
-  reduction_policy = "packed-psum" if simd_active else "tree"
+  if simd_active:
+    reduction_lanes = context.config.arch_simd_width
+    reduction_policy = "packed-psum"
+  elif context.config.auto_unroll_scalar_reduction_policy == "none":
+    reduction_lanes = 1
+    reduction_policy = "tree"
+  else:
+    reduction_lanes = context.config.auto_unroll_scalar_reduction_terms
+    if unroll_factor > 1 and unroll_factor % reduction_lanes != 0:
+      raise RuntimeError(
+        "auto_unroll.scalar_reduction_terms=%d must divide unroll factor %d."
+        % (reduction_lanes, unroll_factor)
+      )
+    reduction_policy = context.config.auto_unroll_scalar_reduction_policy
   opt_tool = resolve_llvm_tool("opt")
   command = Command(
     argv=[
@@ -366,6 +378,17 @@ def run_dfg_generator(context, unroll_factor=None):
   if config.auto_unroll_fuse_innermost_loops and config.auto_unroll_enabled:
     print(
       "Requested Morpher innermost loop fusion where LLVM can prove legality.\n"
+    )
+  if (
+      unroll_factor > 1
+      and not simd_active
+      and config.auto_unroll_scalar_reduction_policy != "none"):
+    print(
+      "Requested scalar reduction lowering: policy=%s terms=%d\n"
+      % (
+        config.auto_unroll_scalar_reduction_policy,
+        config.auto_unroll_scalar_reduction_terms,
+      )
     )
 
   remove_glob(dfg_kernel, "memtraces/*")

@@ -41,6 +41,75 @@ def _staged_dfg_contains_vector_ops(context):
   return False
 
 
+def _is_mapper_memory_op(op_text):
+  op = (op_text or "").strip()
+  if "OLOAD" in op or "OSTORE" in op:
+    return False
+  return "LOAD" in op or "STORE" in op
+
+
+def _count_staged_dfg_ops(context):
+  dfg_path = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel)
+  if not os.path.isfile(dfg_path):
+    return 0, 0
+  root = ET.fromstring("<Root>\n%s\n</Root>" % Path(dfg_path).read_text(encoding="utf-8"))
+  mem_ops = 0
+  compute_ops = 0
+  for op_elem in root.findall(".//OP"):
+    op_text = (op_elem.text or "").strip()
+    if not op_text:
+      continue
+    if _is_mapper_memory_op(op_text):
+      mem_ops += 1
+    else:
+      compute_ops += 1
+  return mem_ops, compute_ops
+
+
+def resolve_pf_node_order(context):
+  mode = getattr(context.config, "membound_mapping", "off")
+  if mode == "off":
+    return "default"
+  if mode == "force":
+    print("membound_mapping=force: using PF mem_first node order.")
+    return "mem_first"
+  if mode != "auto":
+    raise RuntimeError("Unsupported membound_mapping mode: %s" % mode)
+
+  mem_ops, compute_ops = _count_staged_dfg_ops(context)
+  mem_pes = int(getattr(context.config, "arch_mem_pe_count", 0) or 0)
+  total_pes = int(context.config.xdim) * int(context.config.ydim)
+  compute_pes = total_pes - mem_pes
+  if compute_pes <= 0:
+    compute_pes = total_pes
+
+  if mem_ops <= 0 or mem_pes <= 0 or compute_ops <= 0 or compute_pes <= 0:
+    print(
+      "membound_mapping=auto: using default PF node order "
+      "(mem_ops=%d, mem_PEs=%d, compute_ops=%d, compute_PEs=%d)."
+      % (mem_ops, mem_pes, compute_ops, compute_pes)
+    )
+    return "default"
+
+  mem_ratio = float(mem_ops) / float(mem_pes)
+  compute_ratio = float(compute_ops) / float(compute_pes)
+  use_mem_first = mem_ratio > compute_ratio
+  print(
+    "membound_mapping=auto: mem_ops/mem_PEs=%.3f (%d/%d), "
+    "compute_ops/compute_PEs=%.3f (%d/%d) -> pf_node_order=%s."
+    % (
+      mem_ratio,
+      mem_ops,
+      mem_pes,
+      compute_ratio,
+      compute_ops,
+      compute_pes,
+      "mem_first" if use_mem_first else "default",
+    )
+  )
+  return "mem_first" if use_mem_first else "default"
+
+
 def build_mapper_commands(context):
   config = context.config
   kernel = context.kernel
@@ -55,6 +124,7 @@ def build_mapper_commands(context):
     or _staged_dfg_contains_vector_ops(context)
   )
   emit_binary = config.enable_simulation and not context.selected_simd_artifact_only
+  pf_node_order = resolve_pf_node_order(context)
   mapper_common_args = [
     "-d",
     "%s_PartPredDFG.xml" % kernel,
@@ -98,6 +168,10 @@ def build_mapper_commands(context):
     str(config.off_spm_mem_candidate_topk),
     "--pf_candidate_topk",
     str(config.pf_candidate_topk),
+    "--pf_node_order",
+    pf_node_order,
+    "--recmin_policy",
+    str(getattr(config, "recmin_policy", "asap")),
     "--spm_mode",
     str(config.spm_mode),
     "--proximity_sort",

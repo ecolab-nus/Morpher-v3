@@ -1606,6 +1606,67 @@ int CGRAXMLCompile::PathFinderMapper::calculateCost(LatPort src,
 	return distance;
 }
 
+void CGRAXMLCompile::PathFinderMapper::applyNodeOrderPolicy()
+{
+	if (!prioritizeMemoryOpsFirst)
+	{
+		return;
+	}
+
+	const size_t memCount = static_cast<size_t>(std::count_if(
+		sortedNodeList.begin(), sortedNodeList.end(),
+		[](DFGNode *node) { return node->isMemOp(); }));
+	if (memCount == 0 || memCount == sortedNodeList.size())
+	{
+		return;
+	}
+
+	std::stable_partition(
+		sortedNodeList.begin(), sortedNodeList.end(),
+		[](DFGNode *node) { return !node->isMemOp(); });
+
+	std::cout << "PF node order policy: mem_first enabled, prioritizing "
+	          << memCount << " memory ops.\n";
+}
+
+void CGRAXMLCompile::PathFinderMapper::perturbNodeOrderAfterGuard(DFGNode *guardedNode, int guardStreak)
+{
+	const size_t nodeCount = sortedNodeList.size();
+	if (nodeCount <= 1)
+	{
+		return;
+	}
+
+	if (guardedNode != NULL)
+	{
+		auto guardedIt = std::find(sortedNodeList.begin(), sortedNodeList.end(), guardedNode);
+		if (guardedIt != sortedNodeList.end())
+		{
+			sortedNodeList.erase(guardedIt);
+			const size_t deferredIndex = std::min(sortedNodeList.size(), std::max<size_t>(1, nodeCount / 3));
+			sortedNodeList.insert(sortedNodeList.begin() + deferredIndex, guardedNode);
+			std::cout << "PF guard perturbation: deferred guarded node " << guardedNode->idx
+			          << " before retry.\n";
+		}
+	}
+
+	if ((guardStreak % 2) == 0)
+	{
+		std::reverse(sortedNodeList.begin(), sortedNodeList.end());
+		std::cout << "PF guard perturbation: reversed node order for guarded retry.\n";
+	}
+
+	size_t rotateBy = (static_cast<size_t>(guardStreak) * nodeCount) / 3;
+	rotateBy = (rotateBy + static_cast<size_t>(guardStreak) * 7u) % nodeCount;
+	if (rotateBy == 0)
+	{
+		rotateBy = 1;
+	}
+	std::rotate(sortedNodeList.begin(), sortedNodeList.begin() + rotateBy, sortedNodeList.end());
+	std::cout << "PF guard perturbation: rotated node order by " << rotateBy
+	          << " before retry.\n";
+}
+
 bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 {
 	this->setAttemptOutcome(AttemptOutcome::FAIL_NORMAL);
@@ -1663,6 +1724,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 			}
 		}
 	}
+	applyNodeOrderPolicy();
 	//	sortBackEdgePriorityALAP();
 
 	std::string mappingLogFileName = fNameLog1 + cgra->getCGRAName() + "_MTP=" + std::to_string(enableMutexPaths);  // + ".mapping.csv";
@@ -1677,12 +1739,13 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 	congestionInfoFile.open(congestionInfoFileName.c_str());
 	assert(congestionInfoFile.is_open());
 
+	int consecutiveGuardedIterations = 0;
 	for (int i = 0; i < this->maxIter; ++i)
 	{
 		const size_t nodeCount = sortedNodeList.size();
 		const size_t progressPrintEvery = 2000;
 		const size_t maxNodeAttemptsInIter = std::max<size_t>(10000, nodeCount * 1000);
-		const int maxSecondsInIter = 120;
+		const int maxSecondsInIter = progressMaxSecondsInIter;
 		size_t nodeAttemptsInIter = 0;
 		int lastPrintedElapsedSec = -1;
 		auto iterStartTime = std::chrono::steady_clock::now();
@@ -1721,6 +1784,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 		std::cout << "Current target II = " << cgra->get_t_max() <<", Iteration = " << i << "\n";
 
+		bool iterationGuarded = false;
 		while (!unmappedNodes.empty())
 		{
 			nodeAttemptsInIter++;
@@ -1752,15 +1816,13 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				          << ", Iteration = " << i
 				          << " (attempts = " << nodeAttemptsInIter
 				          << ", elapsed = " << elapsedInIter
-				          << " sec). Failing this II.\n";
-				mappingLog << "Iteration guard hit; failing this II.\n";
-				mappingLog2 << "Iteration guard hit; failing this II.\n";
-				mappingLog4 << "Iteration guard hit; failing this II.\n";
-				mappingLog.close();
-				mappingLog2.close();
-				mappingLog4.close();
+				          << " sec). Failing this PF iteration.\n";
+				mappingLog << "Iteration guard hit; failing this PF iteration.\n";
+				mappingLog2 << "Iteration guard hit; failing this PF iteration.\n";
+				mappingLog4 << "Iteration guard hit; failing this PF iteration.\n";
 				this->setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
-				return false;
+				iterationGuarded = true;
+				break;
 			}
 
 			DFGNode *node = unmappedNodes.top();
@@ -1808,13 +1870,11 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				{
 					if (getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
 					{
-						mappingLog << "PF iteration guard hit during route estimation; failing this attempt.\n";
-						mappingLog2 << "PF iteration guard hit during route estimation; failing this attempt.\n";
-						mappingLog4 << "PF iteration guard hit during route estimation; failing this attempt.\n";
-						mappingLog.close();
-						mappingLog2.close();
-						mappingLog4.close();
-						return false;
+						mappingLog << "PF iteration guard hit during route estimation; failing this PF iteration.\n";
+						mappingLog2 << "PF iteration guard hit during route estimation; failing this PF iteration.\n";
+						mappingLog4 << "PF iteration guard hit during route estimation; failing this PF iteration.\n";
+						iterationGuarded = true;
+						break;
 					}
 					printMappingLog();
 					printMappingLog2();
@@ -1891,13 +1951,11 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				isRouteSucc = Route(node, estimatedRouteInfo[node], &failedNode);
 				if (!isRouteSucc && getAttemptOutcome() == AttemptOutcome::FAIL_ITERATION_GUARD)
 				{
-					mappingLog << "PF iteration guard hit during final routing; failing this attempt.\n";
-					mappingLog2 << "PF iteration guard hit during final routing; failing this attempt.\n";
-					mappingLog4 << "PF iteration guard hit during final routing; failing this attempt.\n";
-					mappingLog.close();
-					mappingLog2.close();
-					mappingLog4.close();
-					return false;
+					mappingLog << "PF iteration guard hit during final routing; failing this PF iteration.\n";
+					mappingLog2 << "PF iteration guard hit during final routing; failing this PF iteration.\n";
+					mappingLog4 << "PF iteration guard hit during final routing; failing this PF iteration.\n";
+					iterationGuarded = true;
+					break;
 				}
 				if (!isRouteSucc)
 					std::cout << "Route Failed!\n";
@@ -1981,6 +2039,44 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 			backTrackCredits = std::min(this->backTrackLimit, backTrackCredits + 1);
 			mappedNodes.push(node);
 		}
+		if (iterationGuarded)
+		{
+			consecutiveGuardedIterations++;
+			std::cout << "PF guarded iteration streak at II = " << cgra->get_t_max()
+			          << ": " << consecutiveGuardedIterations
+			          << "/" << maxConsecutiveIterationGuards << "\n";
+			mappingLog << "PF guarded iteration streak: " << consecutiveGuardedIterations
+			           << "/" << maxConsecutiveIterationGuards << "\n";
+			mappingLog2 << "PF guarded iteration streak: " << consecutiveGuardedIterations
+			            << "/" << maxConsecutiveIterationGuards << "\n";
+			mappingLog4 << "PF guarded iteration streak: " << consecutiveGuardedIterations
+			            << "/" << maxConsecutiveIterationGuards << "\n";
+			mappingLog.close();
+			mappingLog2.close();
+			mappingLog4.close();
+
+			clearCurrMapping();
+			estimatedRouteInfo.clear();
+			clearAttemptCaches();
+			congestedPorts.clear();
+			conflictedPorts.clear();
+			conflictedTimeStepMap.clear();
+			backTrackCredits = this->backTrackLimit;
+
+			if (consecutiveGuardedIterations >= maxConsecutiveIterationGuards)
+			{
+				std::cout << "PF iteration guard limit reached at II = " << cgra->get_t_max()
+				          << " after " << consecutiveGuardedIterations
+				          << " consecutive guarded iterations. Failing this PF phase.\n";
+				this->setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
+				return false;
+			}
+
+			perturbNodeOrderAfterGuard(progressNode, consecutiveGuardedIterations);
+			this->setAttemptOutcome(AttemptOutcome::FAIL_NORMAL);
+			continue;
+		}
+		consecutiveGuardedIterations = 0;
 		mapSuccess = updateCongestionCosts(i);
 		if (mapSuccess)
 		{
@@ -2236,7 +2332,18 @@ bool CGRAXMLCompile::PathFinderMapper::clearCurrMapping()
 {
 	for (DFGNode *node : sortedNodeList)
 	{
-		LOG(ROUTE) << "CLEARING :: node=" << node->idx << ",destDP=" << node->rootDP->getName() << ",destPE=" << node->rootDP->getPE()->getName() << "\n";
+		if (node->rootDP == NULL && node->routingPorts.empty())
+		{
+			continue;
+		}
+		if (node->rootDP != NULL)
+		{
+			LOG(ROUTE) << "CLEARING :: node=" << node->idx << ",destDP=" << node->rootDP->getName() << ",destPE=" << node->rootDP->getPE()->getName() << "\n";
+		}
+		else
+		{
+			LOG(ROUTE) << "CLEARING :: node=" << node->idx << ",destDP=<partial-route-only>\n";
+		}
 		clearMappedNode(node);
 	}
 

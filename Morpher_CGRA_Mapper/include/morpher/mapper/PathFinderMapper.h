@@ -285,6 +285,7 @@ public:
 	// From HeuristicMapper
 	int getMinimumII(CGRA *cgra, DFG *dfg);
 	int getRecMinimumII(DFG *dfg);
+	void setRecMinPolicy(const std::string &policy) { recMinPolicy = policy; }
 	bool sanityCheck();
 	bool checkRecParentViolation(DFGNode *node, LatPort nextPort);
 	void printMappingLog();
@@ -300,6 +301,7 @@ public:
 	int pfCandidateTopK = 0;
 	int pfAstarExpansionBudget = 200000;
 	FanoutRoutePolicy fanoutRoutePolicy = FanoutRoutePolicy::ADAPTIVE;
+	std::string recMinPolicy = "asap";
 
 	int upperboundII = 1000000;
 	int upperboundIter = -1;
@@ -344,6 +346,15 @@ public:
 	bool canExitCurrPE(LatPort p);
 	static bool checkMEMOp(string op);
 	void setMaxIter(int m){maxIter = m;}
+	void setIterationGuardPolicy(int seconds, int maxConsecutive)
+	{
+		progressMaxSecondsInIter = seconds;
+		maxConsecutiveIterationGuards = maxConsecutive;
+	}
+	void setNodeOrderPolicy(const std::string &policy)
+	{
+		prioritizeMemoryOpsFirst = (policy == "mem_first");
+	}
 	void setFanoutRoutePolicy(const std::string &policy)
 	{
 		if (policy == "broadcast")
@@ -399,6 +410,8 @@ protected:
 	std::ofstream mappingLog4;
 	std::vector<DFGNode *> sortedNodeList;
 
+	void applyNodeOrderPolicy();
+	void perturbNodeOrderAfterGuard(DFGNode *guardedNode, int guardStreak);
 	void removeFailedNode(std::stack<DFGNode *> &mappedNodes, std::stack<DFGNode *> &unmappedNodes, DFGNode *failedNode);
 	void clearMappedNode(DFGNode *node);
 	int getlatMinStarts(const std::map<DFGNode *, std::vector<Port *>> &possibleStarts);
@@ -413,6 +426,7 @@ protected:
 
 	int maxIter = 30;
 	int restartOffset = 0;
+	bool prioritizeMemoryOpsFirst = false;
 	bool strictBookkeeping = true;
 	AttemptOutcome lastAttemptOutcome = AttemptOutcome::UNKNOWN;
 	int progressIteration = -1;
@@ -426,6 +440,7 @@ protected:
 	size_t progressAstarMaxQueue = 0;
 	int progressLastHeartbeatSec = -1;
 	int progressMaxSecondsInIter = 120;
+	int maxConsecutiveIterationGuards = 5;
 	std::chrono::steady_clock::time_point progressIterationStart;
 	std::unordered_map<LatPort, std::vector<LatPort>, LatPortHash> nextPortsCache;
 	std::unordered_map<Port *, std::set<Port *>> conflictPortsCache;

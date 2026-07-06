@@ -98,6 +98,11 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "noMutexPaths=" << (args.noMutexPaths ? "true" : "false") << "\n";
 	std::cout << "off_spm_mem_candidate_topk=" << format_off_spm_mem_candidate_topk(args.off_spm_mem_candidate_topk) << "\n";
 	std::cout << "pf_candidate_topk=" << format_pf_candidate_topk(args.pf_candidate_topk) << "\n";
+	std::cout << "pf_guard_mode=" << args.pf_guard_mode << "\n";
+	std::cout << "pf_guard_seconds=" << args.pf_guard_seconds << " (0=mode default)\n";
+	std::cout << "pf_guard_max_consecutive=" << args.pf_guard_max_consecutive << " (0=mode default)\n";
+	std::cout << "pf_node_order=" << args.pf_node_order << "\n";
+	std::cout << "recmin_policy=" << args.recmin_policy << "\n";
 	std::cout << "proximity_sort=" << args.proximity_sort << "\n";
 	std::cout << "fanout_route_policy=" << args.fanout_route_policy << "\n\n";
 
@@ -242,6 +247,30 @@ int main(int argn, char *argc[])
 		
 	pf_mapper->setMaxIter(args.maxiter);
 	sa_mapper->setMaxIter(args.maxiter);
+	int pfGuardSeconds = 120;
+	int pfGuardMaxConsecutive = 5;
+	if (args.pf_guard_mode == "fast")
+	{
+		pfGuardSeconds = 90;
+		pfGuardMaxConsecutive = 3;
+	}
+	if (args.pf_guard_seconds > 0)
+	{
+		pfGuardSeconds = args.pf_guard_seconds;
+	}
+	if (args.pf_guard_max_consecutive > 0)
+	{
+		pfGuardMaxConsecutive = args.pf_guard_max_consecutive;
+	}
+	pf_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardMaxConsecutive);
+	sa_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardMaxConsecutive);
+	pf_mapper->setNodeOrderPolicy(args.pf_node_order);
+	sa_mapper->setNodeOrderPolicy(args.pf_node_order);
+	pf_mapper->setRecMinPolicy(args.recmin_policy);
+	sa_mapper->setRecMinPolicy(args.recmin_policy);
+	std::cout << "PF guard policy: mode=" << args.pf_guard_mode
+	          << ", seconds=" << pfGuardSeconds
+	          << ", max_consecutive=" << pfGuardMaxConsecutive << "\n";
 	std::cout << "MAP begin... \n";
 	int resII = 0;
 	int recII = 0;

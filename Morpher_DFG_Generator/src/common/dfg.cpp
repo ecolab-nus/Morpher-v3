@@ -11050,6 +11050,21 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 			morpher::llvm_compat::getInt8PtrTy(Ctx), //variable name
 			Type::getInt32Ty(Ctx) //variable data
 	);
+	auto scalarTraceValue = [&](IRBuilder<> &builder, Value *V) -> Value * {
+		Type *Ty = V->getType();
+		Type *I32Ty = Type::getInt32Ty(Ctx);
+		if (Ty->isIntegerTy())
+			return builder.CreateIntCast(V, I32Ty, true);
+		if (Ty->isFloatTy())
+			return builder.CreateBitCast(V, I32Ty);
+		if (Ty->isPointerTy())
+			return builder.CreatePtrToInt(V, I32Ty);
+		if (Ty->isDoubleTy()) {
+			Value *I64 = builder.CreateBitCast(V, Type::getInt64Ty(Ctx));
+			return builder.CreateTrunc(I64, I32Ty);
+		}
+		return ConstantInt::get(I32Ty, 0);
+	};
 
 	//Insertion of loop start functions to all entries
 	for(auto trans : loopentryBB){
@@ -11217,7 +11232,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 					}
 				}
 				if (!storeVal)
-					storeVal = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx), true);
+					storeVal = scalarTraceValue(builder, it->first);
 				if(outVals_inorout.find(ptr)!=outVals_inorout.end()){
 					if(outVals_inorout[ptr]==1){//outLoopLoad
 						LLVM_DEBUG(dbgs() << "Adding live_in_report_intermediatevariable() call for OutloopLoad\n");
@@ -11271,7 +11286,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 										LLVM_DEBUG(dbgs() << "Skipping non-castable live-out value in exit block\n");
 										continue;
 									}
-									Value* bitcastedptr = builder.CreateIntCast(val, Type::getInt32Ty(Ctx),true);
+									Value* bitcastedptr = scalarTraceValue(builder, val);
 									builder.CreateCall(live_out_report_intvar_FN,{ptr_name_val,bitcastedptr});
 								}
 							}
@@ -11295,7 +11310,7 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 							continue;
 						}
 					}
-					Value* bitcastedptr = builder.CreateIntCast(it->first, Type::getInt32Ty(Ctx),true);
+					Value* bitcastedptr = scalarTraceValue(builder, it->first);
 					builder.CreateCall(live_out_report_intvar_FN,{ptr_name_val,bitcastedptr});
 				}
 			}

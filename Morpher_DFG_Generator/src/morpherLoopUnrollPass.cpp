@@ -46,7 +46,7 @@ static cl::opt<unsigned> MorpherReductionLanes(
 
 static cl::opt<std::string> MorpherReductionPolicy(
     "morpher-reduction-policy", cl::init("tree"),
-    cl::desc("Reduction lowering policy: tree or packed-psum"));
+    cl::desc("Reduction lowering policy: tree, packed-psum, or scalar-psum"));
 
 // Loop-peel P/E: opt-in retagging of the runtime remainder loop's marker.
 // Default off until Phase 2b (peel DFG emission in dfggenPass) is robust
@@ -621,6 +621,135 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
   return true;
 }
 
+bool expandIntegerReductionScalarPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
+  if (Lanes <= 1)
+    return false;
+
+  BasicBlock *Preheader = L->getLoopPreheader();
+  BasicBlock *Latch = L->getLoopLatch();
+  BasicBlock *Exit = L->getExitBlock();
+  if (!Preheader || !Latch || !Exit)
+    return false;
+  if (Exit->getSinglePredecessor() != Latch)
+    return false;
+
+  int PreheaderIdx = Phi->getBasicBlockIndex(Preheader);
+  int LatchIdx = Phi->getBasicBlockIndex(Latch);
+  if (PreheaderIdx < 0 || LatchIdx < 0)
+    return false;
+
+  Value *Init = Phi->getIncomingValue(PreheaderIdx);
+  Value *BackedgeValue = Phi->getIncomingValue(LatchIdx);
+  if (!Phi->getType()->isIntegerTy())
+    return false;
+  std::string PhiName = Phi->getName().str();
+
+  SmallVector<BinaryOperator *, 32> Chain;
+  SmallVector<Value *, 32> Terms;
+  unsigned ReductionOpcode = 0;
+  if (!collectReductionAddChain(Phi, BackedgeValue, ReductionOpcode, Chain, Terms))
+    return false;
+
+  bool HasNonConstantTerm = false;
+  for (Value *Term : Terms)
+    if (!isa<ConstantInt>(Term)) {
+      HasNonConstantTerm = true;
+      break;
+    }
+  if (!HasNonConstantTerm)
+    return false;
+
+  if (Terms.size() < Lanes || Terms.size() % Lanes != 0)
+    return false;
+
+  SmallVector<PHINode *, 8> ExternalLCSSAPhis;
+  SmallVector<Use *, 8> DirectExternalUses;
+  for (Use &U : BackedgeValue->uses()) {
+    auto *UserI = dyn_cast<Instruction>(U.getUser());
+    if (UserI && L->contains(UserI))
+      continue;
+    if (auto *UserPhi = dyn_cast_or_null<PHINode>(UserI)) {
+      if (UserPhi->getParent() == Exit) {
+        ExternalLCSSAPhis.push_back(UserPhi);
+        continue;
+      }
+    }
+    DirectExternalUses.push_back(&U);
+  }
+  if (!DirectExternalUses.empty())
+    return false;
+  if (ExternalLCSSAPhis.empty())
+    return false;
+
+  unsigned PartialCount = Terms.size() / Lanes;
+  Value *Identity = identityForReduction(ReductionOpcode, Phi->getType());
+  if (!Identity)
+    return false;
+
+  IRBuilder<> PhiBuilder(&*Phi->getParent()->getFirstInsertionPt());
+  SmallVector<PHINode *, 16> Partials;
+  for (unsigned I = 0; I < PartialCount; ++I) {
+    PHINode *Partial = PhiBuilder.CreatePHI(Phi->getType(), 2,
+                                            Phi->getName() + ".morpher.spsum");
+    Partial->addIncoming(I == 0 ? Init : Identity, Preheader);
+    Partials.push_back(Partial);
+  }
+
+  IRBuilder<> BodyBuilder(Chain.back());
+  SmallVector<Value *, 16> Updates;
+  for (unsigned P = 0; P < PartialCount; ++P) {
+    unsigned Start = P * Lanes;
+    SmallVector<Value *, 16> Level(Terms.begin() + Start,
+                                   Terms.begin() + Start + Lanes);
+    while (Level.size() > 1) {
+      SmallVector<Value *, 16> Next;
+      for (unsigned I = 0; I + 1 < Level.size(); I += 2)
+        Next.push_back(createReductionOp(BodyBuilder,
+                                         termCombineOpcode(ReductionOpcode),
+                                         Level[I], Level[I + 1],
+                                         "morpher.spsum.tree"));
+      if (Level.size() & 1)
+        Next.push_back(Level.back());
+      Level = std::move(Next);
+    }
+    Value *Update = createReductionOp(BodyBuilder, ReductionOpcode, Partials[P],
+                                      Level[0], "morpher.spsum.update");
+    Updates.push_back(Update);
+    Partials[P]->addIncoming(Update, Latch);
+  }
+
+  IRBuilder<> ExitBuilder(&*Exit->getFirstInsertionPt());
+  Value *Combined = Updates[0];
+  for (unsigned I = 1; I < Updates.size(); ++I)
+    Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
+                                 Combined, Updates[I],
+                                 "morpher.spsum.final");
+
+  for (PHINode *LCSSAPhi : ExternalLCSSAPhis) {
+    LCSSAPhi->replaceAllUsesWith(Combined);
+    if (LCSSAPhi->use_empty())
+      LCSSAPhi->eraseFromParent();
+  }
+
+  for (auto It = Chain.rbegin(); It != Chain.rend(); ++It)
+    if ((*It)->use_empty())
+      (*It)->eraseFromParent();
+  if (Phi->use_empty())
+    Phi->eraseFromParent();
+
+  unsigned TreeDepth = 0;
+  for (unsigned N = Lanes; N > 1; N = (N + 1) / 2)
+    ++TreeDepth;
+  errs() << "Morpher reduction expansion (scalar-psum): phi="
+         << PhiName
+         << " lanes=" << Lanes
+         << " terms=" << Terms.size()
+         << " partials=" << PartialCount
+         << " local_depth=" << TreeDepth
+         << " horizontal_outside_loop=1\n";
+  return true;
+}
+
 bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   if (Lanes <= 1)
     return false;
@@ -633,6 +762,8 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   for (PHINode *Phi : Phis) {
     if (Policy == "packed-psum")
       Changed |= expandIntegerReductionPackedPsum(Phi, L, Lanes);
+    else if (Policy == "scalar-psum")
+      Changed |= expandIntegerReductionScalarPsum(Phi, L, Lanes);
     else
       Changed |= expandIntegerAddReduction(Phi, L, Lanes);
   }
@@ -1363,8 +1494,9 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
       return false;
 
     if (MorpherReductionPolicy != "tree" &&
-        MorpherReductionPolicy != "packed-psum") {
-      report_fatal_error("morpher-reduction-policy must be tree or packed-psum");
+        MorpherReductionPolicy != "packed-psum" &&
+        MorpherReductionPolicy != "scalar-psum") {
+      report_fatal_error("morpher-reduction-policy must be tree, packed-psum, or scalar-psum");
     }
 
     Loop *TargetLoop = nullptr;

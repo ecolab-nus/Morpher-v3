@@ -523,6 +523,14 @@ def _run_auto_unroll(context):
       "Architecture-driven SIMD packing activates only for candidates with unroll_factor >= SIMD_WIDTH=%d."
       % config.arch_simd_width
     )
+  if config.auto_unroll_scalar_reduction_policy != "none":
+    print(
+      "Scalar reduction lowering: policy=%s, terms=%d (opt-in)"
+      % (
+        config.auto_unroll_scalar_reduction_policy,
+        config.auto_unroll_scalar_reduction_terms,
+      )
+    )
   print("Remainder policy: preserve (fixed)")
   print(
     "Score: II / unroll_factor. Lower is better; this approximates normalized mapped work.\n"

@@ -47,6 +47,11 @@ struct arguments
 	int sa_candidate_topk = 8;
 	int off_spm_mem_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap PF memory candidates when SPM modelling is off
 	int pf_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap non-memory PF candidates during route estimation
+	std::string pf_guard_mode = "balanced"; // fast | balanced
+	int pf_guard_seconds = 0; // 0=mode default
+	int pf_guard_max_consecutive = 0; // 0=mode default
+	std::string pf_node_order = "default"; // default | mem_first
+	std::string recmin_policy = "asap"; // asap | path
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
@@ -91,6 +96,11 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<int>("", "--sa_candidate_topk", "SA top-K candidate DPs sampled stochastically", 8)
 					.add_option<std::string>("", "--off_spm_mem_candidate_topk", "cap PathFinder memory candidates when spm_mode=off (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
 					.add_option<std::string>("", "--pf_candidate_topk", "cap non-memory PathFinder candidates during route estimation (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
+					.add_option<std::string>("", "--pf_guard_mode", "PathFinder iteration guard mode: fast|balanced", "balanced")
+					.add_option<int>("", "--pf_guard_seconds", "PathFinder per-iteration guard seconds (0=mode default)", 0)
+					.add_option<int>("", "--pf_guard_max_consecutive", "consecutive guarded PF iterations before failing PF phase (0=mode default)", 0)
+					.add_option<std::string>("", "--pf_node_order", "PathFinder node ordering policy: default|mem_first", "default")
+					.add_option<std::string>("", "--recmin_policy", "RecMin estimator policy: asap|path", "asap")
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
@@ -174,6 +184,36 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	if (ret.pf_candidate_topk < -2)
 	{
 		std::cerr << "Error: --pf_candidate_topk must be >= 0, auto_fast, or auto_balanced.\n";
+		exit(EXIT_FAILURE);
+	}
+	ret.pf_guard_mode = args.get_option<std::string>("--pf_guard_mode");
+	if (ret.pf_guard_mode != "fast" && ret.pf_guard_mode != "balanced")
+	{
+		std::cerr << "Error: --pf_guard_mode must be one of: fast, balanced.\n";
+		exit(EXIT_FAILURE);
+	}
+	ret.pf_guard_seconds = args.get_option<int>("--pf_guard_seconds");
+	ret.pf_guard_max_consecutive = args.get_option<int>("--pf_guard_max_consecutive");
+	if (ret.pf_guard_seconds < 0)
+	{
+		std::cerr << "Error: --pf_guard_seconds must be >= 0.\n";
+		exit(EXIT_FAILURE);
+	}
+	if (ret.pf_guard_max_consecutive < 0)
+	{
+		std::cerr << "Error: --pf_guard_max_consecutive must be >= 0.\n";
+		exit(EXIT_FAILURE);
+	}
+	ret.pf_node_order = args.get_option<std::string>("--pf_node_order");
+	if (ret.pf_node_order != "default" && ret.pf_node_order != "mem_first")
+	{
+		std::cerr << "Error: --pf_node_order must be one of: default, mem_first.\n";
+		exit(EXIT_FAILURE);
+	}
+	ret.recmin_policy = args.get_option<std::string>("--recmin_policy");
+	if (ret.recmin_policy != "asap" && ret.recmin_policy != "path")
+	{
+		std::cerr << "Error: --recmin_policy must be one of: asap, path.\n";
 		exit(EXIT_FAILURE);
 	}
 	ret.spm_mode = args.get_option<std::string>("--spm_mode");

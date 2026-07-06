@@ -75,6 +75,7 @@ def build_clang_ir_command(src_file, out_file, define_cgra_compiler=False, suppr
     "-target", "i386-unknown-linux-gnu",
     "-c", "-emit-llvm",
     "-O2",
+    "-ffp-contract=off",
     "-fno-inline",
     "-fno-vectorize", "-fno-slp-vectorize",
     "-fno-unroll-loops",

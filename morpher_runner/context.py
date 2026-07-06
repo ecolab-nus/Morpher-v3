@@ -75,6 +75,8 @@ MAPPER_PRESETS = {
     "off_spm_mem_candidate_topk": "auto_fast",
     "pf_candidate_topk": "auto_fast",
     "proximity_sort": True,
+    "membound_mapping": False,
+    "recmin_policy": "asap",
   },
   "balanced": {
     "mapping_method": 2,
@@ -93,6 +95,8 @@ MAPPER_PRESETS = {
     "off_spm_mem_candidate_topk": "auto_balanced",
     "pf_candidate_topk": "auto_balanced",
     "proximity_sort": True,
+    "membound_mapping": False,
+    "recmin_policy": "asap",
   },
   "quality": {
     "mapping_method": 2,
@@ -111,6 +115,8 @@ MAPPER_PRESETS = {
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
     "proximity_sort": True,
+    "membound_mapping": False,
+    "recmin_policy": "asap",
   },
   "exhaust": {
     "mapping_method": 2,
@@ -129,6 +135,8 @@ MAPPER_PRESETS = {
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
     "proximity_sort": False,
+    "membound_mapping": False,
+    "recmin_policy": "asap",
   },
 }
 
@@ -159,6 +167,8 @@ def _parse_mapper_preset(config_dict):
     "off_spm_mem_candidate_topk",
     "pf_candidate_topk",
     "proximity_sort",
+    "membound_mapping",
+    "recmin_policy",
   ]
   used_overrides = []
   for key in override_keys:
@@ -174,6 +184,25 @@ def _parse_mapper_preset(config_dict):
     )
 
   return preset_name, resolved
+
+
+def _auto_select_recmin_policy(
+    config_dict,
+    mapper_tuning,
+    auto_unroll_enabled,
+    scalar_reduction_policy,
+):
+  if not auto_unroll_enabled or scalar_reduction_policy == "none":
+    return
+  if "recmin_policy" in config_dict:
+    return
+
+  mapper_tuning["recmin_policy"] = "path"
+  print(
+    "Auto-selected recmin_policy=path because auto_unroll.scalar_reduction_policy=%s. "
+    "Set recmin_policy explicitly to override."
+    % scalar_reduction_policy
+  )
 
 
 def resolve_arch_template_path(morpher_home, mapper_home, arch_template_json):
@@ -429,6 +458,28 @@ def _resolve_pf_candidate_topk(value):
   return parsed
 
 
+def _resolve_membound_mapping(value):
+  if isinstance(value, bool):
+    return "auto" if value else "off"
+  if value is None:
+    return "off"
+  mode = str(value).strip().lower().replace("-", "_")
+  if mode in ("", "0", "false", "off", "no", "disabled"):
+    return "off"
+  if mode in ("1", "true", "auto", "on", "yes", "enabled"):
+    return "auto"
+  if mode in ("force", "forced", "always", "mem_first"):
+    return "force"
+  raise RuntimeError("membound_mapping must be boolean or one of: off, auto, force.")
+
+
+def _resolve_recmin_policy(value):
+  policy = str(value or "asap").strip().lower()
+  if policy not in ("asap", "path"):
+    raise RuntimeError("recmin_policy must be one of: asap, path.")
+  return policy
+
+
 VECTOR_OP_PREFIX = "V"
 VECTOR_MEMORY_OP_PREFIXES = ("VLOAD", "VSTORE", "VOLOAD", "VOSTORE")
 
@@ -592,6 +643,9 @@ class RunnerConfig:
   sa_candidate_topk: int
   off_spm_mem_candidate_topk: int
   pf_candidate_topk: int
+  membound_mapping: str
+  recmin_policy: str
+  arch_mem_pe_count: int
   enable_simulation: bool
   generate_dfg_pdf: bool
   suppress_dfg_dot: bool
@@ -607,6 +661,8 @@ class RunnerConfig:
   auto_unroll_factors: list
   auto_unroll_fuse_innermost_loops: bool
   auto_unroll_stop_on_degradation: bool
+  auto_unroll_scalar_reduction_policy: str
+  auto_unroll_scalar_reduction_terms: int
   arch_simd_enabled: bool
   arch_simd_width: int
   arch_scalar_broadcast: bool
@@ -654,7 +710,43 @@ class RunnerConfig:
     fuse_innermost_loops = bool(auto_cfg.get("fuse_innermost_loops", True))
 
     stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", True))
-    return enabled, factors, fuse_innermost_loops, stop_on_degradation
+    scalar_reduction_policy = str(
+      auto_cfg.get("scalar_reduction_policy", "none")
+    ).strip().lower()
+    if scalar_reduction_policy not in ("none", "tree", "scalar-psum"):
+      raise RuntimeError(
+        "auto_unroll.scalar_reduction_policy must be one of: none, tree, scalar-psum."
+      )
+    try:
+      scalar_reduction_terms = int(auto_cfg.get("scalar_reduction_terms", 2))
+    except (TypeError, ValueError):
+      raise RuntimeError("auto_unroll.scalar_reduction_terms must be an integer.")
+    if scalar_reduction_terms < 2:
+      raise RuntimeError("auto_unroll.scalar_reduction_terms must be >= 2.")
+    if scalar_reduction_policy != "none":
+      invalid_factors = [
+        factor for factor in factors
+        if factor > 1 and factor % scalar_reduction_terms != 0
+      ]
+      if invalid_factors:
+        raise RuntimeError(
+          "auto_unroll.scalar_reduction_terms=%d must divide every scalar unroll "
+          "factor when auto_unroll.scalar_reduction_policy=%s. Invalid factor(s): %s."
+          % (
+            scalar_reduction_terms,
+            scalar_reduction_policy,
+            ", ".join(str(factor) for factor in invalid_factors),
+          )
+        )
+
+    return (
+      enabled,
+      factors,
+      fuse_innermost_loops,
+      stop_on_degradation,
+      scalar_reduction_policy,
+      scalar_reduction_terms,
+    )
 
   @staticmethod
   def _parse_source_template(config_dict):
@@ -693,7 +785,15 @@ class RunnerConfig:
       auto_unroll_factors,
       auto_unroll_fuse_innermost_loops,
       auto_unroll_stop_on_degradation,
+      auto_unroll_scalar_reduction_policy,
+      auto_unroll_scalar_reduction_terms,
     ) = cls._parse_auto_unroll(config_dict)
+    _auto_select_recmin_policy(
+      config_dict,
+      mapper_tuning,
+      auto_unroll_enabled,
+      auto_unroll_scalar_reduction_policy,
+    )
     source_template_mode = cls._parse_source_template(config_dict)
     _print_deprecation_warning(config_dict)
     validation_mode = str(config_dict.get("validation_mode", "functional")).strip().lower()
@@ -806,6 +906,13 @@ class RunnerConfig:
       pf_candidate_topk=_resolve_pf_candidate_topk(
         mapper_tuning.get("pf_candidate_topk", 0),
       ),
+      membound_mapping=_resolve_membound_mapping(
+        mapper_tuning.get("membound_mapping", False),
+      ),
+      recmin_policy=_resolve_recmin_policy(
+        mapper_tuning.get("recmin_policy", "asap"),
+      ),
+      arch_mem_pe_count=int(inferred_mem_pes or 0),
       enable_simulation=config_dict.get("enable_simulation", True),
       generate_dfg_pdf=bool(config_dict.get("generate_dfg_pdf", True)),
       suppress_dfg_dot=bool(config_dict.get("suppress_dfg_dot", False)),
@@ -820,6 +927,8 @@ class RunnerConfig:
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
+      auto_unroll_scalar_reduction_policy=auto_unroll_scalar_reduction_policy,
+      auto_unroll_scalar_reduction_terms=auto_unroll_scalar_reduction_terms,
       source_template_mode=source_template_mode,
       arch_simd_enabled=arch_simd.enabled,
       arch_simd_width=arch_simd.width,

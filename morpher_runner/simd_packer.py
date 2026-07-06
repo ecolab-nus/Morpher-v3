@@ -512,7 +512,7 @@ def _prunable_packed_store_address_oloads(
 
 def _is_artifact_store_root(node: ET.Element) -> bool:
   op = _child_text(node, "OP")
-  if op in {"STORE", "STOREH"}:
+  if op in {"STORE", "STOREH", "OSTORE", "OSTOREH", "OSTOREB"}:
     return True
   if op == "STOREB" and node.attrib.get("simd_packed") == "true":
     return True

@@ -19,11 +19,58 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <map>
 
 namespace CGRAXMLCompile
 {
 
 } /* namespace CGRAXMLCompile */
+
+namespace
+{
+int shortestSameIterationPathDistance(CGRAXMLCompile::DFGNode *src,
+									  CGRAXMLCompile::DFGNode *dst)
+{
+	if (src == dst)
+	{
+		return 0;
+	}
+
+	std::queue<CGRAXMLCompile::DFGNode *> worklist;
+	std::map<CGRAXMLCompile::DFGNode *, int> distance;
+	worklist.push(src);
+	distance[src] = 0;
+
+	while (!worklist.empty())
+	{
+		CGRAXMLCompile::DFGNode *node = worklist.front();
+		worklist.pop();
+		int nodeDistance = distance[node];
+
+		for (CGRAXMLCompile::DFGNode *child : node->children)
+		{
+			auto nextIter = node->childNextIter.find(child);
+			if (nextIter != node->childNextIter.end() && nextIter->second != 0)
+			{
+				continue;
+			}
+			if (distance.find(child) != distance.end())
+			{
+				continue;
+			}
+			int childDistance = nodeDistance + 1;
+			if (child == dst)
+			{
+				return childDistance;
+			}
+			distance[child] = childDistance;
+			worklist.push(child);
+		}
+	}
+
+	return -1;
+}
+}
 
 template <typename T>
 std::set<T> getUnion(const std::set<T> &a, const std::set<T> &b)
@@ -577,6 +624,25 @@ int CGRAXMLCompile::PathFinderMapper::getRecMinimumII(DFG *dfg)
 				LOG(MAPPING) << "Parent ALAP: " << node.ALAP << ", Child ALAP: " << child->ALAP <<"\n";
 				number_of_backedges = number_of_backedges+ 1;
 				recDistance = node.ASAP - child->ASAP + 1;
+				bool isLoopCarriedEdge = false;
+				auto nextIter = node.childNextIter.find(child);
+				if (nextIter != node.childNextIter.end() && nextIter->second != 0)
+				{
+					isLoopCarriedEdge = true;
+				}
+				if (recMinPolicy == "path" && isLoopCarriedEdge)
+				{
+					int pathDistance = shortestSameIterationPathDistance(child, &node);
+					if (pathDistance > 0)
+					{
+						LOG(MAPPING) << "Path RecMin distance: " << pathDistance << "\n";
+						recDistance = pathDistance;
+					}
+					else
+					{
+						LOG(MAPPING) << "Path RecMin fallback to ASAP distance\n";
+					}
+				}
 				assert(recDistance>=0);
 				if(recDistance > recMinII){
 					recMinII = recDistance;

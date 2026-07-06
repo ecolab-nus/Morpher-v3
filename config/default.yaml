@@ -15,3 +15,4 @@ auto_unroll:
   enabled: true
   factors: [4]
   stop_on_degradation: true
+  scalar_reduction_policy: "none"

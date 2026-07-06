@@ -1,7 +1,8 @@
 memory_mode: auto
-arch_template_json: "edge_mem_4x4/scalar_3side.json"
+arch_template_json: "edge_mem_4x4/scalar_4side.json"
 mapper_subfolder: hycube
 mapper_preset: "fast"
+membound_mapping: true
 init_II: 1
 multihop: 4
 max_test_samples: 2
@@ -10,8 +11,9 @@ validation_mode: functional
 spm_mode: 'off'
 remove_agi: true
 remove_iter: true
+membound_mapping: true
 source_template:
-  enabled: auto
+  enabled: false
 auto_unroll:
   enabled: true
   factors: [8]

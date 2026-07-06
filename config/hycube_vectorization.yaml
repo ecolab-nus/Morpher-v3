@@ -5,7 +5,7 @@ mapper_preset: "fast"
 init_II: 1
 multihop: 4
 max_test_samples: 5
-enable_simulation: false
+enable_simulation: true
 validation_mode: functional
 spm_mode: 'off'
 remove_agi: true
@@ -16,3 +16,4 @@ auto_unroll:
   enabled: true
   factors: [1, 4, 8, 16, 32]
   stop_on_degradation: true
+  scalar_reduction_policy: "scalar-psum"
