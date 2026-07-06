@@ -1,10 +1,11 @@
-#include "ArtifactSim/ArtifactSimulator.h"
-#include "ArtifactSim/ArchSimulator.h"
-#include "ArtifactSim/ArchSchedule.h"
-#include "ArtifactSim/CGRAArch.h"
+#include "ArtifactSim/functional/Simulator.h"
+#include "ArtifactSim/morpher/ArchJson.h"
+#include "ArtifactSim/morpher/CycleSimulator.h"
+#include "ArtifactSim/morpher/MappingCompiler.h"
 
 #include <fstream>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -24,25 +25,24 @@ struct Args {
     std::string memAlloc;
     std::string trace;
     std::string addrTrace;
-    std::string arch;    // optional: path to CGRA arch JSON
-    std::string result;  // optional: path to mapper result.txt (for II)
-    int xdim = 4;
-    int ydim = 4;
+    std::string arch;        // optional: arch JSON -> cycle-accurate mode
+    std::string mappingJson; // optional: explicit mapping.json (else located
+                             // next to --mapping)
+    std::string result;      // optional: mapper result.txt (for II)
     int maxIterations = 1024;
-    int maxHops = 4;     // mapper --hops default for HyCUBE
-    bool trustMapperRouting = false;
     std::vector<PhaseArg> extraPhases;
 };
 
 static void usage() {
     std::cerr
         << "Usage: artifact_simulator --dfg <xml> --mapping <mappingwithlatency.txt> "
-        << "--mem-alloc <mem_alloc.txt> --trace <trace.txt> [--x <n>] [--y <n>] "
+        << "--mem-alloc <mem_alloc.txt> --trace <trace.txt> "
         << "[--max-iters <n>] [--addr-trace <addr_trace.txt>] "
-        << "[--arch <arch.json>] [--result <result.txt>] "
-        << "[--max-hops <n>] "
-        << "[--trust-mapper-routing] "
-        << "[--phase <dfg:mapping:mem_alloc>]...\n";
+        << "[--arch <arch.json>] [--mapping-json <mapping.json>] "
+        << "[--result <result.txt>] "
+        << "[--phase <dfg:mapping:mem_alloc>]...\n"
+        << "Without --arch: functional golden checker (arch-unaware).\n"
+        << "With --arch: cycle-accurate simulation on the elaborated fabric.\n";
 }
 
 static PhaseArg parsePhaseSpec(const std::string &spec) {
@@ -69,19 +69,16 @@ static Args parseArgs(int argc, char **argv) {
             }
             return argv[++i];
         };
-        if      (opt == "--dfg")       args.dfg           = needValue(opt);
-        else if (opt == "--mapping")   args.mapping        = needValue(opt);
-        else if (opt == "--mem-alloc") args.memAlloc       = needValue(opt);
-        else if (opt == "--trace")     args.trace          = needValue(opt);
-        else if (opt == "--addr-trace")args.addrTrace      = needValue(opt);
-        else if (opt == "--arch")      args.arch           = needValue(opt);
-        else if (opt == "--result")    args.result         = needValue(opt);
-        else if (opt == "--phase")     args.extraPhases.push_back(parsePhaseSpec(needValue(opt)));
-        else if (opt == "--x")         args.xdim           = std::stoi(needValue(opt));
-        else if (opt == "--y")         args.ydim           = std::stoi(needValue(opt));
-        else if (opt == "--max-iters") args.maxIterations  = std::stoi(needValue(opt));
-        else if (opt == "--max-hops")  args.maxHops        = std::stoi(needValue(opt));
-        else if (opt == "--trust-mapper-routing") args.trustMapperRouting = true;
+        if      (opt == "--dfg")        args.dfg           = needValue(opt);
+        else if (opt == "--mapping")    args.mapping        = needValue(opt);
+        else if (opt == "--mem-alloc")  args.memAlloc       = needValue(opt);
+        else if (opt == "--trace")      args.trace          = needValue(opt);
+        else if (opt == "--addr-trace") args.addrTrace      = needValue(opt);
+        else if (opt == "--arch")       args.arch           = needValue(opt);
+        else if (opt == "--mapping-json") args.mappingJson  = needValue(opt);
+        else if (opt == "--result")     args.result         = needValue(opt);
+        else if (opt == "--phase")      args.extraPhases.push_back(parsePhaseSpec(needValue(opt)));
+        else if (opt == "--max-iters")  args.maxIterations  = std::stoi(needValue(opt));
         else if (opt == "--help") {
             usage();
             std::exit(0);
@@ -95,6 +92,15 @@ static Args parseArgs(int argc, char **argv) {
         throw std::runtime_error("missing required arguments");
     }
     return args;
+}
+
+static int parseIIFromFilename(const std::string &path) {
+    static const std::regex iiRe(R"(_II=(\d+)_)");
+    std::smatch m;
+    if (std::regex_search(path, m, iiRe)) {
+        return std::stoi(m[1].str());
+    }
+    return 0;
 }
 
 static int resolveII(const std::string &mappingPath, const std::string &resultPath) {
@@ -115,7 +121,7 @@ static int resolveII(const std::string &mappingPath, const std::string &resultPa
         }
     }
     if (II <= 0) {
-        II = ArchSchedule::parseIIFromFilename(mappingPath);
+        II = parseIIFromFilename(mappingPath);
     }
     return II > 0 ? II : 1;
 }
@@ -128,52 +134,52 @@ int main(int argc, char **argv) {
         phases.push_back(PhaseArg{args.dfg, args.mapping, args.memAlloc});
         phases.insert(phases.end(), args.extraPhases.begin(), args.extraPhases.end());
 
-        DFGGraph graph   = DFGGraph::parse(phases.front().dfg);
-        Mapping  mapping = Mapping::parse(phases.front().mapping);
         MemAlloc alloc   = parseMemAlloc(phases.front().memAlloc);
         TraceImage trace = parseTrace(args.trace, alloc);
         if (!args.addrTrace.empty()) {
             parseAddressTrace(args.addrTrace, trace);
         }
 
-        SimOptions options;
-        options.xdim          = args.xdim;
-        options.ydim          = args.ydim;
-        options.maxIterations = args.maxIterations;
-
         SimResult result;
 
         if (!args.arch.empty()) {
-            // Arch-aware path: parse CGRA JSON, build mesh, validate schedule.
-            CGRAArch arch = CGRAArch::parse(args.arch);
-            std::map<std::pair<int, int>, Value> tregValues;
+            // Cycle-accurate mode: elaborate the fabric from the arch JSON and
+            // compile the mapper's routing record into configuration memory.
+            const Fabric fabric = elaborateArchJson(args.arch);
+            std::map<std::pair<int, int>, Value> macState;
 
             for (size_t idx = 0; idx < phases.size(); ++idx) {
                 const PhaseArg &phase = phases[idx];
-                DFGGraph phaseGraph = DFGGraph::parse(phase.dfg);
-                Mapping phaseMapping = Mapping::parse(phase.mapping);
+                DFGGraph graph = DFGGraph::parse(phase.dfg);
                 MemAlloc phaseAlloc = parseMemAlloc(phase.memAlloc);
                 const int II = resolveII(
                     phase.mapping, idx == 0 ? args.result : std::string{});
 
-                CGRAMesh mesh(arch);
-                ArchSchedule schedule = ArchSchedule::build(
-                    phaseMapping, mesh, phaseGraph, II,
-                    args.trustMapperRouting ? 1000000 : args.maxHops);
+                std::string mappingJson =
+                    (idx == 0 && !args.mappingJson.empty())
+                        ? args.mappingJson
+                        : findMappingJson(phase.mapping);
+                if (mappingJson.empty()) {
+                    throw std::runtime_error(
+                        "no mapping.json found next to " + phase.mapping +
+                        " (required for cycle-accurate mode)");
+                }
 
-                ArchSimulator sim(CGRAArch(arch), std::move(schedule),
-                                  std::move(phaseGraph), std::move(phaseMapping),
-                                  std::move(phaseAlloc), trace, options);
-                result = sim.runWithState(tregValues, idx + 1 == phases.size());
+                ConfigMem config = compileMapping(fabric, graph, mappingJson, II);
+                CycleSimulator sim(fabric, config, graph,
+                                   std::move(phaseAlloc), trace,
+                                   args.maxIterations);
+                result = sim.run(macState, idx + 1 == phases.size());
                 trace = sim.traceImage();
             }
         } else {
             if (phases.size() != 1) {
-                throw std::runtime_error("--phase requires --arch so PE-local TREG state is defined");
+                throw std::runtime_error(
+                    "--phase requires --arch so PE-local state is defined");
             }
-            // Original arch-unaware path (unchanged behaviour).
-            Simulator sim(std::move(graph), std::move(mapping),
-                          std::move(alloc), std::move(trace), options);
+            DFGGraph graph = DFGGraph::parse(phases.front().dfg);
+            FunctionalSimulator sim(std::move(graph), std::move(alloc),
+                                    std::move(trace), args.maxIterations);
             result = sim.run();
         }
 

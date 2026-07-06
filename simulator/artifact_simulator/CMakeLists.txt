@@ -3,17 +3,18 @@ project(morpher_artifact_simulator LANGUAGES CXX)
 
 add_executable(artifact_simulator
   src/main.cpp
-  src/SimulatorBase.cpp
-  src/ArtifactSimulator.cpp
-  src/ArchSimulator.cpp
-  src/ArchSchedule.cpp
-  src/CGRAArch.cpp
-  src/CGRAMesh.cpp
-  src/DFG.cpp
-  src/Mapping.cpp
-  src/Memory.cpp
-  src/Trace.cpp
-  src/Value.cpp
+  src/core/Value.cpp
+  src/core/Ops.cpp
+  src/core/Fabric.cpp
+  src/core/Engine.cpp
+  src/morpher/ArchJson.cpp
+  src/morpher/MappingCompiler.cpp
+  src/morpher/NodeSemantics.cpp
+  src/morpher/CycleSimulator.cpp
+  src/morpher/DFG.cpp
+  src/morpher/Memory.cpp
+  src/morpher/Trace.cpp
+  src/functional/Simulator.cpp
   ../../Morpher_CGRA_Mapper/src/util/tinyxml2.cpp
 )
 
