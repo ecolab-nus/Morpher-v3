@@ -101,6 +101,9 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "pf_guard_mode=" << args.pf_guard_mode << "\n";
 	std::cout << "pf_guard_seconds=" << args.pf_guard_seconds << " (0=mode default)\n";
 	std::cout << "pf_guard_max_consecutive=" << args.pf_guard_max_consecutive << " (0=mode default)\n";
+	std::cout << "pf_frontier_stall_repeats=" << args.pf_frontier_stall_repeats << " (0=disabled)\n";
+	std::cout << "pf_frontier_stall_min_mapped=" << args.pf_frontier_stall_min_mapped << "\n";
+	std::cout << "rut_recovery_seed=" << args.rut_recovery_seed << "\n";
 	std::cout << "pf_node_order=" << args.pf_node_order << "\n";
 	std::cout << "recmin_policy=" << args.recmin_policy << "\n";
 	std::cout << "proximity_sort=" << args.proximity_sort << "\n";
@@ -112,7 +115,9 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "sa_moves_per_temp=" << args.sa_moves_per_temp << "\n";
 	std::cout << "sa_temp_max=" << args.sa_temp_max << "\n";
 	std::cout << "sa_temp_min=" << args.sa_temp_min << "\n";
-	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n\n";
+	std::cout << "sa_candidate_topk=" << args.sa_candidate_topk << "\n";
+	std::cout << "sa_stall_temp_steps=" << args.sa_stall_temp_steps << " (0=disabled)\n";
+	std::cout << "sa_stall_min_unmapped=" << args.sa_stall_min_unmapped << "\n\n";
 	std::cout << std::flush;
 }
 }
@@ -224,6 +229,8 @@ int main(int argn, char *argc[])
 	                            args.sa_temp_max,
 	                            args.sa_temp_min,
 	                            args.sa_candidate_topk);
+	sa_mapper->configureSAStallPolicy(args.sa_stall_temp_steps,
+	                                  args.sa_stall_min_unmapped);
 
 	PathFinderMapper * mapper = nullptr;
 	if (mapping_method == 0)
@@ -264,6 +271,12 @@ int main(int argn, char *argc[])
 	}
 	pf_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardMaxConsecutive);
 	sa_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardMaxConsecutive);
+	pf_mapper->setFrontierStallPolicy(args.pf_frontier_stall_repeats,
+	                                  args.pf_frontier_stall_min_mapped);
+	sa_mapper->setFrontierStallPolicy(args.pf_frontier_stall_repeats,
+	                                  args.pf_frontier_stall_min_mapped);
+	pf_mapper->setRutRecoverySeed(args.rut_recovery_seed);
+	sa_mapper->setRutRecoverySeed(args.rut_recovery_seed);
 	pf_mapper->setNodeOrderPolicy(args.pf_node_order);
 	sa_mapper->setNodeOrderPolicy(args.pf_node_order);
 	pf_mapper->setRecMinPolicy(args.recmin_policy);
@@ -608,6 +621,11 @@ int main(int argn, char *argc[])
 		else if (mapping_method == 1)
 		{
 			AttemptResult saResult = try_map_at_current_ii(sa_mapper, true, true, emit_binary, "sa", sa_attempts_per_ii);
+			if (!saResult.success && saResult.outcome == AttemptOutcome::FAIL_SA_STALL)
+			{
+				std::cout << "SA stalled at II = " << II
+				          << " after same-II seeded restarts; increasing II.\n";
+			}
 			mappingSuccess = saResult.success;
 		}
 		else if (mapping_method == 2)
@@ -644,6 +662,11 @@ int main(int argn, char *argc[])
 				          << " (relaxed PF); skipping strict and trying SA.\n";
 			}
 			AttemptResult saResult = try_map_at_current_ii(sa_mapper, true, true, emit_binary, "hybrid-sa", sa_attempts_per_ii);
+			if (!saResult.success && saResult.outcome == AttemptOutcome::FAIL_SA_STALL)
+			{
+				std::cout << "Hybrid: SA stalled at II = " << II
+				          << " after same-II seeded restarts.\n";
+			}
 			mappingSuccess = saResult.success;
 		}
 

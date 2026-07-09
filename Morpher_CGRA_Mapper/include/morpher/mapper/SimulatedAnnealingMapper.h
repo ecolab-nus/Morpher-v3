@@ -38,6 +38,10 @@ public:
 			minimim_temp = std::max(0.001f, std::min(temp_min, maximum_temp));
 			sa_candidate_topk = std::max(1, candidate_topk);
 		}
+		void configureSAStallPolicy(int temp_steps, int min_unmapped){
+			sa_stall_temp_steps = std::max(0, temp_steps);
+			sa_stall_min_unmapped = std::max(1, min_unmapped);
+		}
 		void prepareRandomForAttempt();
 
 		bool initMap();
@@ -140,6 +144,8 @@ protected:
 		int curr_cost;
 		int sa_seed = 0;
 		int sa_candidate_topk = 8;
+		int sa_stall_temp_steps = 0;
+		int sa_stall_min_unmapped = 1;
 		unsigned long long rng_base_seed = 0;
 		unsigned long long active_rng_seed = 0;
 		bool rng_base_seed_initialized = false;

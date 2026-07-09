@@ -702,7 +702,7 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 			for (std::pair<Port *, int> pair : parent->routingPorts)
 			{
 				Port *p = pair.first;
-				if (p == NULL || p->getLat() == -1)
+				if (p == NULL || !p->hasValidLat())
 				{
 					continue;
 				}
@@ -1010,7 +1010,7 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 
 				for (Port *startCand : pair.second)
 				{
-					if (startCand == NULL || startCand->getLat() == -1)
+					if (startCand == NULL || !startCand->hasValidLat())
 					{
 						LOG(ROUTE) << "Skipping stale parent route start for parent=" << parent->idx << "\n";
 						continue;
@@ -1236,7 +1236,7 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			pruneInvalidRoutingPorts(node);
 			for (std::pair<Port *, int> pair : node->routingPorts)
 			{
-				if (pair.first == NULL || pair.first->getLat() == -1)
+				if (pair.first == NULL || !pair.first->hasValidLat())
 				{
 					continue;
 				}
@@ -1668,15 +1668,67 @@ void CGRAXMLCompile::PathFinderMapper::perturbNodeOrderAfterGuard(DFGNode *guard
 		std::cout << "PF guard perturbation: reversed node order for guarded retry.\n";
 	}
 
+	const size_t seedMix = static_cast<size_t>(std::max(1, rutRecoverySeed));
 	size_t rotateBy = (static_cast<size_t>(guardStreak) * nodeCount) / 3;
-	rotateBy = (rotateBy + static_cast<size_t>(guardStreak) * 7u) % nodeCount;
+	rotateBy = (rotateBy + static_cast<size_t>(guardStreak) * 7u + seedMix * 11u) % nodeCount;
 	if (rotateBy == 0)
 	{
 		rotateBy = 1;
 	}
 	std::rotate(sortedNodeList.begin(), sortedNodeList.begin() + rotateBy, sortedNodeList.end());
 	std::cout << "PF guard perturbation: rotated node order by " << rotateBy
-	          << " before retry.\n";
+	          << " before retry (seed = " << rutRecoverySeed << ").\n";
+}
+
+void CGRAXMLCompile::PathFinderMapper::applyFrontierRutPressure(DFGNode *frontierNode, int guardStreak)
+{
+	if (frontierNode == NULL)
+	{
+		return;
+	}
+
+	std::set<Port *> pressuredPorts;
+	auto collectNodePorts = [&](DFGNode *node)
+	{
+		if (node == NULL)
+		{
+			return;
+		}
+		for (std::pair<Port *, int> routedPort : node->routingPorts)
+		{
+			if (routedPort.first != NULL && routedPort.first->hasValidLat())
+			{
+				pressuredPorts.insert(routedPort.first);
+			}
+		}
+	};
+
+	collectNodePorts(frontierNode);
+	for (DFGNode *parent : frontierNode->parents)
+	{
+		collectNodePorts(parent);
+	}
+	for (DFGNode *child : frontierNode->children)
+	{
+		collectNodePorts(child);
+	}
+
+	const int pressure = 1 + (std::max(1, guardStreak) % 3);
+	for (Port *port : pressuredPorts)
+	{
+		for (int i = 0; i < pressure; ++i)
+		{
+			port->increastCongCost();
+		}
+	}
+
+	if (!pressuredPorts.empty())
+	{
+		std::cout << "PF rut recovery: ripped up partial mapping and applied route pressure to "
+		          << pressuredPorts.size() << " local ports around node " << frontierNode->idx
+		          << " (pressure = " << pressure
+		          << ", seed = " << rutRecoverySeed << ").\n";
+	}
 }
 
 bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
@@ -1797,6 +1849,56 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		std::cout << "Current target II = " << cgra->get_t_max() <<", Iteration = " << i << "\n";
 
 		bool iterationGuarded = false;
+		int lastFrontierNodeIdx = -1;
+		size_t lastFrontierMapped = 0;
+		size_t lastFrontierUnmapped = 0;
+		size_t lastFrontierRouteCount = 0;
+		int repeatedFrontierFailures = 0;
+		auto frontierStallHit = [&](DFGNode *frontierNode, size_t routeCount) -> bool
+		{
+			if (frontierStallRepeats <= 0 || frontierNode == NULL ||
+			    mappedNodes.size() < static_cast<size_t>(frontierStallMinMapped))
+			{
+				return false;
+			}
+			if (lastFrontierNodeIdx == frontierNode->idx &&
+			    lastFrontierMapped == mappedNodes.size() &&
+			    lastFrontierUnmapped == unmappedNodes.size() &&
+			    lastFrontierRouteCount == routeCount)
+			{
+				repeatedFrontierFailures++;
+			}
+			else
+			{
+				lastFrontierNodeIdx = frontierNode->idx;
+				lastFrontierMapped = mappedNodes.size();
+				lastFrontierUnmapped = unmappedNodes.size();
+				lastFrontierRouteCount = routeCount;
+				repeatedFrontierFailures = 1;
+			}
+			if (repeatedFrontierFailures >= frontierStallRepeats)
+			{
+				std::cout << "PF frontier stall abort: II = " << cgra->get_t_max()
+				          << ", Iteration = " << i
+				          << ", node = " << frontierNode->idx
+				          << ", mapped = " << mappedNodes.size()
+				          << ", unmapped = " << unmappedNodes.size()
+				          << ", route_count = " << routeCount
+				          << ", repeats = " << repeatedFrontierFailures
+				          << "/" << frontierStallRepeats << "\n";
+				mappingLog << "PF frontier stall abort: node=" << frontierNode->idx
+				           << ", mapped=" << mappedNodes.size()
+				           << ", unmapped=" << unmappedNodes.size()
+				           << ", route_count=" << routeCount
+				           << ", repeats=" << repeatedFrontierFailures
+				           << "/" << frontierStallRepeats << "\n";
+				mappingLog2 << "PF frontier stall abort.\n";
+				mappingLog4 << "PF frontier stall abort.\n";
+				this->setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
+				return true;
+			}
+			return false;
+		};
 		while (!unmappedNodes.empty())
 		{
 			nodeAttemptsInIter++;
@@ -1970,10 +2072,22 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 					break;
 				}
 				if (!isRouteSucc)
+				{
+					if (frontierStallHit(node, estimatedRouteInfo[node].size()))
+					{
+						iterationGuarded = true;
+						break;
+					}
 					std::cout << "Route Failed!\n";
+				}
 			}
 			else
 			{
+					if (frontierStallHit(node, 0))
+					{
+						iterationGuarded = true;
+						break;
+					}
 					if (mappedNodes.empty())
 					{
 						mappingLog << "Map Failed!.\n";
@@ -2067,6 +2181,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 			mappingLog2.close();
 			mappingLog4.close();
 
+			applyFrontierRutPressure(progressNode, consecutiveGuardedIterations);
 			clearCurrMapping();
 			estimatedRouteInfo.clear();
 			clearAttemptCaches();

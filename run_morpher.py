@@ -25,6 +25,7 @@ from morpher_runner.mapper import run_mapper
 from morpher_runner.systolic_binding import read_arch_facts
 from morpher_runner.template_lowering import lower_template_record
 from morpher_runner.template_lowering import write_lowering_artifacts
+from morpher_runner.utilization import estimate_utilization
 from morpher_runner.utils import build_llvm_tool_env
 from morpher_runner.utils import resolve_llvm_tool
 
@@ -784,6 +785,45 @@ def _maybe_setup_kernel_run_dir(csource, is_direct, output_root):
   return kernel_run_dir, timestamp
 
 
+def _estimate_result_utilization(csource, function, config_path, run_tag, achieved_ii):
+  empty = {
+      "compute_nodes": "",
+      "memory_nodes": "",
+      "compute_pes": "",
+      "memory_pes": "",
+      "total_pes": "",
+      "compute_util_percent": "",
+      "memory_util_percent": "",
+      "total_util_percent": "",
+  }
+  if achieved_ii is None:
+    return empty
+  try:
+    with open(config_path, "r", encoding="utf-8") as f:
+      cfg = yaml.safe_load(f)
+    mapper_subfolder = cfg.get("mapper_subfolder", "")
+    parts = csource.replace("\\", "/").split("/")
+    appfolder = "/".join(parts[:2])
+    kernel = Path(csource).stem
+    mapper_kernel = (
+      Path.cwd() / "workspace" / "morpher_runs" / run_tag
+      / "mapper" / mapper_subfolder / appfolder
+    )
+    dfg_xml = mapper_kernel / ("%s_PartPredDFG.xml" % kernel)
+    runtime_arch = mapper_kernel / ("%s_arch_runtime.json" % kernel)
+    if runtime_arch.exists():
+      arch_json = runtime_arch
+    else:
+      arch_json = Path(resolve_arch_template_path(
+          str(Path.cwd()),
+          str(Path.cwd() / "Morpher_CGRA_Mapper"),
+          cfg.get("arch_template_json", ""),
+      ))
+    return estimate_utilization(dfg_xml, arch_json, achieved_ii).csv_fields()
+  except Exception:
+    return empty
+
+
 def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag, status, rc, elapsed):
   """Write result.csv and copy config.yaml into kernel_run_dir."""
   achieved_ii = None
@@ -808,11 +848,19 @@ def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag
   except Exception:
     pass
 
-  fields = ["benchmark", "function", "status", "return_code", "achieved_ii", "ii_mapper_status", "elapsed_sec", "run_dir"]
+  util_fields = _estimate_result_utilization(
+      csource, function, config_path, run_tag, achieved_ii
+  )
+  fields = [
+      "benchmark", "function", "status", "return_code", "achieved_ii",
+      "ii_mapper_status", "compute_nodes", "memory_nodes", "compute_pes",
+      "memory_pes", "total_pes", "compute_util_percent",
+      "memory_util_percent", "total_util_percent", "elapsed_sec", "run_dir",
+  ]
   with (kernel_run_dir / "result.csv").open("w", newline="", encoding="utf-8") as f:
     w = csv.DictWriter(f, fieldnames=fields)
     w.writeheader()
-    w.writerow({
+    row = {
       "benchmark": csource,
       "function": function,
       "status": status,
@@ -821,7 +869,9 @@ def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag
       "ii_mapper_status": ii_mapper_status if ii_mapper_status is not None else "",
       "elapsed_sec": round(elapsed, 2),
       "run_dir": str(kernel_run_dir),
-    })
+    }
+    row.update(util_fields)
+    w.writerow(row)
 
   try:
     shutil.copy2(config_path, kernel_run_dir / "config.yaml")

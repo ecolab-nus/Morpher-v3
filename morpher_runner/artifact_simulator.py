@@ -1,10 +1,28 @@
 import glob
 import os
+import re
+from os import listdir
+from os.path import isfile, join
+
+import numpy as np
 
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
-from morpher_runner.simulator import collect_trace_files
-from morpher_runner.simulator import select_trace_samples
+
+
+def collect_trace_files(context):
+  kernel = context.kernel
+  pattern = re.compile(r"^%s_trace_[0-9]+\.txt$" % re.escape(kernel))
+  return [
+    f for f in listdir(context.mem_trace)
+    if isfile(join(context.mem_trace, f)) and pattern.match(f)
+  ]
+
+
+def select_trace_samples(files, max_test_samples):
+  if len(files) > max_test_samples:
+    return np.random.choice(files, size=max_test_samples, replace=False)
+  return np.random.choice(files, size=len(files), replace=False)
 
 
 def resolve_artifact_simulator(context):
@@ -65,10 +83,6 @@ def build_artifact_sim_command(context, trace_file, validation_mode):
       resolve_mem_alloc_file(context),
       "--trace",
       os.path.join(context.mem_trace, trace_file),
-      "--x",
-      str(context.config.xdim),
-      "--y",
-      str(context.config.ydim),
   ]
   addr_trace = trace_file.replace("_trace_", "_addr_trace_")
   addr_trace_path = os.path.join(context.mem_trace, addr_trace)

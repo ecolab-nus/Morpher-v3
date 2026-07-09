@@ -66,6 +66,7 @@ public:
 	void decreaseUse(DFGNode *extnode, PathFinderMapper *hm = NULL);
 	void increaseConflictedUse(DFGNode *node, PathFinderMapper *hm = NULL);
 	int getHistoryCost() { return history_cost; }
+	bool hasValidLat();
 	int getLat();
 	void setLat(int lat);
 

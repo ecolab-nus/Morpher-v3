@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import sys
 import time
@@ -11,6 +12,7 @@ from morpher_runner.exec import run_command
 from morpher_runner.fs_ops import copy_glob
 from morpher_runner.fs_ops import remove_glob
 from morpher_runner.trace_partition import remap_addr_traces
+from morpher_runner.utilization import estimate_utilization
 
 
 def resolve_arch_template_path(context):
@@ -64,6 +66,46 @@ def _count_staged_dfg_ops(context):
     else:
       compute_ops += 1
   return mem_ops, compute_ops
+
+
+def _parse_result_ii(result_path):
+  if not result_path.is_file():
+    return None
+  for line in reversed(result_path.read_text(encoding="utf-8", errors="ignore").splitlines()):
+    match = re.search(r"method:\S+\s+(\d+)\s+status:success\b", line.strip())
+    if match:
+      return int(match.group(1))
+  return None
+
+
+def _print_mapper_utilization(context, mapper_arch):
+  ii = _parse_result_ii(Path(context.mapper_kernel) / "result.txt")
+  if ii is None:
+    return
+  estimate = estimate_utilization(
+      Path(context.mapper_kernel) / ("%s_PartPredDFG.xml" % context.kernel),
+      Path(mapper_arch),
+      ii,
+  )
+  print(
+      "Utilization: compute=%s%% (%d nodes / %d PEs / II=%d), "
+      "memory=%s%% (%d nodes / %d PEs / II=%d), "
+      "total=%s%% (%d nodes / %d PEs / II=%d)\n"
+      % (
+          estimate.csv_fields()["compute_util_percent"] or "n/a",
+          estimate.compute_nodes,
+          estimate.compute_pes,
+          ii,
+          estimate.csv_fields()["memory_util_percent"] or "n/a",
+          estimate.memory_nodes,
+          estimate.memory_pes,
+          ii,
+          estimate.csv_fields()["total_util_percent"] or "n/a",
+          estimate.compute_nodes + estimate.memory_nodes,
+          estimate.total_pes,
+          ii,
+      )
+  )
 
 
 def resolve_pf_node_order(context):
@@ -164,10 +206,20 @@ def build_mapper_commands(context):
     str(config.sa_temp_min),
     "--sa_candidate_topk",
     str(config.sa_candidate_topk),
+    "--sa_stall_temp_steps",
+    str(config.sa_stall_temp_steps),
+    "--sa_stall_min_unmapped",
+    str(config.sa_stall_min_unmapped),
     "--off_spm_mem_candidate_topk",
     str(config.off_spm_mem_candidate_topk),
     "--pf_candidate_topk",
     str(config.pf_candidate_topk),
+    "--pf_frontier_stall_repeats",
+    str(config.pf_frontier_stall_repeats),
+    "--pf_frontier_stall_min_mapped",
+    str(config.pf_frontier_stall_min_mapped),
+    "--rut_recovery_seed",
+    str(config.rut_recovery_seed),
     "--pf_node_order",
     pf_node_order,
     "--recmin_policy",
@@ -263,6 +315,8 @@ def run_mapper(context):
     run_command(cmd)
     elapsed = time.time() - start
     print("  done (%.2f sec)\n" % elapsed)
+
+  _print_mapper_utilization(context, mapper_arch)
 
   if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):
     remove_glob(context.simulator_kernel, "*.bin")

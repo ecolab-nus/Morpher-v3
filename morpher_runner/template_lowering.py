@@ -162,6 +162,13 @@ def _metadata(record: dict[str, Any], binding: Binding | None,
           if binding.boundary_phase_required else ""
       ),
   })
+  if binding.transform == "trmm_wavefront_triangular_tile_packing":
+    base["source_equivalence_scope"] = "trmm_wavefront_steady_state_main_dfg"
+    base["wavefront_schedule_required"] = True
+    base["limitations"] = list(base["limitations"]) + [
+        "TRMM reuses the GEMM tile body only after a row-wavefront order; "
+        "the XML does not encode a complete source-level TRMM scheduler",
+    ]
   return base
 
 
@@ -174,6 +181,7 @@ def lower_template_record(
     arch: ArchFacts | None = None,
     source_report: str = "",
     active_cell_limit: int | None = None,
+    template_override: str | None = None,
 ) -> TemplateLoweringResult:
   """Try to lower one candidate record to a source-bound template."""
   assessment = assess_source_contract(record)
@@ -186,15 +194,16 @@ def lower_template_record(
     meta = _metadata(record, None, "conditional", assessment.reason)
     meta["required_future_proof"] = assessment.confidence
     return TemplateLoweringResult("conditional", assessment.reason, meta)
-  if assessment.template not in SOURCE_BOUND_TEMPLATES:
-    reason = f"template {assessment.template} is not source-bound in v1"
+  selected_template = template_override or assessment.template
+  if selected_template not in SOURCE_BOUND_TEMPLATES:
+    reason = f"template {selected_template} is not source-bound in v1"
     return TemplateLoweringResult(
         "rejected", reason, _metadata(record, None, "rejected", reason)
     )
 
   model = source_model(record)
   binding = analyze_binding(
-      model, record_index, assessment.template, dim_x, dim_y, arch,
+      model, record_index, selected_template, dim_x, dim_y, arch,
       source_report=source_report, active_cell_limit=active_cell_limit,
   )
   if binding.binding_status != "supported":

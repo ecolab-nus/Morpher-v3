@@ -503,6 +503,119 @@ def batched_dot_output_stationary_cells(dim_x: int, dim_y: int) -> int:
   return dim_x * dim_y
 
 
+def batched_dot_row_output_stationary(
+    dim_x: int,
+    dim_y: int,
+    iter_max: int,
+    op_kind: str = "MAC",
+    useful_cells: int | None = None,
+    simd_lanes: int = 1,
+) -> str:
+  """One-row GEMV-style output-stationary batched dot.
+
+  This is the memory-honest shape for scalar-vector GEMV on a 4x4 PE array:
+  one active row of output accumulators, one matrix/source LOAD per active
+  lane, and one shared vector/coefficient LOAD. For a 4x4 template this is
+  4 active MACs and 5 steady-state LOADs/cycle.
+  """
+  active = dim_x if useful_cells is None else min(useful_cells, dim_x)
+  return batched_dot_output_stationary(
+      dim_x,
+      dim_y,
+      iter_max,
+      op_kind=op_kind,
+      useful_cells=max(1, active),
+      simd_lanes=simd_lanes,
+  )
+
+
+def batched_dot_row_output_stationary_cells(dim_x: int, dim_y: int) -> int:
+  _ = dim_y
+  return dim_x
+
+
+def batched_dot_broadcast_lhs_output_stationary(
+    dim_x: int,
+    dim_y: int,
+    iter_max: int,
+    op_kind: str = "MAC",
+    useful_cells: int | None = None,
+    simd_lanes: int = 1,
+) -> str:
+  """Reversed one-row batched dot.
+
+  This is the shape for one left-hand/matrix stream broadcast to several
+  independent right-hand/vector streams: one shared var_a LOAD, one var_b
+  LOAD per active lane, and one MAC per lane. For a 4-wide row this is also
+  5 steady-state LOADs/cycle, but it represents batching across RHS vectors
+  rather than batching across output rows of a single-vector GEMV.
+  """
+  W = dim_x
+  active = W if useful_cells is None else min(useful_cells, W)
+  active = max(1, active)
+
+  nodes: List[str] = []
+  lhs_idx = 0
+  rhs_base = 1
+  cell_base = rhs_base + active
+
+  nodes.append(_node_xml(
+      lhs_idx, _v_op("LOAD", simd_lanes), asap=0, alap=0,
+      inputs=[], outputs=[(cell_base + i, "I1") for i in range(active)],
+      base_name="var_a", simd_lanes=simd_lanes))
+
+  for i in range(active):
+    nodes.append(_node_xml(
+        rhs_base + i, "LOAD", asap=0, alap=0,
+        inputs=[], outputs=[(cell_base + i, "I2")],
+        base_name="var_b", simd_lanes=1))
+
+  for i in range(active):
+    nodes.append(_node_xml(
+        cell_base + i, _v_op(op_kind, simd_lanes), asap=1, alap=1,
+        inputs=[lhs_idx, rhs_base + i], outputs=[],
+        simd_lanes=simd_lanes))
+
+  return _wrap_dfg(nodes, iter_max)
+
+
+def batched_dot_broadcast_lhs_output_stationary_cells(
+    dim_x: int, dim_y: int) -> int:
+  _ = dim_y
+  return dim_x
+
+
+def batched_dot_output_stationary_batch1(
+    dim_x: int,
+    dim_y: int,
+    iter_max: int,
+    op_kind: str = "MAC",
+    useful_cells: int | None = None,
+    simd_lanes: int = 1,
+) -> str:
+  """Underutilized batched-dot output-stationary template.
+
+  This keeps the physical template dimensions but emits exactly one active
+  output lane. The steady-state main phase therefore has two memory ops per
+  cycle: one per-output source LOAD and one shared coefficient LOAD.
+  """
+  _ = useful_cells
+  return batched_dot_output_stationary(
+      dim_x,
+      dim_y,
+      iter_max,
+      op_kind=op_kind,
+      useful_cells=1,
+      simd_lanes=simd_lanes,
+  )
+
+
+def batched_dot_output_stationary_batch1_cells(dim_x: int, dim_y: int) -> int:
+  _ = dim_x
+  _ = dim_y
+  return 1
+
+
 def fixed_coeff_batched_dot_output_stationary(
     dim_x: int,
     dim_y: int,
@@ -664,7 +777,12 @@ def main_phase_cell_node_ids(template: str, dim_x: int, dim_y: int,
   useful_cells = max(0, min(useful_cells, dim_x * dim_y))
   if template == "gemm_output_stationary":
     return tuple(dim_y + dim_x + i for i in range(useful_cells))
-  if template == "batched_dot_output_stationary":
+  if template in {
+      "batched_dot_output_stationary",
+      "batched_dot_row_output_stationary",
+      "batched_dot_broadcast_lhs_output_stationary",
+      "batched_dot_output_stationary_batch1",
+  }:
     return tuple(useful_cells + 1 + i for i in range(useful_cells))
   return ()
 
@@ -673,6 +791,9 @@ def treg_drain_cell_node_ids(template: str, useful_cells: int) -> tuple[int, ...
   if template in {
       "gemm_output_stationary",
       "batched_dot_output_stationary",
+      "batched_dot_row_output_stationary",
+      "batched_dot_broadcast_lhs_output_stationary",
+      "batched_dot_output_stationary_batch1",
   }:
     return tuple(range(max(0, useful_cells)))
   return ()
@@ -1148,6 +1269,13 @@ TEMPLATES = {
     "gemm_output_stationary": gemm_output_stationary,
     "gemm_two_stream_store": gemm_two_stream_store,
     "batched_dot_output_stationary": batched_dot_output_stationary,
+    "batched_dot_row_output_stationary": batched_dot_row_output_stationary,
+    "batched_dot_broadcast_lhs_output_stationary": (
+        batched_dot_broadcast_lhs_output_stationary
+    ),
+    "batched_dot_output_stationary_batch1": (
+        batched_dot_output_stationary_batch1
+    ),
     "fixed_coeff_batched_dot_output_stationary": (
         fixed_coeff_batched_dot_output_stationary
     ),
@@ -1203,6 +1331,15 @@ TEMPLATE_DEFAULT_CELLS = {
     "gemm_output_stationary": gemm_output_stationary_cells,
     "gemm_two_stream_store": gemm_two_stream_store_cells,
     "batched_dot_output_stationary": batched_dot_output_stationary_cells,
+    "batched_dot_row_output_stationary": (
+        batched_dot_row_output_stationary_cells
+    ),
+    "batched_dot_broadcast_lhs_output_stationary": (
+        batched_dot_broadcast_lhs_output_stationary_cells
+    ),
+    "batched_dot_output_stationary_batch1": (
+        batched_dot_output_stationary_batch1_cells
+    ),
     "fixed_coeff_batched_dot_output_stationary": (
         fixed_coeff_batched_dot_output_stationary_cells
     ),
@@ -1230,6 +1367,9 @@ PROLOGUE_FOR_TEMPLATE = {
     # cell's accumulator slot before the K-cycle stream begins.
     "gemm_output_stationary": "gemm_fanout_prologue",
     "batched_dot_output_stationary": "gemm_fanout_prologue",
+    "batched_dot_row_output_stationary": "gemm_fanout_prologue",
+    "batched_dot_broadcast_lhs_output_stationary": "gemm_fanout_prologue",
+    "batched_dot_output_stationary_batch1": "gemm_fanout_prologue",
     # Weight-stationary main needs a *different* prologue: load weights from
     # var_b into each cell's stationary slot, not zero them out.
     "gemm_weight_stationary": "gemm_weight_stationary_prologue",
@@ -1244,6 +1384,15 @@ PROLOGUE_FOR_TEMPLATE = {
 EPILOGUE_FOR_TEMPLATE = {
     "gemm_output_stationary": "gemm_output_stationary_treg_drain_epilogue",
     "batched_dot_output_stationary": "gemm_output_stationary_treg_drain_epilogue",
+    "batched_dot_row_output_stationary": (
+        "gemm_output_stationary_treg_drain_epilogue"
+    ),
+    "batched_dot_broadcast_lhs_output_stationary": (
+        "gemm_output_stationary_treg_drain_epilogue"
+    ),
+    "batched_dot_output_stationary_batch1": (
+        "gemm_output_stationary_treg_drain_epilogue"
+    ),
 }
 
 

@@ -342,12 +342,19 @@ void CGRAXMLCompile::Port::setLat(int lat)
 	latency = lat;
 }
 
-int CGRAXMLCompile::Port::getLat()
+bool CGRAXMLCompile::Port::hasValidLat()
 {
 	CGRA *cgra = this->getMod()->getCGRA();
 	int ii = cgra->get_t_max();
-	if (ii <= 0 || latency % ii != this->getMod()->getPE()->T)
+	return ii > 0 && latency >= 0 && latency % ii == this->getMod()->getPE()->T;
+}
+
+int CGRAXMLCompile::Port::getLat()
+{
+	if (!hasValidLat())
 	{
+		CGRA *cgra = this->getMod()->getCGRA();
+		int ii = cgra->get_t_max();
 		throw std::runtime_error(
 			"Port::getLat invariant failed for " + this->getFullName() +
 			" (latency=" + std::to_string(latency) +

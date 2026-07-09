@@ -1,5 +1,5 @@
 memory_mode: auto
-arch_template_json: "edge_mem_4x4/scalar_4side.json"
+arch_template_json: "edge_mem_4x4/vec4_3side.json"
 mapper_subfolder: hycube
 mapper_preset: "fast"
 membound_mapping: true
@@ -7,7 +7,7 @@ init_II: 1
 multihop: 4
 max_test_samples: 2
 enable_simulation: true
-validation_mode: functional
+validation_mode: event-driven
 spm_mode: 'off'
 remove_agi: true
 remove_iter: true
@@ -16,5 +16,12 @@ source_template:
   enabled: false
 auto_unroll:
   enabled: true
-  factors: [8]
+  factors: [4, 8]
   stop_on_degradation: true
+  scalar_reduction_policy: "scalar-psum"
+
+# Experimental mapper rut detectors. Defaults are disabled in presets.
+sa_stall_temp_steps: 6
+sa_stall_min_unmapped: 1
+pf_frontier_stall_repeats: 4
+pf_frontier_stall_min_mapped: 3

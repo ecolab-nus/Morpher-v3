@@ -262,6 +262,7 @@ public:
 		SUCCESS,
 		FAIL_NORMAL,
 		FAIL_ITERATION_GUARD,
+		FAIL_SA_STALL,
 		FAIL_EXCEPTION,
 		FAIL_SANITY,
 		FAIL_BINARY_EMIT
@@ -351,6 +352,15 @@ public:
 		progressMaxSecondsInIter = seconds;
 		maxConsecutiveIterationGuards = maxConsecutive;
 	}
+	void setFrontierStallPolicy(int repeats, int minMapped)
+	{
+		frontierStallRepeats = std::max(0, repeats);
+		frontierStallMinMapped = std::max(0, minMapped);
+	}
+	void setRutRecoverySeed(int seed)
+	{
+		rutRecoverySeed = seed;
+	}
 	void setNodeOrderPolicy(const std::string &policy)
 	{
 		prioritizeMemoryOpsFirst = (policy == "mem_first");
@@ -412,8 +422,10 @@ protected:
 
 	void applyNodeOrderPolicy();
 	void perturbNodeOrderAfterGuard(DFGNode *guardedNode, int guardStreak);
+	void applyFrontierRutPressure(DFGNode *frontierNode, int guardStreak);
 	void removeFailedNode(std::stack<DFGNode *> &mappedNodes, std::stack<DFGNode *> &unmappedNodes, DFGNode *failedNode);
 	void clearMappedNode(DFGNode *node);
+	void pruneInvalidRoutingPorts(DFGNode *node);
 	int getlatMinStarts(const std::map<DFGNode *, std::vector<Port *>> &possibleStarts);
 	std::map<DataPath *, int> getLatCandDests(const std::vector<DataPath *> &candidateDests, int minlat);
 	bool check_parent_violation = true;
@@ -441,6 +453,9 @@ protected:
 	int progressLastHeartbeatSec = -1;
 	int progressMaxSecondsInIter = 120;
 	int maxConsecutiveIterationGuards = 5;
+	int frontierStallRepeats = 0;
+	int frontierStallMinMapped = 0;
+	int rutRecoverySeed = 1;
 	std::chrono::steady_clock::time_point progressIterationStart;
 	std::unordered_map<LatPort, std::vector<LatPort>, LatPortHash> nextPortsCache;
 	std::unordered_map<Port *, std::set<Port *>> conflictPortsCache;

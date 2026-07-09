@@ -43,6 +43,8 @@ void SAMapper::prepareRandomForAttempt()
 	active_rng_seed = rng_base_seed + static_cast<unsigned long long>(restart) * 9973ULL;
 	rng_engine.seed(static_cast<uint32_t>(active_rng_seed & 0xffffffffULL));
 	LOG(SA_) << "SA restart offset = " << restartOffset << ", seed = " << active_rng_seed << "\n";
+	std::cout << "SA seed: restart = " << restartOffset
+	          << ", seed = " << active_rng_seed << "\n";
 }
 
 } /* namespace CGRAXMLCompile */
@@ -51,6 +53,7 @@ void SAMapper::prepareRandomForAttempt()
 
 bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 {
+	this->setAttemptOutcome(AttemptOutcome::FAIL_NORMAL);
 	std::stack<DFGNode *> mappedNodes;
 	std::stack<DFGNode *> unmappedNodes;
 	std::map<DFGNode *, std::priority_queue<dest_with_cost>> estimatedRouteInfo;
@@ -206,6 +209,9 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	LOG(SA_) << "maximum temperature:" << maximum_temp << " minimum temperature:" << minimim_temp << "\n";
 	curr_cost = getCost();
 	curr_temp = maximum_temp;
+	int best_unmapped_seen = getNumberOfUnmappedNodes();
+	int stall_temp_steps_seen = 0;
+	bool saStalled = false;
 
 	LOG(SA_)<<"###############current mapping: \n"<<dumpMappingToStr();
 
@@ -238,6 +244,32 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 		LOG(SA_)<<"###############current mapping: \n"<<dumpMappingToStr();
 		capture_best_state();
 
+		const int curr_unmapped = getNumberOfUnmappedNodes();
+		if (curr_unmapped < best_unmapped_seen)
+		{
+			best_unmapped_seen = curr_unmapped;
+			stall_temp_steps_seen = 0;
+		}
+		else if (curr_unmapped >= sa_stall_min_unmapped)
+		{
+			stall_temp_steps_seen++;
+		}
+		if (sa_stall_temp_steps > 0 && stall_temp_steps_seen >= sa_stall_temp_steps)
+		{
+			std::cout << "SA stall abort: II = " << this->cgra->get_t_max()
+			          << ", unmapped = " << curr_unmapped
+			          << ", best_unmapped = " << best_unmapped_seen
+			          << ", stalled_temp_steps = " << stall_temp_steps_seen
+			          << "/" << sa_stall_temp_steps << "\n";
+			LOG(SA_) << "SA stall abort: unmapped=" << curr_unmapped
+			         << ", best_unmapped=" << best_unmapped_seen
+			         << ", stalled_temp_steps=" << stall_temp_steps_seen
+			         << "/" << sa_stall_temp_steps << "\n";
+			saStalled = true;
+			this->setAttemptOutcome(AttemptOutcome::FAIL_SA_STALL);
+			break;
+		}
+
 		curr_temp = updateTemperature(curr_temp, accept_rate);
 
 		if (isCurrMappingValid())
@@ -264,6 +296,14 @@ bool CGRAXMLCompile::SAMapper::SAMap(CGRA *cgra, DFG *dfg)
 	         << ", unmapped = " << getNumberOfUnmappedNodes()
 	         << ", congestion = " << getCongestionNumber()
 	         << ", conflict = " << getConflictNumber() << "\n";
+	if (valid_mapping)
+	{
+		this->setAttemptOutcome(AttemptOutcome::SUCCESS);
+	}
+	else if (!saStalled)
+	{
+		this->setAttemptOutcome(AttemptOutcome::FAIL_NORMAL);
+	}
 	return valid_mapping;
 }
 
@@ -1142,8 +1182,11 @@ bool CGRAXMLCompile::SAMapper::Route(DFGNode *node,
 			possibleStarts.push_back(dest_child_with_cost_ins.startPort);
 			for (std::pair<Port *, int> pair : node->routingPorts)
 			{
+				if (pair.first == NULL || !pair.first->hasValidLat())
+				{
+					continue;
+				}
 				possibleStarts.push_back(std::make_pair(pair.first->getLat(), pair.first));
-				assert(pair.first->getLat() != -1);
 			}
 
 			std::priority_queue<cand_src_with_cost> q;

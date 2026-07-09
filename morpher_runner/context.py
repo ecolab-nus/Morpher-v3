@@ -63,17 +63,22 @@ MAPPER_PRESETS = {
     "backtrack_limit": 2,
     "max_mapper_iter": 12,
     "max_II": 16,
-    "ii_restarts": 0,
+    "ii_restarts": 1,
     "skip_ii_estimation": False,
     "print_dfg": False,
-    "sa_seed": 0,
-    "sa_restarts": 0,
+    "sa_seed": 1,
+    "sa_restarts": 1,
     "sa_moves_per_temp": 12,
     "sa_temp_max": 120.0,
     "sa_temp_min": 20.0,
     "sa_candidate_topk": 4,
+    "sa_stall_temp_steps": 4,
+    "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": "auto_fast",
     "pf_candidate_topk": "auto_fast",
+    "pf_frontier_stall_repeats": 4,
+    "pf_frontier_stall_min_mapped": 3,
+    "rut_recovery_seed": 1,
     "proximity_sort": True,
     "membound_mapping": False,
     "recmin_policy": "asap",
@@ -83,17 +88,22 @@ MAPPER_PRESETS = {
     "backtrack_limit": 4,
     "max_mapper_iter": 30,
     "max_II": 32,
-    "ii_restarts": 0,
+    "ii_restarts": 2,
     "skip_ii_estimation": False,
     "print_dfg": True,
-    "sa_seed": 0,
+    "sa_seed": 1,
     "sa_restarts": 2,
     "sa_moves_per_temp": 20,
     "sa_temp_max": 200.0,
     "sa_temp_min": 10.0,
     "sa_candidate_topk": 8,
+    "sa_stall_temp_steps": 6,
+    "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": "auto_balanced",
     "pf_candidate_topk": "auto_balanced",
+    "pf_frontier_stall_repeats": 4,
+    "pf_frontier_stall_min_mapped": 3,
+    "rut_recovery_seed": 1,
     "proximity_sort": True,
     "membound_mapping": False,
     "recmin_policy": "asap",
@@ -106,14 +116,19 @@ MAPPER_PRESETS = {
     "ii_restarts": 1,
     "skip_ii_estimation": False,
     "print_dfg": True,
-    "sa_seed": 0,
+    "sa_seed": 1,
     "sa_restarts": 4,
     "sa_moves_per_temp": 40,
     "sa_temp_max": 250.0,
     "sa_temp_min": 5.0,
     "sa_candidate_topk": 12,
+    "sa_stall_temp_steps": 0,
+    "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
+    "pf_frontier_stall_repeats": 0,
+    "pf_frontier_stall_min_mapped": 0,
+    "rut_recovery_seed": 1,
     "proximity_sort": True,
     "membound_mapping": False,
     "recmin_policy": "asap",
@@ -126,14 +141,19 @@ MAPPER_PRESETS = {
     "ii_restarts": 2,
     "skip_ii_estimation": False,
     "print_dfg": True,
-    "sa_seed": 0,
+    "sa_seed": 1,
     "sa_restarts": 8,
     "sa_moves_per_temp": 80,
     "sa_temp_max": 300.0,
     "sa_temp_min": 3.0,
     "sa_candidate_topk": 16,
+    "sa_stall_temp_steps": 0,
+    "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
+    "pf_frontier_stall_repeats": 0,
+    "pf_frontier_stall_min_mapped": 0,
+    "rut_recovery_seed": 1,
     "proximity_sort": False,
     "membound_mapping": False,
     "recmin_policy": "asap",
@@ -164,8 +184,13 @@ def _parse_mapper_preset(config_dict):
     "sa_temp_max",
     "sa_temp_min",
     "sa_candidate_topk",
+    "sa_stall_temp_steps",
+    "sa_stall_min_unmapped",
     "off_spm_mem_candidate_topk",
     "pf_candidate_topk",
+    "pf_frontier_stall_repeats",
+    "pf_frontier_stall_min_mapped",
+    "rut_recovery_seed",
     "proximity_sort",
     "membound_mapping",
     "recmin_policy",
@@ -641,8 +666,13 @@ class RunnerConfig:
   sa_temp_max: float
   sa_temp_min: float
   sa_candidate_topk: int
+  sa_stall_temp_steps: int
+  sa_stall_min_unmapped: int
   off_spm_mem_candidate_topk: int
   pf_candidate_topk: int
+  pf_frontier_stall_repeats: int
+  pf_frontier_stall_min_mapped: int
+  rut_recovery_seed: int
   membound_mapping: str
   recmin_policy: str
   arch_mem_pe_count: int
@@ -899,6 +929,8 @@ class RunnerConfig:
       sa_temp_max=mapper_tuning["sa_temp_max"],
       sa_temp_min=mapper_tuning["sa_temp_min"],
       sa_candidate_topk=mapper_tuning["sa_candidate_topk"],
+      sa_stall_temp_steps=int(mapper_tuning["sa_stall_temp_steps"]),
+      sa_stall_min_unmapped=int(mapper_tuning["sa_stall_min_unmapped"]),
       off_spm_mem_candidate_topk=_resolve_off_spm_mem_candidate_topk(
         mapper_tuning.get("off_spm_mem_candidate_topk", 0),
         inferred_mem_pes,
@@ -906,6 +938,9 @@ class RunnerConfig:
       pf_candidate_topk=_resolve_pf_candidate_topk(
         mapper_tuning.get("pf_candidate_topk", 0),
       ),
+      pf_frontier_stall_repeats=int(mapper_tuning["pf_frontier_stall_repeats"]),
+      pf_frontier_stall_min_mapped=int(mapper_tuning["pf_frontier_stall_min_mapped"]),
+      rut_recovery_seed=int(mapper_tuning["rut_recovery_seed"]),
       membound_mapping=_resolve_membound_mapping(
         mapper_tuning.get("membound_mapping", False),
       ),
@@ -950,7 +985,6 @@ class RunnerContext:
   morpher_home: str
   dfg_gen_home: str
   mapper_home: str
-  simulator_home: str
   dfg_gen_kernel: str
   mapper_kernel: str
   simulator_kernel: str
@@ -971,7 +1005,6 @@ def build_context(csource, function, config_path, runmode, run_tag=""):
   morpher_home = os.getcwd()
   dfg_gen_home = morpher_home + "/Morpher_DFG_Generator"
   mapper_home = morpher_home + "/Morpher_CGRA_Mapper"
-  simulator_home = morpher_home + "/simulator/hycube_simulator"
 
   run_tag = _sanitize_run_tag(run_tag)
   if not run_tag:
@@ -1005,7 +1038,6 @@ def build_context(csource, function, config_path, runmode, run_tag=""):
     morpher_home=morpher_home,
     dfg_gen_home=dfg_gen_home,
     mapper_home=mapper_home,
-    simulator_home=simulator_home,
     dfg_gen_kernel=dfg_gen_kernel,
     mapper_kernel=mapper_kernel,
     simulator_kernel=simulator_kernel,

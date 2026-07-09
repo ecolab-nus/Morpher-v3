@@ -25,11 +25,17 @@ import json
 
 SOURCE_BOUND_TEMPLATES = {
     "batched_dot_output_stationary",
+    "batched_dot_row_output_stationary",
+    "batched_dot_broadcast_lhs_output_stationary",
+    "batched_dot_output_stationary_batch1",
     "gemm_output_stationary",
 }
 
 MAIN_TEMPLATES = (
     "batched_dot_output_stationary",
+    "batched_dot_row_output_stationary",
+    "batched_dot_broadcast_lhs_output_stationary",
+    "batched_dot_output_stationary_batch1",
     "gemm_output_stationary",
     "gemm_two_stream_store",
     "matvec_row",
@@ -80,6 +86,7 @@ class SourceModel:
   stream_bases: tuple[str, ...]
   output_bases: tuple[str, ...]
   operand_roles_verified: bool
+  output_alias_wavefront: bool
   distinct_input_accesses: int
   exact_access_schedules: bool
   kernel_shape_factor: float
@@ -266,6 +273,7 @@ def source_model(record: dict[str, Any]) -> SourceModel:
 
   stream_bases: tuple[str, ...] = ()
   operand_roles_verified = False
+  output_alias_wavefront = False
   reduction_set = set(reduction_ivs)
   if shape == "two_axis_reduction" and len(parallel_ivs) >= 2:
     p0, p1 = parallel_ivs[:2]
@@ -292,6 +300,34 @@ def source_model(record: dict[str, Any]) -> SourceModel:
           for access in pair
       )
       operand_roles_verified = True
+    else:
+      # TRMM-style source contracts have one ordinary A stream and one stream
+      # loaded from the output base itself.  The aliased B stream may mention
+      # the row IV in SCEV because the triangular loop bound is row-dependent;
+      # require the reduction and column IVs, and require a triangular fact.
+      aliased_rhs = [
+          access for access in loads
+          if str(access.get("base") or "") in output_bases
+          and reduction_set.issubset(deps(access))
+          and p1 in deps(access)
+      ]
+      has_triangular_fact = (
+          float(record.get("kernel_shape_factor", 1.0) or 1.0) < 1.0
+          or int(record.get("triangular_loops", 0) or 0) > 0
+      )
+      if lhs_matches and aliased_rhs and has_triangular_fact:
+        stream_bases = (
+            str(lhs_matches[0].get("base") or ""),
+            str(aliased_rhs[0].get("base") or ""),
+        )
+        operand_roles_verified = True
+        output_alias_wavefront = True
+        if (
+            parallel_extents and parallel_extents[0] is not None
+            and any(value is None for value in reduction_extents)
+        ):
+          terms = parallel_extents[0]
+          terms_evidence = "triangular_bound_from_parallel_extent"
   elif shape == "one_axis_reduction" and parallel_ivs:
     parallel = parallel_ivs[0]
     matrix_matches = [
@@ -345,6 +381,7 @@ def source_model(record: dict[str, Any]) -> SourceModel:
       stream_bases=stream_bases,
       output_bases=tuple(output_bases),
       operand_roles_verified=operand_roles_verified,
+      output_alias_wavefront=output_alias_wavefront,
       distinct_input_accesses=len(input_scevs) if input_scevs else len(loads),
       exact_access_schedules=exact_schedules,
       kernel_shape_factor=float(record.get("kernel_shape_factor", 1.0) or 1.0),
@@ -433,6 +470,13 @@ def assess_source_contract(record: dict[str, Any]) -> ContractAssessment:
         and red.issubset(deps(access)) and p1 in deps(access)
     ]
     if lhs and aliased_rhs:
+      if model.output_alias_wavefront and not extra_arithmetic:
+        return ContractAssessment(
+            "transform", "gemm_output_stationary",
+            "trmm_wavefront_triangular_tile_packing",
+            "source_contract_with_wavefront_order",
+            "triangular output-aliased GEMM streams bind to a TRMM wavefront tile body",
+        )
       return ContractAssessment(
           "conditional", "gemm_output_stationary",
           "output_alias_wavefront+triangular_tile_packing",
@@ -460,24 +504,24 @@ def assess_source_contract(record: dict[str, Any]) -> ContractAssessment:
     if len(matrix) >= products and vector:
       if products > 1:
         return ContractAssessment(
-            "conditional", "batched_dot_output_stationary",
+            "conditional", "batched_dot_row_output_stationary",
             "phase_split_products+epilogue_combine",
             "requires_multi_accumulator_handoff",
             "multiple dot products are proven but their accumulator/epilogue split is not represented",
         )
       if extra_arithmetic:
         return ContractAssessment(
-            "conditional", "batched_dot_output_stationary", "input_prescale",
+            "conditional", "batched_dot_row_output_stationary", "input_prescale",
             "missing_scalar_operand_provenance",
             "matrix/vector roles are proven, but extra arithmetic must be folded into an input stream",
         )
       return ContractAssessment(
-          "direct", "batched_dot_output_stationary", "batched_dot",
+          "direct", "batched_dot_row_output_stationary", "batched_dot_row",
           "exact_source_contract",
-          "matrix[output,K] and vector[K] streams feed independent output accumulators",
+          "matrix[output,K] and vector[K] streams feed one row of output accumulators",
       )
     return ContractAssessment(
-        "conditional", "batched_dot_output_stationary",
+        "conditional", "batched_dot_row_output_stationary",
         "recover_missing_stream_role", "missing_operand_provenance",
         "one reduction operand is not recoverable as an affine source stream",
     )
@@ -624,12 +668,18 @@ def analyze_binding(
   requires_treg = False
   boundary = False
   coeff_base = ""
+  source_input_bases = model.stream_bases or model.input_bases
 
   if model.verdict == "no" or model.reject_reason:
     reason = model.reject_reason or "candidate pass rejected source nest"
   elif model.source_shape == "unsupported":
     reason = "source arithmetic/loop shape has no supported binding"
-  elif template == "batched_dot_output_stationary":
+  elif template in {
+      "batched_dot_output_stationary",
+      "batched_dot_row_output_stationary",
+      "batched_dot_broadcast_lhs_output_stationary",
+      "batched_dot_output_stationary_batch1",
+  }:
     if model.source_shape not in {"one_axis_reduction", "fixed_weighted_sum"}:
       reason = "shared-coefficient batched dot does not represent two-axis GEMM outputs"
     else:
@@ -638,20 +688,44 @@ def analyze_binding(
           if model.source_shape == "one_axis_reduction"
           else "patch_extract_batched_dot"
       )
+      if template == "batched_dot_output_stationary_batch1":
+        transform += "_batch1"
+      elif template == "batched_dot_row_output_stationary":
+        transform += "_row"
+      elif template == "batched_dot_broadcast_lhs_output_stationary":
+        transform += "_broadcast_lhs"
       if model.products_per_reduction_step > 1:
         transform = "concatenated_batched_dot_terms"
       output_count = model.output_count or capacity
+      if template in {
+          "batched_dot_row_output_stationary",
+          "batched_dot_broadcast_lhs_output_stationary",
+      }:
+        output_count = min(output_count, dim_x)
+      if template == "batched_dot_output_stationary_batch1":
+        output_count = 1
       if active_cell_limit is not None:
         output_count = min(output_count, max(1, active_cell_limit))
       active = _scaled_active(output_count, capacity, model.kernel_shape_factor)
       loads = active + 1
       requires_treg = True
       boundary = True
-      coeff_base = (
-          model.input_bases[1]
-          if len(model.input_bases) >= 2
-          else "__systolic_coeff"
-      )
+      if template == "batched_dot_broadcast_lhs_output_stationary":
+        if len(model.stream_bases) >= 2:
+          source_input_bases = (model.stream_bases[1], model.stream_bases[0])
+          coeff_base = model.stream_bases[0]
+        else:
+          source_input_bases = model.input_bases
+          coeff_base = (
+              model.input_bases[0]
+              if model.input_bases else "__systolic_rhs"
+          )
+      else:
+        coeff_base = (
+            model.input_bases[1]
+            if len(model.input_bases) >= 2
+            else "__systolic_coeff"
+        )
       if model.terms_per_output is None:
         status = "conditional"
         reason = "reduction/weighted-sum term count is unknown"
@@ -687,6 +761,8 @@ def analyze_binding(
           if model.products_per_reduction_step == 1
           else "concatenated_gemm_terms"
       )
+      if model.output_alias_wavefront:
+        transform = "trmm_wavefront_triangular_tile_packing"
       p0 = model.parallel_extents[0] or dim_y
       p1 = model.parallel_extents[1] or dim_x
       rows = min(dim_y, p0)
@@ -702,6 +778,9 @@ def analyze_binding(
       elif model.total_arith > 2 * model.products_per_reduction_step:
         status = "conditional"
         reason = "extra arithmetic must be explicitly folded into an input stream"
+      elif model.output_alias_wavefront:
+        status = "supported"
+        reason = "triangular output-aliased streams bind to a GEMM tile body with wavefront order"
       else:
         status = "supported"
         reason = "two output axes and one reduction axis bind directly to GEMM rows/columns/K"
@@ -773,7 +852,7 @@ def analyze_binding(
       requires_treg=requires_treg,
       treg_available=treg_available,
       boundary_phase_required=boundary,
-      source_input_bases=model.stream_bases or model.input_bases,
+      source_input_bases=source_input_bases,
       source_output_bases=model.output_bases,
       coefficient_base=coeff_base,
       main_feasibility=main_feasibility,

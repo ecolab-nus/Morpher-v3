@@ -500,7 +500,7 @@ void CGRAXMLCompile::PathFinderMapper::pruneInvalidRoutingPorts(DFGNode *node)
 		        {
 			        return true;
 		        }
-		        if (port->getLat() != -1)
+		        if (port->hasValidLat())
 		        {
 			        return false;
 		        }
