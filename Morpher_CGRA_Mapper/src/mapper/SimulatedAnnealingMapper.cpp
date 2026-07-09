@@ -989,7 +989,7 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::SAMapper::getRandomDPCan
 	std::vector<DataPath *> candidateDests;
 	int penalty = 0;
 	std::map<DataPath *, int> dpPenaltyMap;
-	unordered_set<PE *> allPEs = cgra->getAllPEList();
+	std::vector<PE *> allPEs = cgra->getAllPEListDeterministic();
 	for (PE *currPE : allPEs)
 	{
 		for (Module *submod : currPE->subModules)

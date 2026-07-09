@@ -117,6 +117,17 @@ def simd_packing_active_for_factor(config, unroll_factor):
   return config.arch_simd_enabled and unroll_factor >= config.arch_simd_width
 
 
+def _require_experimental_python_semantic_transforms(config, feature):
+  if config.experimental_python_semantic_transforms:
+    return
+  raise RuntimeError(
+    "%s is currently implemented as a Python XML semantic transform. "
+    "Trusted flows keep XML as a serialization boundary; set "
+    "experimental_python_semantic_transforms: true only for unstable experiments."
+    % feature
+  )
+
+
 def build_unroll_command(context, unroll_factor):
   kernel = context.kernel
   simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
@@ -429,11 +440,13 @@ def run_dfg_generator(context, unroll_factor=None):
   simd_mapping = None
   scalar_iter_reindex: "dict[int, int]" = {}
   if config.remove_iter and not simd_active:
+    _require_experimental_python_semantic_transforms(config, "remove_iter")
     pruned_xml = "%s/%s_noiter_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
     n, scalar_iter_reindex = prune_iter_control_xml(dfg_xml, pruned_xml)
     print("Iter-control prune (scalar): removed %d nodes\n" % n)
     mapper_xml = pruned_xml
   if simd_active:
+    _require_experimental_python_semantic_transforms(config, "SIMD XML packing")
     simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
       dfg_kernel.rstrip("/"),
       kernel,

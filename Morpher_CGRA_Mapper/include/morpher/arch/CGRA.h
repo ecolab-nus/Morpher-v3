@@ -155,6 +155,7 @@ public:
 		std::shared_ptr<const json> top_desc;
 
 	unordered_set<PE*> getAllPEList();
+	vector<PE*> getAllPEListDeterministic();
 	vector<PE*> getSpatialPEList(int t);
 	PE* getPE(int t, int y, int x);
 	PE* getLatencyPE(PE* currPE, int lat);

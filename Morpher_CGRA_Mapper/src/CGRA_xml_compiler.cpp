@@ -405,7 +405,7 @@ int main(int argn, char *argc[])
 					for (DFGNode &dfgNodeRef : activeDFG->nodeList) {
 						DFGNode *dfgNode = &dfgNodeRef;
 						if (dfgNode->idx != pin_idx) continue;
-						for (PE *pe : tempCGRA->getAllPEList()) {
+						for (PE *pe : tempCGRA->getAllPEListDeterministic()) {
 							if (pe->X == pin_x && pe->Y == pin_y)
 								continue;
 							for (Module *submod : pe->subModules) {

@@ -1,6 +1,6 @@
 suites:
   ci_4x4:
-    description: Minimal default 4x4 mapper regression suite for CI and pre-commit checks.
+    description: Trusted scalar 4x4 mapper regression suite for CI and pre-commit checks.
     config: config/default.yaml
     runmode: runall
     jobs: 4

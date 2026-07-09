@@ -58,6 +58,31 @@ def _print_deprecation_warning(config_dict):
 
 
 MAPPER_PRESETS = {
+  "trusted_pf": {
+    "mapping_method": 0,
+    "backtrack_limit": 4,
+    "max_mapper_iter": 50,
+    "max_II": 32,
+    "ii_restarts": 0,
+    "skip_ii_estimation": False,
+    "print_dfg": True,
+    "sa_seed": 1,
+    "sa_restarts": 0,
+    "sa_moves_per_temp": 0,
+    "sa_temp_max": 0.0,
+    "sa_temp_min": 0.0,
+    "sa_candidate_topk": 0,
+    "sa_stall_temp_steps": 0,
+    "sa_stall_min_unmapped": 1,
+    "off_spm_mem_candidate_topk": 0,
+    "pf_candidate_topk": 0,
+    "pf_frontier_stall_repeats": 0,
+    "pf_frontier_stall_min_mapped": 0,
+    "rut_recovery_seed": 0,
+    "proximity_sort": False,
+    "membound_mapping": False,
+    "recmin_policy": "asap",
+  },
   "fast": {
     "mapping_method": 2,
     "backtrack_limit": 2,
@@ -687,6 +712,7 @@ class RunnerConfig:
   remove_iter: bool
   layout_solver: bool
   replicate_data: bool
+  experimental_python_semantic_transforms: bool
   auto_unroll_enabled: bool
   auto_unroll_factors: list
   auto_unroll_fuse_innermost_loops: bool
@@ -825,6 +851,21 @@ class RunnerConfig:
       auto_unroll_scalar_reduction_policy,
     )
     source_template_mode = cls._parse_source_template(config_dict)
+    experimental_python_semantic_transforms = bool(
+      config_dict.get("experimental_python_semantic_transforms", False)
+    )
+    if source_template_mode != "off" and not experimental_python_semantic_transforms:
+      raise RuntimeError(
+        "source_template lowering is an experimental Python semantic transform. "
+        "Set experimental_python_semantic_transforms: true to opt in, or keep "
+        "source_template.enabled: off for trusted flows."
+      )
+    if bool(config_dict.get("remove_iter", False)) and not experimental_python_semantic_transforms:
+      raise RuntimeError(
+        "remove_iter is currently implemented as a Python XML graph rewrite. "
+        "Set experimental_python_semantic_transforms: true to opt in, or keep "
+        "remove_iter: false for trusted flows."
+      )
     _print_deprecation_warning(config_dict)
     validation_mode = str(config_dict.get("validation_mode", "functional")).strip().lower()
     if validation_mode == "event-driven":
@@ -958,6 +999,7 @@ class RunnerConfig:
       remove_iter=config_dict.get("remove_iter", False),
       layout_solver=bool(config_dict.get("layout_solver", False)),
       replicate_data=bool(config_dict.get("replicate_data", False)),
+      experimental_python_semantic_transforms=experimental_python_semantic_transforms,
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,

@@ -774,7 +774,7 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	int penalty = 0;
 	std::map<DataPath *, int> dpPenaltyMap;
 
-	unordered_set<PE *> allPEs = cgra->getAllPEList();
+	std::vector<PE *> allPEs = cgra->getAllPEListDeterministic();
 	for (PE *currPE : allPEs)
 	{
 		for (Module *submod : currPE->subModules)
@@ -1739,9 +1739,6 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 	std::map<DFGNode *, std::priority_queue<dest_with_cost>> estimatedRouteInfo;
 
 	int backTrackCredits = this->backTrackLimit;
-
-	//Disable mutex paths to test pathfinder
-	this->enableMutexPaths = true;
 
 	this->cgra = cgra;
 	this->dfg = dfg;
@@ -2786,11 +2783,11 @@ void CGRAXMLCompile::PathFinderMapper::sortBackEdgePriorityASAP()
 		BEDist(DFGNode *parent, DFGNode *child, int dist) : parent(parent), child(child), dist(dist) {}
 		bool operator<(const BEDist &other) const
 		{
-			if (dist == other.dist)
-			{
-				return true;
-			}
-			return dist > other.dist;
+			if (dist != other.dist)
+				return dist > other.dist;
+			if (stableNodeIdx(parent) != stableNodeIdx(other.parent))
+				return stableNodeIdx(parent) < stableNodeIdx(other.parent);
+			return stableNodeIdx(child) < stableNodeIdx(other.child);
 		}
 		//		bool operator==(const BEDist& other) const{
 		//			return parent==other.parent & child==other.child;
@@ -3110,11 +3107,11 @@ void CGRAXMLCompile::PathFinderMapper::sortBackEdgePriorityALAP()
 		BEDist(DFGNode *parent, DFGNode *child, int dist) : parent(parent), child(child), dist(dist) {}
 		bool operator<(const BEDist &other) const
 		{
-			if (dist == other.dist)
-			{
-				return true;
-			}
-			return dist > other.dist;
+			if (dist != other.dist)
+				return dist > other.dist;
+			if (stableNodeIdx(parent) != stableNodeIdx(other.parent))
+				return stableNodeIdx(parent) < stableNodeIdx(other.parent);
+			return stableNodeIdx(child) < stableNodeIdx(other.child);
 		}
 		//		bool operator==(const BEDist& other) const{
 		//			return parent==other.parent & child==other.child;

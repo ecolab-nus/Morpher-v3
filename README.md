@@ -148,9 +148,10 @@ Default config: `config/default.yaml`. Provided configs include:
 
 | Config | Description |
 |--------|-------------|
-| `config/default.yaml` | Standard HyCUBE auto-memory config, `balanced` mapper preset, event-driven validation, AGI removal, no auto-unroll. |
-| `config/scalar.yaml` | Fast scalar baseline with layout solver enabled, functional validation, no auto-unroll. |
-| `config/scalar_no_solver.yaml` | Same scalar baseline with the layout solver disabled. |
+| `config/default.yaml` | Trusted scalar baseline: HyCUBE auto-memory config, PF-only mapper, AGI/iterator removal disabled, no auto-unroll. |
+| `config/scalar.yaml` | Alias-style trusted scalar baseline with functional validation and no layout solver. |
+| `config/scalar_no_solver.yaml` | Same trusted scalar baseline retained for older scripts. |
+| `config/scalar_agi_pruned.yaml` | Explicit opt-in scalar config that enables C++ DFG-side AGI removal only. |
 | `config/scalar_edgemem.yaml` | Scalar flow on the edge-memory HyCUBE architecture. |
 | `config/scalar_edgemem_unroll.yaml` | Edge-memory scalar flow with a fixed auto-unroll factor of 2. |
 | `config/simd4_noiter.yaml` | 4×4 HyCUBE flow with AGI and iterator pruning; SIMD activates only if the selected architecture exposes SIMD-capable PEs. |
@@ -166,14 +167,14 @@ Default config: `config/default.yaml`. Provided configs include:
 | `memory_mode` | `auto`, `static` | inferred from legacy keys if omitted | `auto` generates a runtime architecture JSON from DFG memory allocation; `static` maps against `arch_template_json` directly. Legacy `json_arch` / `json_arch_before_memupdate` still parse with a warning. |
 | `arch_template_json` | Bundled JSON filename, repo-relative path, or absolute path | required | Architecture JSON filename resolved from `Morpher_CGRA_Mapper/json_arch/` first, then repo root, unless absolute. |
 | `mapper_subfolder` | Non-empty string | required | Output grouping under `workspace/morpher_runs/<tag>/mapper/<mapper_subfolder>/...`. |
-| `mapper_preset` | `fast`, `balanced`, `quality`, `exhaust` | `balanced` | Mapper tuning preset. Explicit tuning keys override the preset with a warning. |
+| `mapper_preset` | `trusted_pf`, `fast`, `balanced`, `quality`, `exhaust` | `trusted_pf` in `config/default.yaml` | Mapper tuning preset. Explicit tuning keys override the preset with a warning. |
 | `xdim`, `ydim` | Integers `>= 1` | inferred from architecture JSON | CGRA dimensions. Explicit values must match the JSON when dimensions are inferable. |
 | `numberofbanks`, `banksize` | Integers `>= 1` | inferred from architecture JSON | SPM bank count and bank size. Explicit values must match architecture SPM metadata when present. In `memory_mode: auto`, DFG-time sizing can increase `banksize` for the runtime JSON. |
 | `init_II`, `max_II` | Positive integers | preset/config dependent | Mapper II search bounds. |
 | `ii_restarts` | Integer `>= 0` | preset dependent | Number of II restart attempts. |
 | `skip_ii_estimation` | Boolean: `true` or `false` | preset dependent | Skip II bound analysis and start from `init_II`. |
 | `multihop` | Integer `>= 1` | `4` | Maximum routing hop budget forwarded to the mapper. |
-| `mapping_method` | Mapper integer mode; presets currently use `2` | preset dependent | Mapper algorithm selection flag. Treat as advanced unless changing mapper internals. |
+| `mapping_method` | Mapper integer mode; `0` = PathFinder, `1` = SA, `2` = hybrid | preset dependent | Mapper algorithm selection flag. Trusted configs use `0`; hybrid/SA are experimental search strategies. |
 | `backtrack_limit`, `max_mapper_iter` | Integers `>= 0` | preset dependent | Mapper search effort limits. |
 | `print_dfg` | Boolean: `true` or `false` | preset dependent | Ask the mapper to print DFG details in logs. |
 | `sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_candidate_topk` | Integers; restart/move/top-k values should be `>= 0` | preset dependent | Simulated-annealing mapper controls. |
@@ -185,10 +186,11 @@ Default config: `config/default.yaml`. Provided configs include:
 | `max_test_samples` | Integer `>= 0` | required in provided configs | Trace-generation limit and simulator sample cap. |
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
 | `remove_agi` | Boolean: `true` or `false` | `false` | Remove address-generation nodes from the DFG; assumes a scalar/AGU path handles addresses. |
-| `remove_iter` | Boolean: `true` or `false` | `false` | Remove loop-control and PHI-merge nodes from packed DFGs; assumes external iteration/control hardware. If SIMD packing is inactive, this knob is ignored with a warning. |
-| `source_template.enabled` | `off`, `auto`, Boolean | `off` | For C-source `runall` / `dfg_gen_only`, `auto` generates a SystolicCandidatePass report and tries source-bound template lowering before normal DFG generation. Empty default-generated reports fall back normally. |
+| `remove_iter` | Boolean: `true` or `false` | `false` | Experimental iterator/control removal. The current implementation is a Python XML graph rewrite and requires `experimental_python_semantic_transforms: true`. |
+| `source_template.enabled` | `off`, `auto`, Boolean | `off` | Experimental source-bound template lowering. `auto` currently stages lowered XML from Python and requires `experimental_python_semantic_transforms: true`. |
 | `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |
 | `replicate_data` | Boolean: `true` or `false` | `false` | With `layout_solver: true`, allow read-only array replication across banks. |
+| `experimental_python_semantic_transforms` | Boolean: `true` or `false` | `false` | Opt-in escape hatch for legacy Python transforms that mutate semantic DFG XML, including `remove_iter`, source-template lowering, and SIMD XML packing. Trusted flows leave this off. |
 
 Bundled architecture JSON options currently include:
 
@@ -241,12 +243,13 @@ SIMD is no longer configured through top-level `simd.*` YAML knobs. The runner i
 - `SCALAR_BROADCAST` and vector op names are also inferred from the architecture JSON.
 - Deprecated top-level `simd` config data is ignored by the current runner except for the deprecation warning.
 
-The SIMD packer rewrites eligible scalar DFG XML nodes into vector nodes and can prune scalar lane outputs and iterator/control nodes according to `remove_agi` and `remove_iter`.
+The current SIMD packer rewrites eligible scalar DFG XML nodes into vector nodes and can prune scalar lane outputs and iterator/control nodes according to `remove_agi` and `remove_iter`. Because this is a Python XML semantic transform, configs that activate it must set `experimental_python_semantic_transforms: true`.
 
 ### Mapper Presets
 
 | Preset | Use case |
 |--------|----------|
+| `trusted_pf` | Deterministic scalar baseline: PathFinder only, no SA/hybrid fallback, no adaptive top-k pruning, no restart perturbation. |
 | `fast` | Short runs and smoke tests. Lower backtracking, mapper iterations, and SA effort. |
 | `balanced` | Default starting point. Moderate search effort and DFG logging. |
 | `quality` | Higher mapping effort, more SA restarts/moves, larger II search range. |

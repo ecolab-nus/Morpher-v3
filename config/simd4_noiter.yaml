@@ -11,6 +11,7 @@ validation_mode: event-driven
 spm_mode: 'off'
 remove_agi: true
 remove_iter: true
+experimental_python_semantic_transforms: true
 membound_mapping: true
 source_template:
   enabled: false

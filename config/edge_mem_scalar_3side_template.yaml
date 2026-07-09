@@ -10,6 +10,7 @@ validation_mode: "functional"
 spm_mode: "off"
 remove_agi: true
 remove_iter: true
+experimental_python_semantic_transforms: true
 auto_unroll:
   enabled: false
   factors: [1]

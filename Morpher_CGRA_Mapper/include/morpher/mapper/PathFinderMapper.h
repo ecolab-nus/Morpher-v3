@@ -23,6 +23,7 @@
 #include <string>
 #include <chrono>
 #include <unordered_map>
+#include <tuple>
 
 constexpr int kMaxResourceCost = 100000;     // was MRC
 constexpr int kUnusedOpPenalty = 1000;        // was UOP
@@ -42,6 +43,21 @@ struct LatPortHash
 	}
 };
 
+inline int stableNodeIdx(const DFGNode *node)
+{
+	return node ? node->idx : -1;
+}
+
+inline std::string stablePortName(Port *port)
+{
+	return port ? port->getFullName() : "";
+}
+
+inline std::string stableDataPathName(DataPath *dp)
+{
+	return dp ? dp->getFullName() : "";
+}
+
 struct dest_child_with_cost
 {
 	DFGNode *child;
@@ -53,7 +69,23 @@ struct dest_child_with_cost
 	dest_child_with_cost(DFGNode *child, DataPath* dp, LatPort childDest, LatPort startPort, int cost) : child(child), childDP(dp), childDest(childDest), startPort(startPort), cost(cost) {}
 	bool operator<(const dest_child_with_cost &rhs) const
 	{
-		return cost > rhs.cost;
+		return std::make_tuple(
+			cost,
+			stableNodeIdx(child),
+			stableDataPathName(childDP),
+			childDest.first,
+			stablePortName(childDest.second),
+			startPort.first,
+			stablePortName(startPort.second)
+		) > std::make_tuple(
+			rhs.cost,
+			stableNodeIdx(rhs.child),
+			stableDataPathName(rhs.childDP),
+			rhs.childDest.first,
+			stablePortName(rhs.childDest.second),
+			rhs.startPort.first,
+			stablePortName(rhs.startPort.second)
+		);
 	}
 };
 
@@ -66,7 +98,19 @@ struct cand_src_with_cost
 
 	bool operator<(const cand_src_with_cost &rhs) const
 	{
-		return cost > rhs.cost;
+		return std::make_tuple(
+			cost,
+			src.first,
+			stablePortName(src.second),
+			dest.first,
+			stablePortName(dest.second)
+		) > std::make_tuple(
+			rhs.cost,
+			rhs.src.first,
+			stablePortName(rhs.src.second),
+			rhs.dest.first,
+			stablePortName(rhs.dest.second)
+		);
 	}
 };
 
@@ -82,7 +126,8 @@ struct parent_cand_src_with_cost
 
 	bool operator<(const parent_cand_src_with_cost &rhs) const
 	{
-		return this->cost > rhs.cost;
+		return std::make_tuple(this->cost, stableNodeIdx(parent))
+			> std::make_tuple(rhs.cost, stableNodeIdx(rhs.parent));
 	}
 };
 
@@ -205,7 +250,17 @@ struct dest_with_cost
 
 	bool operator<(const dest_with_cost &rhs) const
 	{
-		return bestCost > rhs.bestCost;
+		return std::make_tuple(
+			bestCost,
+			destLat,
+			stableNodeIdx(node),
+			stableDataPathName(dest)
+		) > std::make_tuple(
+			rhs.bestCost,
+			rhs.destLat,
+			stableNodeIdx(rhs.node),
+			stableDataPathName(rhs.dest)
+		);
 	}
 };
 

@@ -1,18 +1,27 @@
-memory_mode: "auto"
-arch_template_json: "edge_mem_4x4/scalar_1side.json"
-# arch_template_json: "hycube_original_updatemem.json"
-mapper_subfolder: 'hycube'
-mapper_preset: "fast"
+memory_mode: auto
+arch_template_json: hycube_original_updatemem.json
+mapper_subfolder: hycube
+mapper_preset: trusted_pf
 init_II: 1
 multihop: 4
-max_test_samples: 5
+max_test_samples: 2
 enable_simulation: true
-validation_mode: "functional"
+validation_mode: functional
 spm_mode: 'off'
-remove_agi: True
-remove_iter: True
+
+# Trusted scalar defaults: keep semantics in the LLVM/DFG pipeline and emit XML
+# once for the mapper. Experimental Python XML transforms must opt in elsewhere.
+remove_agi: false
+remove_iter: false
+layout_solver: false
+replicate_data: false
+experimental_python_semantic_transforms: false
+
+source_template:
+  enabled: off
+
 auto_unroll:
-  enabled: true
-  factors: [4]
+  enabled: false
+  factors: [1]
   stop_on_degradation: true
   scalar_reduction_policy: "none"

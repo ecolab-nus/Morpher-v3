@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <queue>
 #include <functional>
+#include <algorithm>
 //#include <nlohmann/json.hpp>
 #include <iomanip>
 #include <regex>
@@ -749,7 +750,7 @@ void CGRAXMLCompile::CGRA::buildMemPE2Bank()
 	};
 	memPE2Bank.clear();
 	const auto &cmap = this->getconnectedTo();
-	for (PE *pe : getAllPEList())
+	for (PE *pe : getAllPEListDeterministic())
 	{
 		if (!pe->isMemPE)
 			continue;
@@ -907,10 +908,9 @@ bool CGRAXMLCompile::CGRA::PreprocessPattern(json &top)
 	LOG(JSONARCH)  << "After JSON End :: %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 }
 
-unordered_set<PE *> CGRAXMLCompile::CGRA::getAllPEList()
+std::vector<PE *> CGRAXMLCompile::CGRA::getAllPEListDeterministic()
 {
-
-	unordered_set<PE *> ret;
+	std::vector<PE *> ret;
 
 	if (!subModArr.empty())
 	{
@@ -920,7 +920,7 @@ unordered_set<PE *> CGRAXMLCompile::CGRA::getAllPEList()
 			{
 				if (PE *pe = dynamic_cast<PE *>(m))
 				{
-					ret.insert(pe);
+					ret.push_back(pe);
 				}
 			}
 		}
@@ -934,13 +934,35 @@ unordered_set<PE *> CGRAXMLCompile::CGRA::getAllPEList()
 			{
 				for (int x = 0; x < this->x_max; ++x)
 				{
-					ret.insert(PEArr[t][y][x]);
+					ret.push_back(PEArr[t][y][x]);
 				}
 			}
 		}
 	}
 
+	std::sort(ret.begin(), ret.end(), [](PE *lhs, PE *rhs) {
+		if (lhs == rhs)
+			return false;
+		if (lhs == nullptr)
+			return true;
+		if (rhs == nullptr)
+			return false;
+		if (lhs->T != rhs->T)
+			return lhs->T < rhs->T;
+		if (lhs->Y != rhs->Y)
+			return lhs->Y < rhs->Y;
+		if (lhs->X != rhs->X)
+			return lhs->X < rhs->X;
+		return lhs->getFullName() < rhs->getFullName();
+	});
+	ret.erase(std::unique(ret.begin(), ret.end()), ret.end());
 	return ret;
+}
+
+unordered_set<PE *> CGRAXMLCompile::CGRA::getAllPEList()
+{
+	std::vector<PE *> ordered = getAllPEListDeterministic();
+	return unordered_set<PE *>(ordered.begin(), ordered.end());
 }
 
 PE *CGRAXMLCompile::CGRA::getPE(int t, int y, int x)

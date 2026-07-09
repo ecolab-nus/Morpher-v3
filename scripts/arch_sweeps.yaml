@@ -13,6 +13,7 @@ suites:
       validation_mode: functional
       layout_solver: false
       replicate_data: false
+      experimental_python_semantic_transforms: true
     arches:
     - edge_mem_4x4/scalar_1side.json
     - edge_mem_4x4/scalar_2side.json
