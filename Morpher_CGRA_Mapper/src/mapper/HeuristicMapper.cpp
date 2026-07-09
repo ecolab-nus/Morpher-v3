@@ -476,6 +476,40 @@ void CGRAXMLCompile::PathFinderMapper::clearMappedNode(DFGNode *node)
 	{
 		node->relaxedClear(this->dfg);
 	}
+	for (DFGNode *parent : node->parents)
+	{
+		pruneInvalidRoutingPorts(parent);
+	}
+	pruneInvalidRoutingPorts(node);
+}
+
+void CGRAXMLCompile::PathFinderMapper::pruneInvalidRoutingPorts(DFGNode *node)
+{
+	if (node == NULL)
+	{
+		return;
+	}
+	auto &routingPorts = node->routingPorts;
+	routingPorts.erase(
+	    std::remove_if(
+	        routingPorts.begin(),
+	        routingPorts.end(),
+	        [node](const std::pair<Port *, int> &pair) {
+		        Port *port = pair.first;
+		        if (port == NULL)
+		        {
+			        return true;
+		        }
+		        if (port->getLat() != -1)
+		        {
+			        return false;
+		        }
+		        LOG(ROUTE) << "Pruning stale routing port for node=" << node->idx
+		                   << ",dest=" << pair.second << ",port=" << port->getFullName()
+		                   << " because latency is unset\n";
+		        return true;
+	        }),
+	    routingPorts.end());
 }
 
 void CGRAXMLCompile::PathFinderMapper::removeFailedNode(std::stack<DFGNode *> &mappedNodes,
@@ -515,7 +549,13 @@ bool CGRAXMLCompile::PathFinderMapper::checkRecParentViolation(DFGNode *node,
 	if(!check_parent_violation) { return false;}
 	for (DFGNode *recParent : node->recParents)
 	{
-		assert(recParent->rootDP != NULL); //should be mapped
+		if (recParent->rootDP == NULL)
+		{
+			LOG(ROUTE) << "recparent is not mapped yet: node=" << node->idx
+			           << ", recparent=" << recParent->idx
+			           << ". Rejecting this candidate path.\n";
+			return true;
+		}
 		DataPath *recParentDP = recParent->rootDP;
 		if (nextPort.first > recParentDP->getLat() + this->cgra->get_t_max())
 		{

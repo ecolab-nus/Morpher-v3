@@ -696,12 +696,16 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 		{ //already mapped
 			LOG(ROUTE) << "add parent to starts = " << parent->idx << "\n";
 			assert(parent->rootDP->getOutputDP()->getOutPort("T"));
+			pruneInvalidRoutingPorts(parent);
 
 			std::vector<Port *> routedTreeStarts;
 			for (std::pair<Port *, int> pair : parent->routingPorts)
 			{
 				Port *p = pair.first;
-				assert(p->getLat() != -1);
+				if (p == NULL || p->getLat() == -1)
+				{
+					continue;
+				}
 				routedTreeStarts.push_back(p);
 			}
 
@@ -1006,6 +1010,11 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 
 				for (Port *startCand : pair.second)
 				{
+					if (startCand == NULL || startCand->getLat() == -1)
+					{
+						LOG(ROUTE) << "Skipping stale parent route start for parent=" << parent->idx << "\n";
+						continue;
+					}
 					int cost = 0;
 					std::vector<LatPort> path;
 					std::map<Port *, std::set<DFGNode *>> mutexPaths;
@@ -1014,7 +1023,6 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 								  << "\n";
 
 					LatPort startCandLat = std::make_pair(startCand->getLat(), startCand);
-					assert(startCand->getLat() != -1);
 					LatPort destPortLat = std::make_pair(minLatDestVal, destPort);
 
 					LOG(ROUTE) << "lat = " << destPortLat.first << ",PE=" << destPort->getMod()->getPE()->getName() << ",t=" <<  destPort->getMod()->getPE()->T << "\n";
@@ -1225,10 +1233,14 @@ bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,
 			std::vector<LatPort> possibleStarts;
 			possibleStarts.clear();
 			possibleStarts.push_back(dest_child_with_cost_ins.startPort);
+			pruneInvalidRoutingPorts(node);
 			for (std::pair<Port *, int> pair : node->routingPorts)
 			{
+				if (pair.first == NULL || pair.first->getLat() == -1)
+				{
+					continue;
+				}
 				possibleStarts.push_back(std::make_pair(pair.first->getLat(), pair.first));
-				assert(pair.first->getLat() != -1);
 			}
 
 			std::priority_queue<cand_src_with_cost> q;
