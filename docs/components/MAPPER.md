@@ -4,7 +4,8 @@ This document explains how the CGRA mapper works, what algorithms are used, and 
 
 ## Goal
 
-Map a DFG to the target architecture (space + time + routing), producing legal mapping outputs and configuration binaries.
+Map a DFG to the target architecture (space + time + routing), producing legal
+mapping outputs consumed by artifact simulation.
 
 ## Key Directories and Files
 
@@ -29,7 +30,10 @@ Map a DFG to the target architecture (space + time + routing), producing legal m
    - `2`: Hybrid (PF + SA phases)
 6. Estimate II bounds unless disabled.
 7. Run mapping attempts/restarts and optional II escalations.
-8. Emit mapping logs and binary output for simulator.
+8. Emit mapping logs plus `mapping_i.txtmapping.json`, which artifact
+   simulation uses as the mapped-fabric configuration. The runner disables
+   binary emission; the empty `*.mappingwithlatency.txt` is retained only as
+   the mapping artifact locator.
 
 ## Method-Specific Logic
 
@@ -95,9 +99,9 @@ Per benchmark mapping folder:
 - `<kernel>_arch_runtime.json` (auto mode)
 - `*.mapping.csv`
 - `*.routeInfo.log`
-- `*.mappingwithlatency.txt`
 - `*.congestion.info`
-- `*.bin` (used by simulator)
+- `*.mappingwithlatency.txt` is consumed directly by the artifact simulator.
+  Hardware binary emission is disabled in the active runner pipeline.
 - `result.txt` (final summary line)
 
 ## Common Debug Checks

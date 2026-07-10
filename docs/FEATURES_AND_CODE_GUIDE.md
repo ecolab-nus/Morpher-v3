@@ -22,7 +22,10 @@ The Python entrypoint `run_morpher.py` orchestrates these stages.
 - Dynamic memory-layout generation (`memory_mode: auto`)
 - Static architecture mapping (`memory_mode: static`)
 - Optional simulation (`enable_simulation`)
-- SIMD-capable mapping even when the selected unroll factor is narrower than the SIMD lane count
+- Verified C++ SIMD packing for complete lane-isomorphic subgraphs when the
+  unroll factor reaches the architecture SIMD width
+- Restricted C++ iterator externalization for canonical data-parallel loops
+  after AGI removal
 - Batch benchmark execution with parallel workers
 - Cleanup and policy-check scripts for generated artifacts
 
@@ -70,15 +73,11 @@ Mapper folder (`Morpher_CGRA_Mapper/benchmarks/<mapper_subfolder>/<suite>/<kerne
 - `<kernel>_PartPredDFG.xml` (staged input)
 - `<kernel>_mem_alloc.txt` (staged input)
 - `<kernel>_arch_runtime.json` (in `memory_mode: auto`)
-- `*.bin` mapping binaries
 - `*.mappingwithlatency.txt`
 - `result.txt` (mapper summary)
 
-Simulator folder (`hycube_simulator/benchmarks/<suite>/<kernel>/`):
-
-- staged `*.bin`
-- staged `<kernel>_mem_alloc.txt`
-- `sim_result.txt`
+Artifact simulation consumes the mapped DFG, latency mapping, memory
+allocation, and recorded traces directly; no hardware binary is staged.
 
 ## 4) Code Map (What Each File/Folder Owns)
 
@@ -200,6 +199,6 @@ Legacy keys still accepted (with warning):
 
 1. Build once (`bash build_all.sh`)
 2. Run a benchmark (`python3 -u run_morpher.py ...`)
-3. Inspect mapper outputs (`*.mappingwithlatency.txt`, `result.txt`, `*.bin`)
+3. Inspect mapper outputs (`*.mappingwithlatency.txt`, `result.txt`)
 4. Run batch regression with `scripts/run_all_benchmarks.py`
 5. Clean generated artifacts before commit

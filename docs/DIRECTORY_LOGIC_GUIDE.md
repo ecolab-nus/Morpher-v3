@@ -16,8 +16,9 @@ It is written for contributors who want to understand how data flows through the
 
 1. C kernel is compiled and transformed to LLVM IR.
 2. LLVM pass generates DFG XML + memory allocation.
-3. Mapper consumes DFG XML + architecture JSON and produces mapped binaries.
-4. Simulator consumes mapped binary + traces/mem-allocation and reports matches/mismatches.
+3. Mapper consumes DFG XML + architecture JSON and produces mapping artifacts.
+4. Artifact simulation consumes the mapped DFG, latency mapping, traces, and
+   mem-allocation, then reports matches/mismatches.
 
 The Python runner (`run_morpher.py`) glues these stages together.
 
@@ -53,7 +54,10 @@ This folder is the control plane for the full flow.
 - Builds LLVM IR and optimized IR.
 - Runs Morpher LLVM DFG pass.
 - Validates required DFG outputs exist.
+- Validates AGI/iterator/SIMD manifests for trace-driven DFG pipeline modes.
 - Optionally instruments executable and generates memory traces.
+- Remaps SIMD trace indices from the C++-emitted manifest without rewriting
+  verified SIMD XML.
 - Copies artifacts into mapper/simulator stage folders.
 
 ### `mapper.py`
@@ -63,7 +67,8 @@ This folder is the control plane for the full flow.
   - runs `Morpher_CGRA_Mapper/update_mem_alloc.py`
   - generates per-kernel runtime architecture JSON
 - Runs `cgra_xml_mapper` with config-derived arguments.
-- Copies emitted `*.bin` into simulator folder when simulation is enabled.
+- Artifact simulation reads the mapped DFG and latency artifact directly;
+  hardware binaries are not emitted or staged.
 
 ### `simulator.py`
 
@@ -94,7 +99,8 @@ Core logic areas:
 - `src/dfggenPass.cpp`
   - LLVM pass entrypoint.
   - validates supported array/pointer dimensions.
-  - controls pass options (function name, banks, bank size, AGI removal).
+  - controls pass options (function name, banks, bank size, trace-driven AGI
+    and restricted iterator externalization, and verified SIMD packing).
 - `src/dfg/DFGPartPred.cpp`
   - partial predication logic.
   - branch/phi handling.
@@ -102,6 +108,8 @@ Core logic areas:
 - `src/common/dfg.cpp`
   - core DFG data structure operations.
   - node/edge management, basic-block connectivity handling.
+  - restricted iterator-control removal plus `*_ITER_manifest.json`, and
+    closed-subgraph SIMD packing plus `*_SIMD_manifest.json` emission.
 - `src/instrumentation/instrumentation.cpp`
   - runtime tracing hooks.
   - controlled by `MORPHER_MAX_TRACES`.
@@ -144,7 +152,6 @@ Key output artifacts:
 
 - `*.mappingwithlatency.txt`
 - `*.mapping.csv`, route/congestion logs
-- `*.bin` mapped configuration binaries
 - `result.txt` mapper summary
 
 ## `hycube_simulator/` (Cycle-Accurate Simulation)

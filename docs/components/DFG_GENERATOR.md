@@ -40,7 +40,16 @@ Main responsibilities:
 Important behavior:
 
 - Explicit validation rejects unsupported effective array dimensions/pointer depth.
-- `-remove-agi` option removes address-generation nodes from DFG when enabled.
+- `-externalize-access=agi` removes address-generation nodes before
+  instrumentation and emits an AGI manifest.
+- `-externalize-access=agi_iter` additionally removes an isolated iterator
+  control component after instrumentation and emits a reindex manifest. It
+  fails when that component reaches remaining computation, memory, predicate,
+  recurrence, or reduction behavior.
+- `-simd-pack=<lanes>` runs after instrumentation, packs only complete closed
+  lane-isomorphic subgraphs, and emits a SIMD manifest for trace remapping.
+  The v1 path rejects control, recurrence, reduction, broadcast, partial-lane,
+  and scalar/vector-boundary cases rather than changing their semantics.
 
 ## `src/dfg/DFGPartPred.cpp`
 

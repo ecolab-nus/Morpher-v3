@@ -6220,6 +6220,31 @@ DFG::DFG(std::string name, std::map<Loop *, std::string> *lnPtr)
 	// PCMP/NCMP exist in the enum but have no binary entries; avoid stealing.
 	HyCUBEInsStrings[MAC] = "MAC";
 	HyCUBEInsBinary[MAC] = 0 | (0b00110);
+
+	HyCUBEInsStrings[VADD] = "VADD";
+	HyCUBEInsStrings[VSUB] = "VSUB";
+	HyCUBEInsStrings[VMUL] = "VMUL";
+	HyCUBEInsStrings[VSEXT] = "VSEXT";
+	HyCUBEInsStrings[VDIV] = "VDIV";
+	HyCUBEInsStrings[VLS] = "VLS";
+	HyCUBEInsStrings[VRS] = "VRS";
+	HyCUBEInsStrings[VARS] = "VARS";
+	HyCUBEInsStrings[VAND] = "VAND";
+	HyCUBEInsStrings[VOR] = "VOR";
+	HyCUBEInsStrings[VXOR] = "VXOR";
+	HyCUBEInsStrings[VCMP] = "VCMP";
+	HyCUBEInsStrings[VCLT] = "VCLT";
+	HyCUBEInsStrings[VCGT] = "VCGT";
+	HyCUBEInsStrings[VSELECT] = "VSELECT";
+	HyCUBEInsStrings[VCMERGE] = "VCMERGE";
+	HyCUBEInsStrings[VLOAD] = "VLOAD";
+	HyCUBEInsStrings[VLOADH] = "VLOADH";
+	HyCUBEInsStrings[VLOADB] = "VLOADB";
+	HyCUBEInsStrings[VSTORE] = "VSTORE";
+	HyCUBEInsStrings[VSTOREH] = "VSTOREH";
+	HyCUBEInsStrings[VSTOREB] = "VSTOREB";
+	HyCUBEInsStrings[VRED] = "VRED";
+	HyCUBEInsStrings[VMAC] = "VMAC";
 }
 
 int DFG::nameNodes()
@@ -10400,6 +10425,493 @@ void DFG::removeAGINodes()
 	llvm::outs() << "[removeAGINodes] Remaining nodes after AGI removal: " << NodeList.size() << "\n";
 }
 
+void DFG::removeIteratorOnlyControl()
+{
+	// This is intentionally narrower than general iterator removal. The trace
+	// supplies memory addresses but not predicate events, so only a control
+	// component completely disconnected from remaining mapped work is safe.
+	auto isBoundaryNode = [](dfgNode* node) {
+		const std::string type = node->getNameType();
+		return type == "LOOPSTART" || type == "STORESTART" || type == "LOOPEXIT";
+	};
+	auto isControlCandidate = [](dfgNode* node) {
+		const std::string type = node->getNameType();
+		if (type == "LOOPSTART" || type == "STORESTART" || type == "LOOPEXIT" ||
+			type == "OutLoopLOAD" || type == "OutLoopSTORE" || type == "CMERGE")
+			return true;
+		switch (node->getFinalIns())
+		{
+		case ADD:
+		case SUB:
+		case CMP:
+		case SELECT:
+		case CMERGE:
+		case MOVC:
+			return true;
+		default:
+			return false;
+		}
+	};
+	auto describeNode = [this](dfgNode* node) {
+		std::string op = node->getNameType();
+		if (op.empty() && node->getFinalIns() != NOP)
+			op = HyCUBEInsStrings[node->getFinalIns()];
+		return "idx=" + std::to_string(node->getIdx()) + " op=" + op;
+	};
+	auto fail = [](const std::string& message) {
+		report_fatal_error(llvm::StringRef(message));
+	};
+
+	std::unordered_set<dfgNode*> iteratorSet;
+	std::queue<dfgNode*> pending;
+	for (dfgNode* node : NodeList)
+	{
+		if (isBoundaryNode(node))
+		{
+			iteratorSet.insert(node);
+			pending.push(node);
+		}
+	}
+	if (pending.empty())
+		report_fatal_error(
+			"agi_iter requires canonical loop boundary nodes after AGI externalization");
+
+	while (!pending.empty())
+	{
+		dfgNode* node = pending.front();
+		pending.pop();
+		for (dfgNode* neighbor : node->getAncestors())
+		{
+			if (!isControlCandidate(neighbor))
+			fail(
+					"agi_iter cannot externalize iterator control: " + describeNode(node) +
+					" has a non-control parent " + describeNode(neighbor));
+			if (iteratorSet.insert(neighbor).second)
+				pending.push(neighbor);
+		}
+		for (dfgNode* neighbor : node->getChildren())
+		{
+			if (!isControlCandidate(neighbor))
+			fail(
+					"agi_iter cannot externalize iterator control: " + describeNode(node) +
+					" has a surviving work child " + describeNode(neighbor));
+			if (iteratorSet.insert(neighbor).second)
+				pending.push(neighbor);
+		}
+	}
+
+	for (dfgNode* node : iteratorSet)
+	{
+		for (dfgNode* parent : node->getAncestors())
+			if (!iteratorSet.count(parent))
+				fail("agi_iter control component has a surviving parent: " +
+					describeNode(parent));
+		for (dfgNode* child : node->getChildren())
+			if (!iteratorSet.count(child))
+				fail("agi_iter control component has a surviving child: " +
+					describeNode(child));
+	}
+
+	std::unordered_map<dfgNode*, int> originalIndex;
+	for (dfgNode* node : NodeList)
+		originalIndex[node] = node->getIdx();
+	const int originalNodeCount = (int)NodeList.size();
+
+	edgeList.erase(
+		std::remove_if(edgeList.begin(), edgeList.end(),
+			[&iteratorSet](Edge& edge) {
+				return iteratorSet.count(edge.getSrc()) || iteratorSet.count(edge.getDest());
+			}),
+		edgeList.end());
+	NodeList.erase(
+		std::remove_if(NodeList.begin(), NodeList.end(),
+			[&iteratorSet](dfgNode* node) { return iteratorSet.count(node) > 0; }),
+		NodeList.end());
+	for (auto it = OutLoopNodeMap.begin(); it != OutLoopNodeMap.end(); )
+		if (iteratorSet.count(it->second)) it = OutLoopNodeMap.erase(it); else ++it;
+	for (auto it = OutLoopNodeMapReverse.begin(); it != OutLoopNodeMapReverse.end(); )
+		if (iteratorSet.count(it->first)) it = OutLoopNodeMapReverse.erase(it); else ++it;
+	for (auto it = LoopStartMap.begin(); it != LoopStartMap.end(); )
+		if (iteratorSet.count(it->second)) it = LoopStartMap.erase(it); else ++it;
+
+	for (size_t index = 0; index < NodeList.size(); ++index)
+	{
+		NodeList[index]->setIdx((int)index);
+		NodeList[index]->parentClassification.clear();
+		NodeList[index]->childClassification.clear();
+	}
+	for (dfgNode* node : NodeList)
+	{
+		for (dfgNode* parent : node->getAncestors())
+			if (iteratorSet.count(parent))
+				report_fatal_error("agi_iter left a surviving node with a removed parent");
+		for (dfgNode* child : node->getChildren())
+			if (iteratorSet.count(child))
+				report_fatal_error("agi_iter left a surviving node with a removed child");
+	}
+
+	std::ofstream manifestFile(name + "_ITER_manifest.json");
+	if (!manifestFile.is_open())
+		report_fatal_error("Could not open iterator manifest for writing");
+	manifestFile << "{\n";
+	manifestFile << "  \"schema_version\": 1,\n";
+	manifestFile << "  \"transform\": \"externalize_iterator_only\",\n";
+	manifestFile << "  \"status\": \"applied\",\n";
+	manifestFile << "  \"original_node_count\": " << originalNodeCount << ",\n";
+	manifestFile << "  \"removed_node_count\": " << iteratorSet.size() << ",\n";
+	manifestFile << "  \"final_node_count\": " << NodeList.size() << ",\n";
+	manifestFile << "  \"removed_nodes\": [";
+	bool firstRemoved = true;
+	std::vector<int> removedIndices;
+	removedIndices.reserve(iteratorSet.size());
+	for (dfgNode* node : iteratorSet)
+		removedIndices.push_back(originalIndex[node]);
+	std::sort(removedIndices.begin(), removedIndices.end());
+	for (int index : removedIndices)
+	{
+		if (!firstRemoved) manifestFile << ", ";
+		firstRemoved = false;
+		manifestFile << index;
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"artifact_vars_pruned\": [\"loopstart\", \"loopend\"],\n";
+	manifestFile << "  \"index_map\": [";
+	bool firstMap = true;
+	for (dfgNode* node : NodeList)
+	{
+		if (!firstMap) manifestFile << ", ";
+		firstMap = false;
+		manifestFile << "{\"original_idx\": " << originalIndex[node]
+				 << ", \"final_idx\": " << node->getIdx() << "}";
+	}
+	manifestFile << "]\n";
+	manifestFile << "}\n";
+	iteratorExternalized = true;
+	llvm::outs() << "[removeIteratorOnlyControl] Removed " << iteratorSet.size()
+				 << " iterator/control nodes; remaining nodes=" << NodeList.size() << "\n";
+}
+
+void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps)
+{
+	if (lanes <= 1)
+		return;
+
+	struct Candidate
+	{
+		int group = -1;
+		std::vector<dfgNode*> laneNodes;
+		HyCUBEIns vectorInstruction = NOP;
+		std::string vectorOp;
+		bool active = true;
+		std::string reason;
+	};
+
+	struct RejectedGroup
+	{
+		int group = -1;
+		std::string reason;
+	};
+
+	auto vectorInstructionFor = [](HyCUBEIns scalar) -> HyCUBEIns {
+		switch (scalar)
+		{
+		case ADD: return VADD;
+		case SUB: return VSUB;
+		case MUL: return VMUL;
+		case SEXT: return VSEXT;
+		case DIV: return VDIV;
+		case LS: return VLS;
+		case RS: return VRS;
+		case ARS: return VARS;
+		case AND: return VAND;
+		case OR: return VOR;
+		case XOR: return VXOR;
+		case CMP: return VCMP;
+		case CLT: return VCLT;
+		case CGT: return VCGT;
+		case Hy_LOAD: return VLOAD;
+		case Hy_LOADH: return VLOADH;
+		case Hy_LOADB: return VLOADB;
+		case Hy_STORE: return VSTORE;
+		case Hy_STOREH: return VSTOREH;
+		case Hy_STOREB: return VSTOREB;
+		case MAC: return VMAC;
+		default: return NOP;
+		}
+	};
+
+	auto emittedVectorOp = [this](dfgNode* node, HyCUBEIns instruction) {
+		std::string op = HyCUBEInsStrings[instruction];
+		if ((node->getNameType() == "OutLoopLOAD" || node->getNameType() == "OutLoopSTORE") &&
+			op.size() > 1 && op[0] == 'V')
+			return std::string("VO") + op.substr(1);
+		return op;
+	};
+
+	auto hasUnsupportedEdges = [](dfgNode* node) {
+		if (!node->getRecAncestors().empty() || !node->getRecChildren().empty())
+			return true;
+		for (dfgNode* parent : node->getAncestors())
+		{
+			auto back = node->ancestorBackEdgeMap.find(parent);
+			auto cond = node->ancestorConditionaMap.find(parent);
+			if ((back != node->ancestorBackEdgeMap.end() && back->second) ||
+				(cond != node->ancestorConditionaMap.end() && cond->second != UNCOND))
+				return true;
+		}
+		for (dfgNode* child : node->getChildren())
+		{
+			auto back = node->childBackEdgeMap.find(child);
+			auto cond = node->childConditionalMap.find(child);
+			if ((back != node->childBackEdgeMap.end() && back->second) ||
+				(cond != node->childConditionalMap.end() && cond->second != UNCOND))
+				return true;
+		}
+		return false;
+	};
+
+	std::map<int, std::vector<dfgNode*> > groups;
+	for (dfgNode* node : NodeList)
+		if (node->getSimdGroup() >= 0)
+			groups[node->getSimdGroup()].push_back(node);
+
+	std::vector<Candidate> candidates;
+	std::vector<RejectedGroup> rejected;
+	for (std::pair<const int, std::vector<dfgNode*> >& entry : groups)
+	{
+		std::vector<dfgNode*>& groupNodes = entry.second;
+		std::sort(groupNodes.begin(), groupNodes.end(),
+			[](dfgNode* lhs, dfgNode* rhs) { return lhs->getIdx() < rhs->getIdx(); });
+
+		if ((int)groupNodes.size() != lanes)
+		{
+			rejected.push_back({entry.first, "partial or multi-vector lane group"});
+			continue;
+		}
+
+		dfgNode* first = groupNodes.front();
+		HyCUBEIns vectorInstruction = vectorInstructionFor(first->getFinalIns());
+		std::string vectorOp = emittedVectorOp(first, vectorInstruction);
+		std::string reason;
+		if (vectorInstruction == NOP)
+			reason = "unsupported scalar operation";
+		else if (vectorOps.count(vectorOp) == 0)
+			reason = "architecture does not support " + vectorOp;
+
+		for (dfgNode* node : groupNodes)
+		{
+			if (!reason.empty())
+				break;
+			if (node->getSimdLanes() != lanes ||
+				node->getFinalIns() != first->getFinalIns() ||
+				node->hasConstantVal() != first->hasConstantVal() ||
+				(node->hasConstantVal() && node->getConstantVal() != first->getConstantVal()) ||
+				node->getArrBasePtr() != first->getArrBasePtr() ||
+				node->getTypeSizeBytes() != first->getTypeSizeBytes() ||
+				node->getNameType() != first->getNameType())
+				reason = "incompatible lane metadata";
+			else if (!node->getSimdReduceOp().empty() || hasUnsupportedEdges(node))
+				reason = "recurrence, reduction, or control edge";
+		}
+
+		if (!reason.empty())
+		{
+			rejected.push_back({entry.first, reason});
+			continue;
+		}
+		candidates.push_back({entry.first, groupNodes, vectorInstruction, vectorOp, true, ""});
+	}
+
+	bool changed = true;
+	while (changed)
+	{
+		changed = false;
+		std::unordered_map<dfgNode*, std::pair<int, int> > candidateLane;
+		for (size_t candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex)
+		{
+			if (!candidates[candidateIndex].active)
+				continue;
+			for (size_t lane = 0; lane < candidates[candidateIndex].laneNodes.size(); ++lane)
+				candidateLane[candidates[candidateIndex].laneNodes[lane]] =
+					std::make_pair((int)candidateIndex, (int)lane);
+		}
+
+		for (size_t candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex)
+		{
+			Candidate& candidate = candidates[candidateIndex];
+			if (!candidate.active)
+				continue;
+			std::string reason;
+			for (size_t lane = 0; lane < candidate.laneNodes.size() && reason.empty(); ++lane)
+			{
+				dfgNode* node = candidate.laneNodes[lane];
+				for (dfgNode* parent : node->getAncestors())
+				{
+					auto it = candidateLane.find(parent);
+					if (it == candidateLane.end())
+					{
+						reason = "scalar or unsupported parent";
+						break;
+					}
+					if (it->second.first == (int)candidateIndex || it->second.second != (int)lane)
+					{
+						reason = "non-isomorphic parent wiring";
+						break;
+					}
+				}
+				for (dfgNode* child : node->getChildren())
+				{
+					auto it = candidateLane.find(child);
+					if (it == candidateLane.end())
+					{
+						reason = "scalar or unsupported child";
+						break;
+					}
+					if (it->second.first == (int)candidateIndex || it->second.second != (int)lane)
+					{
+						reason = "non-isomorphic child wiring";
+						break;
+					}
+				}
+			}
+			if (!reason.empty())
+			{
+				candidate.active = false;
+				candidate.reason = reason;
+				rejected.push_back({candidate.group, reason});
+				changed = true;
+			}
+		}
+	}
+
+	std::unordered_map<dfgNode*, int> originalIndex;
+	for (dfgNode* node : NodeList)
+		originalIndex[node] = node->getIdx();
+	const int originalNodeCount = (int)NodeList.size();
+	std::unordered_set<dfgNode*> removedNodes;
+	std::vector<Candidate*> packedCandidates;
+	for (Candidate& candidate : candidates)
+	{
+		if (!candidate.active)
+			continue;
+		std::vector<int> laneSources;
+		for (dfgNode* node : candidate.laneNodes)
+			laneSources.push_back(originalIndex[node]);
+		dfgNode* representative = candidate.laneNodes.front();
+		representative->setFinalIns(candidate.vectorInstruction);
+		representative->setSimdPacked(std::move(laneSources));
+		for (size_t lane = 1; lane < candidate.laneNodes.size(); ++lane)
+			removedNodes.insert(candidate.laneNodes[lane]);
+		packedCandidates.push_back(&candidate);
+	}
+
+	if (!removedNodes.empty())
+	{
+		for (dfgNode* node : NodeList)
+		{
+			if (removedNodes.count(node))
+				continue;
+			for (dfgNode* parent : node->getAncestors())
+				if (removedNodes.count(parent))
+					report_fatal_error("SIMD pack left a surviving node with a removed parent");
+			for (dfgNode* child : node->getChildren())
+				if (removedNodes.count(child))
+					report_fatal_error("SIMD pack left a surviving node with a removed child");
+			node->parentClassification.clear();
+			node->childClassification.clear();
+		}
+
+		edgeList.erase(
+			std::remove_if(edgeList.begin(), edgeList.end(),
+				[&removedNodes](Edge& edge) {
+					return removedNodes.count(edge.getSrc()) || removedNodes.count(edge.getDest());
+				}),
+			edgeList.end());
+		NodeList.erase(
+			std::remove_if(NodeList.begin(), NodeList.end(),
+				[&removedNodes](dfgNode* node) { return removedNodes.count(node) > 0; }),
+			NodeList.end());
+		for (auto it = OutLoopNodeMap.begin(); it != OutLoopNodeMap.end(); )
+			if (removedNodes.count(it->second)) it = OutLoopNodeMap.erase(it); else ++it;
+		for (auto it = OutLoopNodeMapReverse.begin(); it != OutLoopNodeMapReverse.end(); )
+			if (removedNodes.count(it->first)) it = OutLoopNodeMapReverse.erase(it); else ++it;
+	}
+
+	for (size_t index = 0; index < NodeList.size(); ++index)
+		NodeList[index]->setIdx((int)index);
+
+	std::map<int, int> finalIndexByOriginal;
+	for (dfgNode* node : NodeList)
+		finalIndexByOriginal[originalIndex[node]] = node->getIdx();
+	for (Candidate* candidate : packedCandidates)
+	{
+		const int finalIndex = candidate->laneNodes.front()->getIdx();
+		for (dfgNode* laneNode : candidate->laneNodes)
+			finalIndexByOriginal[originalIndex[laneNode]] = finalIndex;
+	}
+	if ((int)finalIndexByOriginal.size() != originalNodeCount)
+		report_fatal_error("SIMD manifest does not cover every original DFG node");
+
+	for (dfgNode* node : NodeList)
+	{
+		for (dfgNode* parent : node->getAncestors())
+			if (parent->getIdx() < 0 || parent->getIdx() >= (int)NodeList.size())
+				report_fatal_error("SIMD pack produced an invalid parent index");
+		for (dfgNode* child : node->getChildren())
+			if (child->getIdx() < 0 || child->getIdx() >= (int)NodeList.size())
+				report_fatal_error("SIMD pack produced an invalid child index");
+	}
+
+	std::ofstream manifestFile(name + "_SIMD_manifest.json");
+	if (!manifestFile.is_open())
+		report_fatal_error("Could not open SIMD manifest for writing");
+	manifestFile << "{\n";
+	manifestFile << "  \"schema_version\": 1,\n";
+	manifestFile << "  \"transform\": \"vector_pack\",\n";
+	manifestFile << "  \"status\": \"applied\",\n";
+	manifestFile << "  \"lanes\": " << lanes << ",\n";
+	manifestFile << "  \"original_node_count\": " << originalNodeCount << ",\n";
+	manifestFile << "  \"final_node_count\": " << NodeList.size() << ",\n";
+	manifestFile << "  \"packed_groups\": [\n";
+	for (size_t i = 0; i < packedCandidates.size(); ++i)
+	{
+		Candidate* candidate = packedCandidates[i];
+		if (i != 0) manifestFile << ",\n";
+		manifestFile << "    {\"simd_group\": " << candidate->group
+				 << ", \"final_idx\": " << candidate->laneNodes.front()->getIdx()
+				 << ", \"vector_op\": " << jsonString(candidate->vectorOp)
+				 << ", \"lanes\": [";
+		for (size_t lane = 0; lane < candidate->laneNodes.size(); ++lane)
+		{
+			if (lane != 0) manifestFile << ", ";
+			manifestFile << originalIndex[candidate->laneNodes[lane]];
+		}
+		manifestFile << "]}";
+	}
+	manifestFile << "\n  ],\n";
+	manifestFile << "  \"rejected_groups\": [";
+	for (size_t i = 0; i < rejected.size(); ++i)
+	{
+		if (i != 0) manifestFile << ", ";
+		manifestFile << "{\"simd_group\": " << rejected[i].group
+				 << ", \"reason\": " << jsonString(rejected[i].reason) << "}";
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"index_map\": [";
+	bool firstMap = true;
+	for (const std::pair<const int, int>& mapping : finalIndexByOriginal)
+	{
+		if (!firstMap) manifestFile << ", ";
+		firstMap = false;
+		manifestFile << "{\"original_idx\": " << mapping.first
+				 << ", \"final_idx\": " << mapping.second << "}";
+	}
+	manifestFile << "]\n";
+	manifestFile << "}\n";
+	llvm::outs() << "[packSIMD] Packed " << packedCandidates.size()
+				 << " groups; remaining nodes=" << NodeList.size() << "\n";
+}
+
 std::unordered_set<dfgNode *> DFG::getLineage(dfgNode *n)
 {
 
@@ -11657,9 +12169,12 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 		LLVM_DEBUG(dbgs() << "\t pointer " << i->first<<","<< i->second<<"\n");
 		mem_alloc_txt << i->first<<","<< i->second<<"\n";
 	}
+	if (!iteratorExternalized)
+	{
 		mem_alloc_txt << "loopend" <<","<<(MEM_SIZE/2 - 1)<<"\n";
 //		mem_alloc_txt << "storestart" <<","<<(MEM_SIZE/2 - 1)<<"\n";
 		mem_alloc_txt << "loopstart" <<","<<(MEM_SIZE - 2)<<"\n";
+	}
 	mem_alloc_txt.close();
 	LLVM_DEBUG(dbgs() << "\n Writing mem alloc end\n\n");
 	//std::cout << "Data layout generated ("<<this->kernelname<<"_mem_alloc.txt) \n";

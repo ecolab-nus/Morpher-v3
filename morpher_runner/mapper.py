@@ -9,8 +9,6 @@ from pathlib import Path
 from morpher_runner.context import resolve_arch_template_path as resolve_shared_arch_template_path
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
-from morpher_runner.fs_ops import copy_glob
-from morpher_runner.fs_ops import remove_glob
 from morpher_runner.trace_partition import remap_addr_traces
 from morpher_runner.utilization import estimate_utilization
 
@@ -165,7 +163,7 @@ def build_mapper_commands(context):
     getattr(context, "selected_simd_artifact_only", False)
     or _staged_dfg_contains_vector_ops(context)
   )
-  emit_binary = config.enable_simulation and not context.selected_simd_artifact_only
+  emit_binary = False
   pf_node_order = resolve_pf_node_order(context)
   mapper_common_args = [
     "-d",
@@ -297,8 +295,7 @@ def run_mapper(context):
 
   commands, mapper_arch = build_mapper_commands(context)
   print("Arch used by mapper: %s\n" % mapper_arch)
-  if getattr(context, "selected_simd_artifact_only", False):
-    print("Vectorized DFG selected: skipping legacy binary emission for this mapper run.\n")
+  print("Mapper binary emission is disabled; artifact simulation consumes the mapped DFG.\n")
   total = len(commands)
   for idx, cmd in enumerate(commands, start=1):
     if config.memory_mode == "auto" and total == 2:
@@ -318,14 +315,9 @@ def run_mapper(context):
 
   _print_mapper_utilization(context, mapper_arch)
 
-  if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):
-    remove_glob(context.simulator_kernel, "*.bin")
-    copy_glob(context.mapper_kernel, "*.bin", context.simulator_kernel, required=True)
-
   if getattr(config, "layout_solver", False):
-    # Layout solver may have rewritten the SPM placement and re-baked the
-    # binary's LD/ST constants. The addr_trace was recorded against the
-    # original layout; shift each row by the per-node delta the solver emitted.
+    # The trace was recorded against the original layout; shift each row by
+    # the per-node delta emitted by the mapper-side layout solver.
     memtraces = Path(context.mapper_kernel) / "memtraces"
     if not memtraces.exists():
       memtraces = Path(context.dfg_gen_kernel) / "memtraces"
@@ -334,6 +326,3 @@ def run_mapper(context):
     rewritten = remap_addr_traces(memtraces, decision_path)
     if rewritten:
       print("[layout_solver] addr_trace rewrite: %d rows updated\n" % rewritten)
-    if config.enable_simulation and not getattr(context, "selected_simd_artifact_only", False):
-      remove_glob(context.simulator_kernel, "*_mem_alloc.txt")
-      copy_glob(context.mapper_kernel, "*_mem_alloc.txt", context.simulator_kernel)

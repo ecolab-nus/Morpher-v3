@@ -433,30 +433,12 @@ def run_simulator(kernel: str, xml_path: Path, output_dir: Path
 
   staged_dfg = find_staged_dfg(kernel)
   mapping = find_mapping_file(kernel)
-  arch_rt = find_arch_runtime(kernel)
   if staged_dfg is None or mapping is None:
     return None, None
   # Generate reference trace from the *synthesized* XML semantics.
   sim_dir = output_dir / "sim" / kernel
   sim_dir.mkdir(parents=True, exist_ok=True)
   artifacts = emit_artifacts(str(xml_path), str(sim_dir), kernel)
-
-  # Read mesh dims from the arch runtime JSON if available (otherwise fall
-  # back to 4x4 — works for scalar_1side but not for multi-side memory).
-  mesh_x, mesh_y = 4, 4
-  if arch_rt and arch_rt.is_file():
-    try:
-      with open(arch_rt, "r") as f:
-        ar = json.load(f)
-      grid = ar.get("ARCH", {}).get("CGRA", {}).get("SUBMODS", [])
-      for sub in grid:
-        dims = sub.get("DIMS")
-        if dims:
-          mesh_x = int(dims.get("X", mesh_x))
-          mesh_y = int(dims.get("Y", mesh_y))
-          break
-    except Exception:
-      pass
 
   # Use the functional (non-arch-aware) sim path: it executes the DFG given
   # the mapping and trace, computes matches/mismatches against the reference
@@ -471,7 +453,6 @@ def run_simulator(kernel: str, xml_path: Path, output_dir: Path
       "--mem-alloc", artifacts.mem_alloc_path,
       "--trace", artifacts.trace_path,
       "--addr-trace", artifacts.addr_trace_path,
-      "--x", str(mesh_x), "--y", str(mesh_y),
   ]
   proc = subprocess.run(cmd, capture_output=True, text=True)
   m = re.search(r"Simulation Result:\s*Matches::\s*(\d+)\s*,\s*Mismatches::\s*(\d+)",

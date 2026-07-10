@@ -1160,7 +1160,10 @@ def _is_splat_lane_entries(entries: list[tuple[str, ...]]) -> bool:
   if not entries:
     return False
   first = entries[0]
-  return all(entry[1:] == first[1:] for entry in entries[1:])
+  # A static scalar-broadcast annotation is not enough here: the instrumented
+  # program can still resolve lane addresses dynamically.  Only duplicate
+  # runtime entries are safe to collapse as a splat.
+  return all(entry == first for entry in entries[1:])
 
 
 def _contiguous_vector_word_entry(entries: list[tuple[str, ...]]) -> tuple[str, ...] | None:

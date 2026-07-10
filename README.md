@@ -8,13 +8,13 @@ Linux
 
 ## Features
 
-- End-to-end flow from C kernel to mapped binary (`run_morpher.py`)
+- End-to-end flow from C kernel to mapped DFG (`run_morpher.py`)
 - XML input mode: skip DFG generation and feed a pre-generated DFG directly to the mapper
 - Two memory modes: `auto` (generate architecture JSON at runtime) or `static` (use a pre-authored JSON)
 - Auto-unroll search: sweeps candidate unroll factors and picks the one minimising effective II per iteration (`auto_unroll`)
-- Architecture-driven SIMD packing: SIMD width and vector ops are inferred from the architecture JSON, then eligible unrolled DFG nodes are packed before mapping
-- AGI pruning: removes address-generation instructions from the DFG, assuming an external scalar core handles loop addressing (`remove_agi`)
-- Iteration pruning: removes loop-control and PHI-merge nodes from a SIMD-packed DFG, keeping only the core data kernel (`remove_iter`)
+- Architecture-driven SIMD packing: SIMD width and vector ops are inferred from the architecture JSON; the verified mode packs closed lane-isomorphic DFG subgraphs in C++ before mapping
+- Trace-driven access externalization: removes AGI before instrumentation and, for verified data-parallel loops, removes the disconnected iterator component (`dfg_pipeline.externalize_access: agi_iter`)
+- Legacy iterator pruning: Python XML graph rewrite for loop-control and PHI-merge nodes (`remove_iter`)
 - Optional post-mapping data-layout solver with read-only data replication (`layout_solver`, `replicate_data`)
 - Functional and event-driven simulation validation (`validation_mode`)
 - Artifact simulator: validates SIMD-packed mappings against instrumented memory traces (`runall_artifact_sim`)
@@ -152,9 +152,11 @@ Default config: `config/default.yaml`. Provided configs include:
 | `config/scalar.yaml` | Alias-style trusted scalar baseline with functional validation and no layout solver. |
 | `config/scalar_no_solver.yaml` | Same trusted scalar baseline retained for older scripts. |
 | `config/scalar_agi_pruned.yaml` | Explicit opt-in scalar config that enables C++ DFG-side AGI removal only. |
+| `config/scalar_agi_iter_pruned.yaml` | Restricted C++ iterator externalization for data-parallel loops whose control component is disconnected after AGI removal. |
 | `config/scalar_edgemem.yaml` | Scalar flow on the edge-memory HyCUBE architecture. |
 | `config/scalar_edgemem_unroll.yaml` | Edge-memory scalar flow with a fixed auto-unroll factor of 2. |
-| `config/simd4_noiter.yaml` | 4×4 HyCUBE flow with AGI and iterator pruning; SIMD activates only if the selected architecture exposes SIMD-capable PEs. |
+| `config/simd4_verified.yaml` | 4-lane verified C++ SIMD smoke config: AGI externalization, manifest-backed packing, mapper-only validation. |
+| `config/simd4_noiter.yaml` | Legacy experimental Python SIMD/iterator-pruning flow. |
 | `config/hycube_vectorization.yaml` | Vectorized architecture config with auto-unroll factor 3, layout solver enabled. |
 | `config/regression_gemm_simd4_unroll.yaml` | Focused GEMM SIMD/unroll regression config. |
 | `config/regression_8x8.yaml` | 8×8 HyCUBE regression config with simulation disabled. |
@@ -185,7 +187,9 @@ Default config: `config/default.yaml`. Provided configs include:
 | `validation_mode` | `functional`, `event_driven`, `event-driven` | `functional` | Simulation check strategy. `event-driven` is normalized internally to `event_driven`. |
 | `max_test_samples` | Integer `>= 0` | required in provided configs | Trace-generation limit and simulator sample cap. |
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
-| `remove_agi` | Boolean: `true` or `false` | `false` | Remove address-generation nodes from the DFG; assumes a scalar/AGU path handles addresses. |
+| `dfg_pipeline.externalize_access` | `off`, `agi`, `agi_iter` | `off` | Trace-driven C++ access externalization. `agi` removes address-generation nodes before instrumentation. `agi_iter` additionally removes the iterator/control component only when it has no edge to surviving work; addresses are trace-driven and the iterator manifest remaps their final node indices. It rejects data, predicate, recurrence, or reduction boundaries. |
+| `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
+| `remove_agi` | Boolean: `true` or `false` | `false` | Deprecated alias for `dfg_pipeline.externalize_access: agi`; emits and runner-validates `*_AGI_manifest.json`. |
 | `remove_iter` | Boolean: `true` or `false` | `false` | Experimental iterator/control removal. The current implementation is a Python XML graph rewrite and requires `experimental_python_semantic_transforms: true`. |
 | `source_template.enabled` | `off`, `auto`, Boolean | `off` | Experimental source-bound template lowering. `auto` currently stages lowered XML from Python and requires `experimental_python_semantic_transforms: true`. |
 | `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |
@@ -243,7 +247,11 @@ SIMD is no longer configured through top-level `simd.*` YAML knobs. The runner i
 - `SCALAR_BROADCAST` and vector op names are also inferred from the architecture JSON.
 - Deprecated top-level `simd` config data is ignored by the current runner except for the deprecation warning.
 
-The current SIMD packer rewrites eligible scalar DFG XML nodes into vector nodes and can prune scalar lane outputs and iterator/control nodes according to `remove_agi` and `remove_iter`. Because this is a Python XML semantic transform, configs that activate it must set `experimental_python_semantic_transforms: true`.
+`dfg_pipeline.simd_pack: verified` is the trace-driven path. The C++ DFG pass first instruments scalar IR, then packs a complete lane-isomorphic load/compute/store subgraph and writes `*_SIMD_manifest.json`. The runner validates that manifest and uses it only to remap/collapse trace rows; it does not rewrite the packed XML. This v1 mode rejects reductions, recurrences, control edges, partial or multi-vector lane groups, scalar broadcasts, and scalar/vector boundaries, leaving those groups scalar. It cannot be combined with `remove_iter` or `agi_iter`.
+
+`dfg_pipeline.externalize_access: agi_iter` is separate from legacy `remove_iter`. It applies only after AGI externalization. It removes the remaining loop-start/end, PHI/control, and synthetic iterator live-out component when every edge stays within that component. The mapped DFG is then the data-parallel body, while address-trace exhaustion determines artifact-simulation completion. Any iterator-derived predicate, data value, recurrence, or reduction reaching surviving work is a hard error rather than an externalized behavior; unrelated data-dependent control remains in the DFG.
+
+The older Python XML packer remains available only with `experimental_python_semantic_transforms: true` when `dfg_pipeline.simd_pack` is left `off`. It is not part of the verified SIMD contract.
 
 ### Mapper Presets
 
@@ -293,7 +301,7 @@ generated/<suite>/<kernel>/<timestamp>/
   config.yaml
 ```
 
-Batch, regression, and sweep scripts also write user-facing summaries under `generated/` unless configured otherwise. Mapper outputs include `result.txt`, `*.mappingwithlatency.txt`, `*.bin` when binary emission is enabled, and `<kernel>_arch_runtime.json` in `memory_mode: auto`.
+Batch, regression, and sweep scripts also write user-facing summaries under `generated/` unless configured otherwise. Mapper outputs include `result.txt`, `*.mappingwithlatency.txt`, and `<kernel>_arch_runtime.json` in `memory_mode: auto`. Hardware binary emission is disabled; artifact simulation consumes the mapped DFG and latency mapping directly.
 
 ## Batch Benchmark Runs
 

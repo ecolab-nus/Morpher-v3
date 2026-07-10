@@ -11,7 +11,7 @@ class CGRANode;
 class DFG;
 
 enum Port{NORTH,SOUTH,EAST,WEST,R0,R1,R2,R3,R4,R5,R6,R7,TILE,TREG,OP1,OP2,PRED,TILEIN,TILEOUT,INV};
-enum HyCUBEIns{NOP,ADD,SUB,MUL,SEXT,DIV,LS,RS,ARS,AND,OR,XOR,SELECT,CMERGE,CMP,PCMP,NCMP,CLT,BR,CGT,LOADCL,MOVCL,Hy_LOAD,Hy_LOADH,Hy_LOADB,Hy_STORE,Hy_STOREH,Hy_STOREB,JUMPL,MOVC,MAC};
+enum HyCUBEIns{NOP,ADD,SUB,MUL,SEXT,DIV,LS,RS,ARS,AND,OR,XOR,SELECT,CMERGE,CMP,PCMP,NCMP,CLT,BR,CGT,LOADCL,MOVCL,Hy_LOAD,Hy_LOADH,Hy_LOADB,Hy_STORE,Hy_STOREH,Hy_STOREB,JUMPL,MOVC,MAC,VADD,VSUB,VMUL,VSEXT,VDIV,VLS,VRS,VARS,VAND,VOR,VXOR,VCMP,VCLT,VCGT,VSELECT,VCMERGE,VLOAD,VLOADH,VLOADB,VSTORE,VSTOREH,VSTOREB,VRED,VMAC};
 
 struct pathData{
 	CGRANode* cnode;
@@ -103,6 +103,8 @@ class dfgNode{
 			int simdLanes = 1;
 			std::string simdReduceOp = "";
 			std::string simdReduceBase = "";
+			bool simdPacked = false;
+			std::vector<int> simdLaneSources;
 
 
 
@@ -288,9 +290,15 @@ class dfgNode{
 			int getSimdLanes(){return simdLanes;}
 			std::string getSimdReduceOp(){return simdReduceOp;}
 			std::string getSimdReduceBase(){return simdReduceBase;}
+			bool getSimdPacked() const {return simdPacked;}
+			const std::vector<int>& getSimdLaneSources() const {return simdLaneSources;}
 			void setSimdInfo(int group, int lanes){
 				simdGroup = group;
 				simdLanes = lanes;
+			}
+			void setSimdPacked(std::vector<int> laneSources){
+				simdPacked = true;
+				simdLaneSources = std::move(laneSources);
 			}
 
 };

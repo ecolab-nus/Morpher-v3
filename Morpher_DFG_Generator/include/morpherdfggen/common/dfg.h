@@ -509,7 +509,10 @@ class DFG{
 
 			void removeDisconnectedNodes();
 			void removeAGINodes();
+			void removeIteratorOnlyControl();
+			void packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps);
 			bool removeAGI = false;
+			bool iteratorExternalized = false;
 			std::unordered_set<dfgNode*> getLineage(dfgNode* n);
 
 

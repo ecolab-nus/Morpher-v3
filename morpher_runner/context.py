@@ -49,6 +49,8 @@ def _print_deprecation_warning(config_dict):
     deprecated_keys.append("json_arch_before_memupdate")
   if "simd" in config_dict:
     deprecated_keys.append("simd")
+  if bool(config_dict.get("remove_agi", False)):
+    deprecated_keys.append("remove_agi")
   if deprecated_keys:
     print(
       "Warning: deprecated config keys in use (%s). "
@@ -709,6 +711,8 @@ class RunnerConfig:
   proximity_sort: bool
   node_pin: str
   remove_agi: bool
+  externalize_access: str
+  simd_pack: str
   remove_iter: bool
   layout_solver: bool
   replicate_data: bool
@@ -826,6 +830,67 @@ class RunnerConfig:
       raise RuntimeError("source_template.enabled must be one of: off, auto.")
     return mode
 
+  @staticmethod
+  def _parse_externalize_access(config_dict):
+    pipeline = config_dict.get("dfg_pipeline")
+    if pipeline is None:
+      pipeline = {}
+    if not isinstance(pipeline, dict):
+      raise RuntimeError("Config key 'dfg_pipeline' must be a mapping.")
+
+    raw_mode = pipeline.get("externalize_access", "off")
+    mode = str(raw_mode).strip().lower().replace("-", "_").replace(",", "_")
+    aliases = {
+      "": "off",
+      "off": "off",
+      "false": "off",
+      "agi": "agi",
+      "agi_iter": "agi_iter",
+    }
+    if mode not in aliases:
+      raise RuntimeError(
+        "dfg_pipeline.externalize_access must be one of: off, agi, agi_iter."
+      )
+    mode = aliases[mode]
+
+    if bool(config_dict.get("remove_agi", False)):
+      if mode != "off" and mode != "agi":
+        raise RuntimeError(
+          "remove_agi conflicts with dfg_pipeline.externalize_access. "
+          "Use only dfg_pipeline.externalize_access for new configurations."
+        )
+      mode = "agi"
+
+    if "dfg_pipeline" in config_dict and mode != "off" and bool(config_dict.get("remove_iter", False)):
+      raise RuntimeError(
+        "dfg_pipeline.externalize_access cannot be combined with remove_iter. "
+        "Iterator removal remains an experimental Python XML transform."
+      )
+    return mode
+
+  @staticmethod
+  def _parse_simd_pack(config_dict, externalize_access):
+    pipeline = config_dict.get("dfg_pipeline") or {}
+    if not isinstance(pipeline, dict):
+      raise RuntimeError("Config key 'dfg_pipeline' must be a mapping.")
+    raw_mode = pipeline.get("simd_pack", "off")
+    if isinstance(raw_mode, bool):
+      mode = "verified" if raw_mode else "off"
+    else:
+      mode = str(raw_mode).strip().lower()
+    if mode not in ("off", "verified"):
+      raise RuntimeError("dfg_pipeline.simd_pack must be one of: off, verified.")
+    if mode == "verified" and externalize_access != "agi":
+      raise RuntimeError(
+        "dfg_pipeline.simd_pack=verified currently requires "
+        "dfg_pipeline.externalize_access=agi."
+      )
+    if mode == "verified" and bool(config_dict.get("remove_iter", False)):
+      raise RuntimeError(
+        "dfg_pipeline.simd_pack=verified cannot be combined with remove_iter."
+      )
+    return mode
+
   @classmethod
   def from_yaml(cls, config_path):
     with open(config_path, "r", encoding="utf-8") as stream:
@@ -851,6 +916,8 @@ class RunnerConfig:
       auto_unroll_scalar_reduction_policy,
     )
     source_template_mode = cls._parse_source_template(config_dict)
+    externalize_access = cls._parse_externalize_access(config_dict)
+    simd_pack = cls._parse_simd_pack(config_dict, externalize_access)
     experimental_python_semantic_transforms = bool(
       config_dict.get("experimental_python_semantic_transforms", False)
     )
@@ -994,7 +1061,9 @@ class RunnerConfig:
       suppress_dfg_dot=bool(config_dict.get("suppress_dfg_dot", False)),
       validation_mode=validation_mode,
       spm_mode=config_dict.get("spm_mode", "on"),
-      remove_agi=config_dict.get("remove_agi", False),
+      remove_agi=(externalize_access != "off"),
+      externalize_access=externalize_access,
+      simd_pack=simd_pack,
       node_pin=str(config_dict.get("node_pin", "") or ""),
       remove_iter=config_dict.get("remove_iter", False),
       layout_solver=bool(config_dict.get("layout_solver", False)),

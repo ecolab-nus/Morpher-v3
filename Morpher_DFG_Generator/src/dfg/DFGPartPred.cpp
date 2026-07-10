@@ -1631,13 +1631,26 @@ void DFGPartPred::printNewDFGXML() {
 		if(!node->getSimdReduceBase().empty()){
 			xmlFile << " simd_reduce_base=\"" << node->getSimdReduceBase() << "\"";
 		}
+		if(node->getSimdPacked()){
+			xmlFile << " simd_packed=\"true\"";
+			xmlFile << " simd_lane_sources=\"";
+			const std::vector<int>& laneSources = node->getSimdLaneSources();
+			for(size_t lane = 0; lane < laneSources.size(); ++lane){
+				if(lane != 0) xmlFile << ",";
+				xmlFile << laneSources[lane];
+			}
+			xmlFile << "\"";
+		}
 		xmlFile << ">\n";
 
-		xmlFile << "<OP>";
+		std::string opName = HyCUBEInsStrings[node->getFinalIns()];
 		if((node->getNameType() == "OutLoopLOAD") || (node->getNameType() == "OutLoopSTORE") ){
-			xmlFile << "O";
+			if(opName.size() > 1 && opName[0] == 'V')
+				opName = "VO" + opName.substr(1);
+			else
+				opName = "O" + opName;
 		}
-		xmlFile << HyCUBEInsStrings[node->getFinalIns()] << "</OP>\n";
+		xmlFile << "<OP>" << opName << "</OP>\n";
 
 		if(node->getArrBasePtr() != "NOT_A_MEM_OP"){
 			xmlFile << "<BasePointerName size=\"" << array_pointer_sizes[node->getArrBasePtr()] << "\">";

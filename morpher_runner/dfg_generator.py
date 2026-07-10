@@ -13,8 +13,10 @@ from morpher_runner.fs_ops import remove_glob
 from morpher_runner.simd_packer import filter_trace_vars
 from morpher_runner.simd_packer import pack_simd_xml
 from morpher_runner.simd_packer import prune_iter_control_xml
+from morpher_runner.simd_packer import remap_agi_subgraph_externalidx
 from morpher_runner.simd_packer import reindex_addr_trace
 from morpher_runner.simd_packer import remap_addr_trace
+from morpher_runner.simd_packer import SimdMapping
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import BankSizeTooSmallError
 from morpher_runner.utils import build_llvm_tool_env
@@ -35,7 +37,8 @@ MEMORY_OP_PREFIXES = (
 
 
 def _read_unwrapped_xml(path):
-  text = open(path, "r", encoding="utf-8").read()
+  with open(path, "r", encoding="utf-8") as stream:
+    text = stream.read()
   return ET.fromstring("<Root>\n%s\n</Root>" % text)
 
 
@@ -195,8 +198,11 @@ def build_dfg_pass_command(context, skeleton_ir=None):
     "-o",
     "%s_opt_instrument.ll" % kernel,
   ]
-  if config.remove_agi:
-    cmd.append("--remove-agi")
+  if config.externalize_access != "off":
+    cmd.append("--externalize-access=%s" % config.externalize_access)
+  if config.simd_pack == "verified" and getattr(context, "selected_simd_enabled", False):
+    cmd.append("--simd-pack=%d" % config.arch_simd_width)
+    cmd.append("--simd-vector-ops=%s" % ",".join(sorted(config.arch_vector_ops)))
   if config.suppress_dfg_dot:
     cmd.append("--suppress-dfg-dot")
   return cmd
@@ -303,6 +309,82 @@ def validate_agi_manifest(context):
   return manifest_paths
 
 
+def validate_iter_manifest(context):
+  manifest_paths = sorted(Path(context.dfg_gen_kernel).glob("*_ITER_manifest.json"))
+  if len(manifest_paths) != 1:
+    raise RuntimeError(
+      "agi_iter requires exactly one *_ITER_manifest.json under %s; found %d."
+      % (context.dfg_gen_kernel, len(manifest_paths))
+    )
+  manifest_path = manifest_paths[0]
+  try:
+    with manifest_path.open("r", encoding="utf-8") as stream:
+      manifest = json.load(stream)
+  except (OSError, json.JSONDecodeError) as exc:
+    raise RuntimeError("Could not read iterator manifest %s: %s" % (manifest_path, exc))
+
+  if (manifest.get("schema_version") != 1 or
+      manifest.get("transform") != "externalize_iterator_only" or
+      manifest.get("status") != "applied"):
+    raise RuntimeError("Iterator manifest %s has an unsupported schema or status." % manifest_path)
+
+  original_count = manifest.get("original_node_count")
+  removed_count = manifest.get("removed_node_count")
+  final_count = manifest.get("final_node_count")
+  if (not isinstance(original_count, int) or original_count < 1 or
+      not isinstance(removed_count, int) or removed_count < 1 or
+      not isinstance(final_count, int) or final_count < 1 or
+      original_count != removed_count + final_count):
+    raise RuntimeError("Iterator manifest %s has inconsistent node counts." % manifest_path)
+
+  removed_nodes = manifest.get("removed_nodes")
+  if (not isinstance(removed_nodes, list) or len(removed_nodes) != removed_count or
+      any(not isinstance(index, int) for index in removed_nodes) or
+      len(set(removed_nodes)) != removed_count or
+      set(removed_nodes) - set(range(original_count))):
+    raise RuntimeError("Iterator manifest %s has invalid removed_nodes." % manifest_path)
+
+  reindex = {}
+  for entry in manifest.get("index_map", []):
+    if not isinstance(entry, dict):
+      raise RuntimeError("Iterator manifest %s has an invalid index-map entry." % manifest_path)
+    original_idx = entry.get("original_idx")
+    final_idx = entry.get("final_idx")
+    if (not isinstance(original_idx, int) or not isinstance(final_idx, int) or
+        original_idx in reindex or original_idx in removed_nodes or
+        original_idx < 0 or original_idx >= original_count or
+        final_idx < 0 or final_idx >= final_count):
+      raise RuntimeError("Iterator manifest %s has inconsistent index mappings." % manifest_path)
+    reindex[original_idx] = final_idx
+  if set(reindex) | set(removed_nodes) != set(range(original_count)):
+    raise RuntimeError("Iterator manifest %s does not cover its original index space." % manifest_path)
+  if set(reindex.values()) != set(range(final_count)):
+    raise RuntimeError("Iterator manifest %s final index space is not contiguous." % manifest_path)
+
+  dfg_path = Path(context.dfg_gen_kernel) / ("%s_PartPredDFG.xml" % context.kernel)
+  root = _read_unwrapped_xml(dfg_path)
+  dfg = root.find("DFG")
+  if dfg is None:
+    raise RuntimeError("Emitted DFG XML is missing <DFG>: %s" % dfg_path)
+  xml_indices = {int(node.attrib["idx"]) for node in dfg.findall("Node")}
+  if xml_indices != set(range(final_count)):
+    raise RuntimeError("Iterator manifest %s does not match emitted DFG XML." % manifest_path)
+
+  artifact_vars = manifest.get("artifact_vars_pruned", [])
+  if (not isinstance(artifact_vars, list) or
+      any(not isinstance(name, str) for name in artifact_vars)):
+    raise RuntimeError("Iterator manifest %s has invalid artifact_vars_pruned." % manifest_path)
+
+  # AGI XML boundary references were emitted before iterator removal. This is
+  # metadata remapping only: the main DFG XML is already final C++ output.
+  remap_agi_subgraph_externalidx(Path(context.dfg_gen_kernel), reindex)
+  print(
+    "Iterator manifest verified: %s removed_nodes=%d, remaining_nodes=%d\n"
+    % (manifest_path.name, removed_count, final_count)
+  )
+  return reindex, tuple(sorted(set(artifact_vars)))
+
+
 def _validate_one_agi_manifest(manifest_path):
   try:
     with manifest_path.open("r", encoding="utf-8") as stream:
@@ -377,6 +459,91 @@ def _validate_one_agi_manifest(manifest_path):
   print(
     "AGI manifest verified: %s removed_nodes=%d, remaining_nodes=%d, boundary_inputs=%d, boundary_outputs=%d\n"
     % (manifest_path.name, removed_count, remaining_count, boundary_inputs, boundary_outputs)
+  )
+
+
+def validate_simd_manifest(context):
+  manifest_paths = sorted(Path(context.dfg_gen_kernel).glob("*_SIMD_manifest.json"))
+  if len(manifest_paths) != 1:
+    raise RuntimeError(
+      "Verified SIMD packing requires exactly one *_SIMD_manifest.json under %s; found %d."
+      % (context.dfg_gen_kernel, len(manifest_paths))
+    )
+  manifest_path = manifest_paths[0]
+  try:
+    with manifest_path.open("r", encoding="utf-8") as stream:
+      manifest = json.load(stream)
+  except (OSError, json.JSONDecodeError) as exc:
+    raise RuntimeError("Could not read SIMD manifest %s: %s" % (manifest_path, exc))
+
+  if manifest.get("schema_version") != 1 or manifest.get("transform") != "vector_pack":
+    raise RuntimeError("SIMD manifest %s has an unsupported schema." % manifest_path)
+  if manifest.get("status") != "applied":
+    raise RuntimeError("SIMD manifest %s did not apply cleanly." % manifest_path)
+
+  original_count = manifest.get("original_node_count")
+  final_count = manifest.get("final_node_count")
+  lanes = manifest.get("lanes")
+  if not isinstance(original_count, int) or original_count < 0:
+    raise RuntimeError("SIMD manifest %s has invalid original_node_count." % manifest_path)
+  if not isinstance(final_count, int) or final_count < 0:
+    raise RuntimeError("SIMD manifest %s has invalid final_node_count." % manifest_path)
+  if lanes != context.config.arch_simd_width:
+    raise RuntimeError(
+      "SIMD manifest %s uses %r lanes, expected architecture width %d."
+      % (manifest_path, lanes, context.config.arch_simd_width)
+    )
+
+  dfg_path = Path(context.dfg_gen_kernel) / ("%s_PartPredDFG.xml" % context.kernel)
+  root = _read_unwrapped_xml(dfg_path)
+  dfg = root.find("DFG")
+  if dfg is None:
+    raise RuntimeError("Emitted DFG XML is missing <DFG>: %s" % dfg_path)
+  xml_indices = {int(node.attrib["idx"]) for node in dfg.findall("Node")}
+  if xml_indices != set(range(final_count)):
+    raise RuntimeError(
+      "SIMD manifest %s final index space does not match emitted XML." % manifest_path
+    )
+
+  reindex = {}
+  for entry in manifest.get("index_map", []):
+    if not isinstance(entry, dict):
+      raise RuntimeError("SIMD manifest %s has an invalid index-map entry." % manifest_path)
+    original_idx = entry.get("original_idx")
+    final_idx = entry.get("final_idx")
+    if (not isinstance(original_idx, int) or not isinstance(final_idx, int) or
+        original_idx in reindex or final_idx not in xml_indices):
+      raise RuntimeError("SIMD manifest %s has inconsistent index mappings." % manifest_path)
+    reindex[original_idx] = final_idx
+  if set(reindex) != set(range(original_count)):
+    raise RuntimeError("SIMD manifest %s does not map every original node." % manifest_path)
+
+  simd_groups = {}
+  covered_lanes = set()
+  for group in manifest.get("packed_groups", []):
+    if not isinstance(group, dict):
+      raise RuntimeError("SIMD manifest %s has an invalid packed group." % manifest_path)
+    final_idx = group.get("final_idx")
+    lane_indices = group.get("lanes")
+    if (not isinstance(final_idx, int) or final_idx not in xml_indices or
+        not isinstance(lane_indices, list) or len(lane_indices) != lanes):
+      raise RuntimeError("SIMD manifest %s has an invalid packed group shape." % manifest_path)
+    if (final_idx in simd_groups or any(not isinstance(idx, int) for idx in lane_indices) or
+        any(idx in covered_lanes or reindex.get(idx) != final_idx for idx in lane_indices)):
+      raise RuntimeError("SIMD manifest %s has inconsistent lane mappings." % manifest_path)
+    simd_groups[final_idx] = lane_indices
+    covered_lanes.update(lane_indices)
+
+  print(
+    "SIMD manifest verified: %s packed_groups=%d, original_nodes=%d, final_nodes=%d\n"
+    % (manifest_path.name, len(simd_groups), original_count, final_count)
+  )
+  return SimdMapping(
+    reindex=reindex,
+    simd_groups=simd_groups,
+    simd_splat_groups=frozenset(),
+    simd_reduced_store_groups=frozenset(),
+    simd_no_vector_word_groups=frozenset(),
   )
 
 
@@ -455,6 +622,7 @@ def run_dfg_generator(context, unroll_factor=None):
   if unroll_factor is None:
     unroll_factor = _default_unroll_factor(config)
   simd_active = simd_packing_active_for_factor(config, unroll_factor)
+  verified_simd_active = simd_active and config.simd_pack == "verified"
   context.selected_simd_enabled = simd_active
   context.selected_simd_width = config.arch_simd_width if simd_active else 1
   context.selected_simd_artifact_only = simd_active
@@ -516,8 +684,13 @@ def run_dfg_generator(context, unroll_factor=None):
   _run_dfg_pass_with_banksize_retry(context, skeleton_ir)
 
   validate_dfg_outputs(context)
-  if config.remove_agi:
+  if config.externalize_access != "off":
     validate_agi_manifest(context)
+  iter_reindex = {}
+  iter_artifact_vars_pruned = ()
+  if config.externalize_access == "agi_iter":
+    iter_reindex, iter_artifact_vars_pruned = validate_iter_manifest(context)
+  simd_mapping = validate_simd_manifest(context) if verified_simd_active else None
 
   if config.generate_dfg_pdf and not config.suppress_dfg_dot:
     run_command(Command(
@@ -530,7 +703,7 @@ def run_dfg_generator(context, unroll_factor=None):
     print("DFG PDF generation skipped because DOT emission is disabled.\n")
   dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
   mapper_xml = dfg_xml
-  simd_mapping = None
+  simd_artifact_vars_pruned = ()
   scalar_iter_reindex: "dict[int, int]" = {}
   if config.remove_iter and not simd_active:
     _require_experimental_python_semantic_transforms(config, "remove_iter")
@@ -538,7 +711,7 @@ def run_dfg_generator(context, unroll_factor=None):
     n, scalar_iter_reindex = prune_iter_control_xml(dfg_xml, pruned_xml)
     print("Iter-control prune (scalar): removed %d nodes\n" % n)
     mapper_xml = pruned_xml
-  if simd_active:
+  if simd_active and not verified_simd_active:
     _require_experimental_python_semantic_transforms(config, "SIMD XML packing")
     simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
       dfg_kernel.rstrip("/"),
@@ -567,6 +740,7 @@ def run_dfg_generator(context, unroll_factor=None):
         report.pack_ratio,
       )
     )
+    simd_artifact_vars_pruned = report.artifact_vars_pruned
   copy_file(mapper_xml, context.mapper_kernel)
   if mapper_xml != dfg_xml:
     staged_xml = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel)
@@ -581,6 +755,10 @@ def run_dfg_generator(context, unroll_factor=None):
     copy_file(str(agi_path), context.mapper_kernel)
   for agi_manifest_path in Path(dfg_kernel).glob("*_AGI_manifest.json"):
     copy_file(str(agi_manifest_path), context.mapper_kernel)
+  for iter_manifest_path in Path(dfg_kernel).glob("*_ITER_manifest.json"):
+    copy_file(str(iter_manifest_path), context.mapper_kernel)
+  for simd_manifest_path in Path(dfg_kernel).glob("*_SIMD_manifest.json"):
+    copy_file(str(simd_manifest_path), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 
   if not config.enable_simulation:
@@ -639,11 +817,19 @@ def run_dfg_generator(context, unroll_factor=None):
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
     for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
       reindex_addr_trace(addr_trace_path, addr_trace_path, scalar_iter_reindex)
-  if simd_mapping is not None:
+  if iter_reindex:
     import glob as _glob
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
     for trace_path in sorted(_glob.glob("%s/%s_trace_*.txt" % (addr_trace_dir, kernel))):
-      filter_trace_vars(trace_path, trace_path, report.artifact_vars_pruned)
+      filter_trace_vars(trace_path, trace_path, iter_artifact_vars_pruned)
+    for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
+      reindex_addr_trace(addr_trace_path, addr_trace_path, iter_reindex)
+  if simd_mapping is not None:
+    import glob as _glob
+    addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
+    if simd_artifact_vars_pruned:
+      for trace_path in sorted(_glob.glob("%s/%s_trace_*.txt" % (addr_trace_dir, kernel))):
+        filter_trace_vars(trace_path, trace_path, simd_artifact_vars_pruned)
     for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
       remap_addr_trace(addr_trace_path, addr_trace_path, simd_mapping)
 

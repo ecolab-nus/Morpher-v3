@@ -9,9 +9,10 @@ enable_simulation: true
 validation_mode: functional
 spm_mode: 'off'
 
-# AGI externalization is still implemented in the C++ DFG generator. Keep it
-# explicit until the AGI manifest/verifier work is complete.
-remove_agi: true
+# Trace-driven C++ access externalization runs before instrumentation, so
+# generated address traces already use the surviving DFG node indices.
+dfg_pipeline:
+  externalize_access: agi
 remove_iter: false
 layout_solver: false
 replicate_data: false

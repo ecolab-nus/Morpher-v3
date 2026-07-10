@@ -111,6 +111,15 @@ static cl::opt<unsigned> dp_policy ("dppolicy", cl::init(0), cl::desc("data plac
 static cl::opt<bool> RemoveAGI(
     "remove-agi", cl::init(false),
     cl::desc("Remove address generation instructions (GEPs and helpers) from DFG"));
+static cl::opt<std::string> ExternalizeAccess(
+    "externalize-access", cl::init("off"),
+    cl::desc("Trace-driven access externalization domain: off, agi, or agi_iter"));
+static cl::opt<unsigned> SIMDPackLanes(
+    "simd-pack", cl::init(0),
+    cl::desc("Pack complete lane-isomorphic DFG groups after instrumentation"));
+static cl::opt<std::string> SIMDVectorOps(
+    "simd-vector-ops", cl::init(""),
+    cl::desc("Comma-separated vector op names supported by the architecture"));
 static cl::opt<bool> SuppressDFGDot(
     "suppress-dfg-dot", cl::init(false),
     cl::desc("Do not emit DFG DOT files; XML and mem allocation outputs are still emitted"));
@@ -2968,7 +2977,15 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 				F.getName().str() + "_" + mname,
 				&loopNames,
 				mappingUnitMap[mname].lp);
-			LoopDFG->removeAGI = RemoveAGI;
+			if (ExternalizeAccess != "off" && ExternalizeAccess != "agi" &&
+				ExternalizeAccess != "agi_iter")
+			{
+				report_fatal_error(
+					"--externalize-access accepts only 'off', 'agi', or 'agi_iter' in the trace-driven pipeline");
+			}
+			LoopDFG->removeAGI = RemoveAGI || ExternalizeAccess == "agi" ||
+				ExternalizeAccess == "agi_iter";
+			LoopDFG->iteratorExternalized = ExternalizeAccess == "agi_iter";
 			LoopDFG->suppressDOT = SuppressDFGDot;
 			LoopDFG->setKernelName(F.getName().str() + kernelNameSuffix);
 			LoopDFG->SE = SEPtr;
@@ -3085,6 +3102,23 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 				LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][InstrumentInOutVars begin]\n");
 				LoopDFG->InstrumentInOutVars(F,mem_acceses,OLNodesWithPtrTyUsage,spm_base_address);
 				LLVM_DEBUG(dbgs() << "[Skeleton.cpp][InstrumentInOutVars end]\n\n");
+				if (ExternalizeAccess == "agi_iter")
+				{
+					LoopDFG->removeIteratorOnlyControl();
+					LoopDFG->classifyParents();
+				}
+				if (SIMDPackLanes > 1)
+				{
+					std::unordered_set<std::string> vectorOps;
+					std::stringstream ops(SIMDVectorOps);
+					std::string op;
+					while (std::getline(ops, op, ','))
+						if (!op.empty()) vectorOps.insert(op);
+					if (vectorOps.empty())
+						report_fatal_error("--simd-pack requires --simd-vector-ops");
+					LoopDFG->packSIMD(SIMDPackLanes, vectorOps);
+					LoopDFG->classifyParents();
+				}
 			}
 			//std::cout << "Code instrumentation done \n";
 

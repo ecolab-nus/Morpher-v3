@@ -69,7 +69,8 @@ Stage logic:
    - DFG DOT
    - mem allocation file
 5. Render DOT to PDF.
-6. Copy DFG XML and mem-alloc to mapper workspace.
+6. Validate any AGI/iterator/SIMD manifests, remap trace metadata, and copy
+   DFG XML and mem-alloc to mapper workspace.
 7. If simulation enabled:
    - build instrumented binary
    - run binary to emit memory traces
@@ -90,7 +91,9 @@ Stage logic:
    - run `update_mem_alloc.py`
    - generate `<kernel>_arch_runtime.json`
 4. Run `cgra_xml_mapper`.
-5. If simulation enabled, copy emitted `*.bin` to simulator workspace.
+5. Artifact simulation consumes the staged DFG and mapper JSON artifact;
+   hardware binary emission is disabled. The empty mapper latency-named file
+   remains only as a locator for its sibling mapping JSON.
 
 ## `simulator.py`
 
