@@ -11,7 +11,7 @@ Linux
 - End-to-end flow from C kernel to mapped DFG (`run_morpher.py`)
 - XML input mode: skip DFG generation and feed a pre-generated DFG directly to the mapper
 - Two memory modes: `auto` (generate architecture JSON at runtime) or `static` (use a pre-authored JSON)
-- Auto-unroll search: sweeps candidate unroll factors and picks the one minimising effective II per iteration (`auto_unroll`)
+- Auto-unroll and loop-order search: sweeps candidate unroll factors and can compare the original perfect nest with LLVM-legal loop interchange (`auto_unroll`)
 - Architecture-driven SIMD packing: SIMD width and vector ops are inferred from the architecture JSON; the verified mode packs closed lane-isomorphic DFG subgraphs in C++ before mapping
 - Trace-driven access externalization: removes AGI before instrumentation and, for verified data-parallel loops, removes the disconnected iterator component (`dfg_pipeline.externalize_access: agi_iter`)
 - Legacy iterator pruning: Python XML graph rewrite for loop-control and PHI-merge nodes (`remove_iter`)
@@ -156,6 +156,8 @@ Default config: `config/default.yaml`. Provided configs include:
 | `config/scalar_edgemem.yaml` | Scalar flow on the edge-memory HyCUBE architecture. |
 | `config/scalar_edgemem_unroll.yaml` | Edge-memory scalar flow with a fixed auto-unroll factor of 2. |
 | `config/simd4_verified.yaml` | 4-lane verified C++ SIMD smoke config: AGI externalization, manifest-backed packing, mapper-only validation. |
+| `config/simd4_verified_agi_iter.yaml` | 4-lane verified SIMD plus restricted iterator externalization; also compares original and LLVM-interchanged perfect-nest candidates. |
+| `config/simd4_verified_vred.yaml` | 4-lane verified reduction-axis SIMD on a VRED-capable architecture. |
 | `config/simd4_noiter.yaml` | Legacy experimental Python SIMD/iterator-pruning flow. |
 | `config/hycube_vectorization.yaml` | Vectorized architecture config with auto-unroll factor 3, layout solver enabled. |
 | `config/regression_gemm_simd4_unroll.yaml` | Focused GEMM SIMD/unroll regression config. |
@@ -188,7 +190,7 @@ Default config: `config/default.yaml`. Provided configs include:
 | `max_test_samples` | Integer `>= 0` | required in provided configs | Trace-generation limit and simulator sample cap. |
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
 | `dfg_pipeline.externalize_access` | `off`, `agi`, `agi_iter` | `off` | Trace-driven C++ access externalization. `agi` removes address-generation nodes before instrumentation. `agi_iter` additionally removes the iterator/control component only when it has no edge to surviving work; addresses are trace-driven and the iterator manifest remaps their final node indices. It rejects data, predicate, recurrence, or reduction boundaries. |
-| `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
+| `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi` or `agi_iter`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
 | `remove_agi` | Boolean: `true` or `false` | `false` | Deprecated alias for `dfg_pipeline.externalize_access: agi`; emits and runner-validates `*_AGI_manifest.json`. |
 | `remove_iter` | Boolean: `true` or `false` | `false` | Experimental iterator/control removal. The current implementation is a Python XML graph rewrite and requires `experimental_python_semantic_transforms: true`. |
 | `source_template.enabled` | `off`, `auto`, Boolean | `off` | Experimental source-bound template lowering. `auto` currently stages lowered XML from Python and requires `experimental_python_semantic_transforms: true`. |
@@ -233,6 +235,7 @@ For `runall` C-source runs, auto-unroll sweeps candidate factors, maps each cand
 | `auto_unroll.enabled` | Boolean: `true` or `false` | `false` | Enable the search. |
 | `auto_unroll.factors` | Non-empty list of integers `>= 1` | `[1, 2, 4, 8]` | Candidate factors to try; duplicate factors are ignored and candidates are run high-to-low. |
 | `auto_unroll.fuse_innermost_loops` | Boolean: `true` or `false` | `true` | Before unrolling, attempt a conservative fusion/flattening of the annotated innermost loop with its direct parent when the nest is canonical and constant-trip. |
+| `auto_unroll.try_loop_interchange` | Boolean: `true` or `false` | `false` | For each factor, also map a candidate produced by LLVM loop interchange after temporarily removing the map marker. This requires the marker to identify the unique deepest loop in a single-child nest; a rejected interchanged candidate does not discard the original candidate. |
 | `auto_unroll.stop_on_degradation` | Boolean: `true` or `false` | `true` | Stop searching early if effective II worsens. |
 
 Removed keys: `auto_unroll.remainder_policy` and `auto_unroll.outer_factor` now raise errors. Remainders are always preserved; size benchmarks so the mapped trip counts are valid multiples of the desired unroll/SIMD factor.
@@ -247,9 +250,11 @@ SIMD is no longer configured through top-level `simd.*` YAML knobs. The runner i
 - `SCALAR_BROADCAST` and vector op names are also inferred from the architecture JSON.
 - Deprecated top-level `simd` config data is ignored by the current runner except for the deprecation warning.
 
-`dfg_pipeline.simd_pack: verified` is the trace-driven path. The C++ DFG pass first instruments scalar IR, then packs a complete lane-isomorphic load/compute/store subgraph and writes `*_SIMD_manifest.json`. The runner validates that manifest and uses it only to remap/collapse trace rows; it does not rewrite the packed XML. This v1 mode rejects reductions, recurrences, control edges, partial or multi-vector lane groups, scalar broadcasts, and scalar/vector boundaries, leaving those groups scalar. It cannot be combined with `remove_iter` or `agi_iter`.
+`dfg_pipeline.simd_pack: verified` is the trace-driven path. The C++ DFG pass first instruments scalar IR, then packs a complete lane-isomorphic load/compute/store subgraph and writes `*_SIMD_manifest.json`. The runner validates that manifest and uses it only to remap/collapse trace rows; it does not rewrite the packed XML. It supports lane-isomorphic recurrence edges and one shared scalar input only when the architecture declares `SCALAR_BROADCAST: true`; control/back edges, partial or multi-vector lane groups, and scalar/vector outputs remain scalar. On an architecture exposing `VRED`, annotated packed integer `ADD`, `AND`, `OR`, or `XOR` reductions can become `vector producer -> VRED -> scalar accumulator`; the manifest explicitly covers the synthesized `VRED` and pruned scalar reduction tree. The scalar accumulator remains a true loop-carried recurrence, so VRED reduces work per iteration but does not imply `RecMin=0`. It cannot be combined with legacy Python `remove_iter`, but it can compose with C++ `agi_iter` for genuinely data-parallel loops.
 
-`dfg_pipeline.externalize_access: agi_iter` is separate from legacy `remove_iter`. It applies only after AGI externalization. It removes the remaining loop-start/end, PHI/control, and synthetic iterator live-out component when every edge stays within that component. The mapped DFG is then the data-parallel body, while address-trace exhaustion determines artifact-simulation completion. Any iterator-derived predicate, data value, recurrence, or reduction reaching surviving work is a hard error rather than an externalized behavior; unrelated data-dependent control remains in the DFG.
+With `auto_unroll.try_loop_interchange: true`, the search maps both loop orders for each factor. Morpher removes `please_map_me()` only while LLVM checks and applies interchange, then restores it in the unique deepest loop. For GEMM this can move the reduction loop outward and expose an output-parallel inner loop; `agi_iter` can then remove all iterator/control nodes, while verified SIMD retains only essential memory and compute operations. This is deliberately opt-in because legality does not guarantee a better CGRA mapping, and ambiguous or branched nests are rejected.
+
+`dfg_pipeline.externalize_access: agi_iter` is separate from legacy `remove_iter`. It applies only after AGI externalization and before verified SIMD packing. It removes the remaining loop-start/end, PHI/control, and synthetic iterator live-out component when every edge stays within that component. The mapped DFG is then the data-parallel body, while address-trace exhaustion determines artifact-simulation completion. Any iterator-derived predicate, data value, recurrence, or reduction reaching surviving work is a hard error rather than an externalized behavior; unrelated data-dependent control remains in the DFG. When combined with verified SIMD, the runner composes the iterator and SIMD manifests before remapping AGI boundary metadata.
 
 The older Python XML packer remains available only with `experimental_python_semantic_transforms: true` when `dfg_pipeline.simd_pack` is left `off`. It is not part of the verified SIMD contract.
 

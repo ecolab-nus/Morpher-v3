@@ -720,6 +720,7 @@ class RunnerConfig:
   auto_unroll_enabled: bool
   auto_unroll_factors: list
   auto_unroll_fuse_innermost_loops: bool
+  auto_unroll_try_loop_interchange: bool
   auto_unroll_stop_on_degradation: bool
   auto_unroll_scalar_reduction_policy: str
   auto_unroll_scalar_reduction_terms: int
@@ -768,6 +769,7 @@ class RunnerConfig:
         "innermost loop fusion with auto_unroll.fuse_innermost_loops instead."
       )
     fuse_innermost_loops = bool(auto_cfg.get("fuse_innermost_loops", True))
+    try_loop_interchange = bool(auto_cfg.get("try_loop_interchange", False))
 
     stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", True))
     scalar_reduction_policy = str(
@@ -803,6 +805,7 @@ class RunnerConfig:
       enabled,
       factors,
       fuse_innermost_loops,
+      try_loop_interchange,
       stop_on_degradation,
       scalar_reduction_policy,
       scalar_reduction_terms,
@@ -880,10 +883,10 @@ class RunnerConfig:
       mode = str(raw_mode).strip().lower()
     if mode not in ("off", "verified"):
       raise RuntimeError("dfg_pipeline.simd_pack must be one of: off, verified.")
-    if mode == "verified" and externalize_access != "agi":
+    if mode == "verified" and externalize_access not in ("agi", "agi_iter"):
       raise RuntimeError(
         "dfg_pipeline.simd_pack=verified currently requires "
-        "dfg_pipeline.externalize_access=agi."
+        "dfg_pipeline.externalize_access=agi or agi_iter."
       )
     if mode == "verified" and bool(config_dict.get("remove_iter", False)):
       raise RuntimeError(
@@ -905,6 +908,7 @@ class RunnerConfig:
       auto_unroll_enabled,
       auto_unroll_factors,
       auto_unroll_fuse_innermost_loops,
+      auto_unroll_try_loop_interchange,
       auto_unroll_stop_on_degradation,
       auto_unroll_scalar_reduction_policy,
       auto_unroll_scalar_reduction_terms,
@@ -1072,6 +1076,7 @@ class RunnerConfig:
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,
+      auto_unroll_try_loop_interchange=auto_unroll_try_loop_interchange,
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
       auto_unroll_scalar_reduction_policy=auto_unroll_scalar_reduction_policy,
       auto_unroll_scalar_reduction_terms=auto_unroll_scalar_reduction_terms,

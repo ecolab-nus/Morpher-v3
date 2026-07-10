@@ -6,6 +6,7 @@ using namespace llvm;
 
 FunctionPassManager createMorpherDFGGenPipeline();
 FunctionPassManager createMorpherLoopUnrollPipeline();
+FunctionPassManager createMorpherLoopInterchangePipeline();
 FunctionPassManager createMorpherSystolicCandidatePipeline();
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
@@ -23,6 +24,11 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
               if (Name == "morpher-loop-unroll") {
                 MPM.addPass(createModuleToFunctionPassAdaptor(
                     createMorpherLoopUnrollPipeline()));
+                return true;
+              }
+              if (Name == "morpher-loop-interchange") {
+                MPM.addPass(createModuleToFunctionPassAdaptor(
+                    createMorpherLoopInterchangePipeline()));
                 return true;
               }
               if (Name == "morpher-systolic-candidate") {

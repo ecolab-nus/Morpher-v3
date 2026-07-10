@@ -1896,6 +1896,11 @@ int DFGPartPred::classifyParents() {
 				ins=node->getNode();
 			}
 			else{
+				if(node->getNameType().compare("VRED")==0){
+					assert(node->parentClassification.find(1) == node->parentClassification.end());
+					node->parentClassification[1]=parent;
+					continue;
+				}
 				if(node->getNameType().compare("XORNOT")==0){
 					assert(node->parentClassification.find(1) == node->parentClassification.end());
 					node->parentClassification[1]=parent;
@@ -2140,6 +2145,13 @@ int DFGPartPred::classifyParents() {
 				//					}
 			}
 			else{
+				if(parent->getNameType().compare("VRED")==0){
+					if(node->parentClassification.find(1) == node->parentClassification.end())
+						node->parentClassification[1]=parent;
+					else
+						node->parentClassification[2]=parent;
+					continue;
+				}
 				if(parent->getNameType().compare("CTRLBrOR")==0){
 					node->parentClassification[0]=parent;
 					continue;

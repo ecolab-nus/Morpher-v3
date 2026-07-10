@@ -132,8 +132,32 @@ def _require_experimental_python_semantic_transforms(config, feature):
   )
 
 
-def build_unroll_command(context, unroll_factor):
+def build_loop_interchange_command(context):
   kernel = context.kernel
+  return Command(
+    argv=[
+      resolve_llvm_tool("opt"),
+      "-load-pass-plugin",
+      "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
+      "-passes=morpher-loop-interchange",
+      "--morpher-unroll-fn",
+      kernel,
+      "-pass-remarks=loop-interchange",
+      "-pass-remarks-missed=loop-interchange",
+      "%s_opt.ll" % kernel,
+      "-S",
+      "-o",
+      "%s_li_opt.ll" % kernel,
+    ],
+    cwd=context.dfg_gen_kernel,
+    env=build_llvm_tool_env(),
+  )
+
+
+def build_unroll_command(context, unroll_factor, input_ir=None):
+  kernel = context.kernel
+  if input_ir is None:
+    input_ir = "%s_opt.ll" % kernel
   simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
   if simd_active:
     reduction_lanes = context.config.arch_simd_width
@@ -164,7 +188,7 @@ def build_unroll_command(context, unroll_factor):
       str(reduction_lanes),
       "--morpher-reduction-policy",
       reduction_policy,
-      "%s_opt.ll" % kernel,
+      input_ir,
       "-S",
       "-o",
       "%s_uf%d_opt.ll" % (kernel, unroll_factor),
@@ -203,6 +227,7 @@ def build_dfg_pass_command(context, skeleton_ir=None):
   if config.simd_pack == "verified" and getattr(context, "selected_simd_enabled", False):
     cmd.append("--simd-pack=%d" % config.arch_simd_width)
     cmd.append("--simd-vector-ops=%s" % ",".join(sorted(config.arch_vector_ops)))
+    cmd.append("--simd-scalar-broadcast=%d" % (1 if config.arch_scalar_broadcast else 0))
   if config.suppress_dfg_dot:
     cmd.append("--suppress-dfg-dot")
   return cmd
@@ -361,23 +386,28 @@ def validate_iter_manifest(context):
   if set(reindex.values()) != set(range(final_count)):
     raise RuntimeError("Iterator manifest %s final index space is not contiguous." % manifest_path)
 
-  dfg_path = Path(context.dfg_gen_kernel) / ("%s_PartPredDFG.xml" % context.kernel)
-  root = _read_unwrapped_xml(dfg_path)
-  dfg = root.find("DFG")
-  if dfg is None:
-    raise RuntimeError("Emitted DFG XML is missing <DFG>: %s" % dfg_path)
-  xml_indices = {int(node.attrib["idx"]) for node in dfg.findall("Node")}
-  if xml_indices != set(range(final_count)):
-    raise RuntimeError("Iterator manifest %s does not match emitted DFG XML." % manifest_path)
+  # SIMD packing runs after C++ iterator externalization. In that combined
+  # path the emitted XML is in the post-SIMD index space, so its node count is
+  # checked against the SIMD manifest below instead of this intermediate map.
+  config = getattr(context, "config", None)
+  if not (
+      getattr(config, "simd_pack", "off") == "verified"
+      and getattr(context, "selected_simd_enabled", False)
+  ):
+    dfg_path = Path(context.dfg_gen_kernel) / ("%s_PartPredDFG.xml" % context.kernel)
+    root = _read_unwrapped_xml(dfg_path)
+    dfg = root.find("DFG")
+    if dfg is None:
+      raise RuntimeError("Emitted DFG XML is missing <DFG>: %s" % dfg_path)
+    xml_indices = {int(node.attrib["idx"]) for node in dfg.findall("Node")}
+    if xml_indices != set(range(final_count)):
+      raise RuntimeError("Iterator manifest %s does not match emitted DFG XML." % manifest_path)
 
   artifact_vars = manifest.get("artifact_vars_pruned", [])
   if (not isinstance(artifact_vars, list) or
       any(not isinstance(name, str) for name in artifact_vars)):
     raise RuntimeError("Iterator manifest %s has invalid artifact_vars_pruned." % manifest_path)
 
-  # AGI XML boundary references were emitted before iterator removal. This is
-  # metadata remapping only: the main DFG XML is already final C++ output.
-  remap_agi_subgraph_externalidx(Path(context.dfg_gen_kernel), reindex)
   print(
     "Iterator manifest verified: %s removed_nodes=%d, remaining_nodes=%d\n"
     % (manifest_path.name, removed_count, final_count)
@@ -499,7 +529,8 @@ def validate_simd_manifest(context):
   dfg = root.find("DFG")
   if dfg is None:
     raise RuntimeError("Emitted DFG XML is missing <DFG>: %s" % dfg_path)
-  xml_indices = {int(node.attrib["idx"]) for node in dfg.findall("Node")}
+  xml_nodes = {int(node.attrib["idx"]): node for node in dfg.findall("Node")}
+  xml_indices = set(xml_nodes)
   if xml_indices != set(range(final_count)):
     raise RuntimeError(
       "SIMD manifest %s final index space does not match emitted XML." % manifest_path
@@ -515,8 +546,36 @@ def validate_simd_manifest(context):
         original_idx in reindex or final_idx not in xml_indices):
       raise RuntimeError("SIMD manifest %s has inconsistent index mappings." % manifest_path)
     reindex[original_idx] = final_idx
-  if set(reindex) != set(range(original_count)):
-    raise RuntimeError("SIMD manifest %s does not map every original node." % manifest_path)
+  pruned_nodes = manifest.get("pruned_nodes", [])
+  if (not isinstance(pruned_nodes, list) or
+      any(not isinstance(idx, int) for idx in pruned_nodes) or
+      len(set(pruned_nodes)) != len(pruned_nodes) or
+      any(idx < 0 or idx >= original_count for idx in pruned_nodes) or
+      set(pruned_nodes) & set(reindex) or
+      set(reindex) | set(pruned_nodes) != set(range(original_count))):
+    raise RuntimeError("SIMD manifest %s has invalid pruned_nodes coverage." % manifest_path)
+
+  synthesized_indices = set()
+  for entry in manifest.get("synthesized_nodes", []):
+    if not isinstance(entry, dict):
+      raise RuntimeError("SIMD manifest %s has an invalid synthesized node." % manifest_path)
+    final_idx = entry.get("final_idx")
+    op = entry.get("op")
+    xml_node = xml_nodes.get(final_idx) if isinstance(final_idx, int) else None
+    op_elem = xml_node.find("OP") if xml_node is not None else None
+    xml_op = (op_elem.text or "").strip() if op_elem is not None else ""
+    if (not isinstance(final_idx, int) or final_idx in synthesized_indices or
+        final_idx not in xml_indices or not isinstance(op, str) or op != xml_op):
+      raise RuntimeError("SIMD manifest %s has inconsistent synthesized nodes." % manifest_path)
+    synthesized_indices.add(final_idx)
+
+  if set(reindex.values()) | synthesized_indices != xml_indices:
+    raise RuntimeError("SIMD manifest %s does not cover every final node." % manifest_path)
+
+  artifact_vars_pruned = manifest.get("pruned_artifact_vars", [])
+  if (not isinstance(artifact_vars_pruned, list) or
+      any(not isinstance(name, str) or not name for name in artifact_vars_pruned)):
+    raise RuntimeError("SIMD manifest %s has invalid pruned_artifact_vars." % manifest_path)
 
   simd_groups = {}
   covered_lanes = set()
@@ -544,6 +603,7 @@ def validate_simd_manifest(context):
     simd_splat_groups=frozenset(),
     simd_reduced_store_groups=frozenset(),
     simd_no_vector_word_groups=frozenset(),
+    artifact_vars_pruned=frozenset(artifact_vars_pruned),
   )
 
 
@@ -615,7 +675,7 @@ def _unroll_pass_required(config, unroll_factor):
   return unroll_factor > 1
 
 
-def run_dfg_generator(context, unroll_factor=None):
+def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
   config = context.config
   kernel = context.kernel
   dfg_kernel = context.dfg_gen_kernel
@@ -649,6 +709,10 @@ def run_dfg_generator(context, unroll_factor=None):
     print(
       "Requested Morpher innermost loop fusion where LLVM can prove legality.\n"
     )
+  if interchange_loops:
+    print(
+      "Requested LLVM loop interchange candidate for the uniquely annotated perfect nest.\n"
+    )
   if (
       unroll_factor > 1
       and not simd_active
@@ -674,9 +738,13 @@ def run_dfg_generator(context, unroll_factor=None):
   run_command(ir_commands[1])
 
   skeleton_ir = "%s_opt.ll" % kernel
+  if interchange_loops:
+    print("Trying legal/profitable loop interchange before unrolling..\n")
+    run_command(build_loop_interchange_command(context))
+    skeleton_ir = "%s_li_opt.ll" % kernel
   if _unroll_pass_required(config, unroll_factor):
     print("Unrolling annotated loop for DFG candidate..\n")
-    run_command(build_unroll_command(context, unroll_factor))
+    run_command(build_unroll_command(context, unroll_factor, skeleton_ir))
     skeleton_ir = "%s_uf%d_opt.ll" % (kernel, unroll_factor)
 
   dfg_artifact_label = "xml" if config.suppress_dfg_dot else "xml/dot"
@@ -691,6 +759,21 @@ def run_dfg_generator(context, unroll_factor=None):
   if config.externalize_access == "agi_iter":
     iter_reindex, iter_artifact_vars_pruned = validate_iter_manifest(context)
   simd_mapping = validate_simd_manifest(context) if verified_simd_active else None
+  if iter_reindex:
+    agi_reindex = iter_reindex
+    if simd_mapping is not None:
+      if set(iter_reindex.values()) != set(simd_mapping.reindex):
+        raise RuntimeError(
+          "Iterator and SIMD manifests use incompatible intermediate index spaces."
+        )
+      agi_reindex = {
+        before_iter: simd_mapping.reindex[after_iter]
+        for before_iter, after_iter in iter_reindex.items()
+      }
+    # AGI boundary references are emitted before iterator removal (and SIMD,
+    # when enabled). This is metadata remapping only; the main DFG XML is
+    # already final C++ output.
+    remap_agi_subgraph_externalidx(Path(context.dfg_gen_kernel), agi_reindex)
 
   if config.generate_dfg_pdf and not config.suppress_dfg_dot:
     run_command(Command(
@@ -703,7 +786,10 @@ def run_dfg_generator(context, unroll_factor=None):
     print("DFG PDF generation skipped because DOT emission is disabled.\n")
   dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
   mapper_xml = dfg_xml
-  simd_artifact_vars_pruned = ()
+  simd_artifact_vars_pruned = (
+    tuple(sorted(simd_mapping.artifact_vars_pruned))
+    if simd_mapping is not None else ()
+  )
   scalar_iter_reindex: "dict[int, int]" = {}
   if config.remove_iter and not simd_active:
     _require_experimental_python_semantic_transforms(config, "remove_iter")

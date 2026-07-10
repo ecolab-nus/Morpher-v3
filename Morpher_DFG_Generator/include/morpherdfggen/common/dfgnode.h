@@ -296,6 +296,10 @@ class dfgNode{
 				simdGroup = group;
 				simdLanes = lanes;
 			}
+			void setSimdReduction(std::string op, std::string base = ""){
+				simdReduceOp = std::move(op);
+				simdReduceBase = std::move(base);
+			}
 			void setSimdPacked(std::vector<int> laneSources){
 				simdPacked = true;
 				simdLaneSources = std::move(laneSources);

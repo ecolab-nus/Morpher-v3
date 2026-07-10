@@ -68,6 +68,7 @@ class SimdMapping:
   simd_splat_groups: frozenset = frozenset()  # post_idx values whose lane0 addr should be replicated.
   simd_reduced_store_groups: frozenset = frozenset()  # post_idx values collapsed from lane stores to one scalar trace.
   simd_no_vector_word_groups: frozenset = frozenset()  # post_idx values that must stay per-lane in addr traces.
+  artifact_vars_pruned: frozenset = frozenset()  # trace variables removed by the verified transform.
 
 
 def _read_wrapped_xml(path: Path) -> ET.Element:

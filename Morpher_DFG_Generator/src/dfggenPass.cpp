@@ -120,6 +120,9 @@ static cl::opt<unsigned> SIMDPackLanes(
 static cl::opt<std::string> SIMDVectorOps(
     "simd-vector-ops", cl::init(""),
     cl::desc("Comma-separated vector op names supported by the architecture"));
+static cl::opt<bool> SIMDScalarBroadcast(
+    "simd-scalar-broadcast", cl::init(false),
+    cl::desc("Allow verified SIMD groups to consume one shared scalar input"));
 static cl::opt<bool> SuppressDFGDot(
     "suppress-dfg-dot", cl::init(false),
     cl::desc("Do not emit DFG DOT files; XML and mem allocation outputs are still emitted"));
@@ -3116,7 +3119,7 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 						if (!op.empty()) vectorOps.insert(op);
 					if (vectorOps.empty())
 						report_fatal_error("--simd-pack requires --simd-vector-ops");
-					LoopDFG->packSIMD(SIMDPackLanes, vectorOps);
+					LoopDFG->packSIMD(SIMDPackLanes, vectorOps, SIMDScalarBroadcast);
 					LoopDFG->classifyParents();
 				}
 			}

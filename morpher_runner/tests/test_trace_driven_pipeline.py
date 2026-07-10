@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 from morpher_runner.context import RunnerConfig
 from morpher_runner.dfg_generator import build_dfg_pass_command
+from morpher_runner.dfg_generator import build_loop_interchange_command
 from morpher_runner.dfg_generator import validate_iter_manifest
+from morpher_runner.dfg_generator import validate_simd_manifest
 from morpher_runner.mapper import build_mapper_commands
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.simd_packer import SimdMapping
@@ -56,6 +58,15 @@ class ExternalizeAccessConfigTests(unittest.TestCase):
         "off",
       )
 
+  def test_verified_simd_accepts_iterator_externalization(self):
+    self.assertEqual(
+      RunnerConfig._parse_simd_pack(
+        {"dfg_pipeline": {"simd_pack": "verified"}},
+        "agi_iter",
+      ),
+      "verified",
+    )
+
 
 class TraceDrivenCommandTests(unittest.TestCase):
 
@@ -87,6 +98,26 @@ class TraceDrivenCommandTests(unittest.TestCase):
     command = build_dfg_pass_command(context)
     self.assertIn("--externalize-access=agi_iter", command)
 
+  def test_loop_interchange_command_uses_target_scoped_marker_pipeline(self):
+    context = SimpleNamespace(
+      kernel="probe",
+      dfg_gen_home=str(REPO_ROOT / "Morpher_DFG_Generator"),
+      dfg_gen_kernel="/tmp/probe/",
+    )
+    command = build_loop_interchange_command(context)
+    self.assertIn(
+      "-passes=morpher-loop-interchange",
+      command.argv,
+    )
+    self.assertIn("probe_opt.ll", command.argv)
+    self.assertIn("probe_li_opt.ll", command.argv)
+
+  def test_auto_unroll_parses_loop_interchange_search(self):
+    parsed = RunnerConfig._parse_auto_unroll(
+      {"auto_unroll": {"enabled": True, "try_loop_interchange": True}}
+    )
+    self.assertTrue(parsed[3])
+
   def test_mapper_binary_emission_is_disabled(self):
     context = SimpleNamespace(
       config=self.config,
@@ -112,6 +143,7 @@ class TraceDrivenCommandTests(unittest.TestCase):
     command = build_dfg_pass_command(context)
     self.assertIn("--simd-pack=4", command)
     self.assertTrue(any(arg.startswith("--simd-vector-ops=") for arg in command))
+    self.assertIn("--simd-scalar-broadcast=1", command)
 
   def test_manifest_style_simd_mapping_collapses_contiguous_trace_lanes(self):
     mapping = SimdMapping(
@@ -167,6 +199,93 @@ class TraceDrivenCommandTests(unittest.TestCase):
       )
       self.assertEqual(reindex, {0: 0})
       self.assertEqual(artifact_vars, ("loopend", "loopstart"))
+
+  def test_iterator_manifest_accepts_post_simd_xml_index_space(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "probe_PartPredDFG.xml").write_text(
+        "<DFG count=\"1\"><Node idx=\"0\"><OP>VADD</OP>"
+        "<Inputs></Inputs><Outputs></Outputs><RecParents></RecParents>"
+        "</Node></DFG>\n",
+        encoding="utf-8",
+      )
+      (root / "probe_ITER_manifest.json").write_text(
+        json.dumps(
+          {
+            "schema_version": 1,
+            "transform": "externalize_iterator_only",
+            "status": "applied",
+            "original_node_count": 3,
+            "removed_node_count": 1,
+            "final_node_count": 2,
+            "removed_nodes": [2],
+            "artifact_vars_pruned": ["loopstart", "loopend"],
+            "index_map": [
+              {"original_idx": 0, "final_idx": 0},
+              {"original_idx": 1, "final_idx": 1},
+            ],
+          }
+        ),
+        encoding="utf-8",
+      )
+      reindex, _ = validate_iter_manifest(
+        SimpleNamespace(
+          dfg_gen_kernel=str(root),
+          kernel="probe",
+          config=SimpleNamespace(simd_pack="verified"),
+          selected_simd_enabled=True,
+        )
+      )
+      self.assertEqual(reindex, {0: 0, 1: 1})
+
+  def test_vred_manifest_covers_pruned_and_synthesized_nodes(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "probe_PartPredDFG.xml").write_text(
+        "<DFG count=\"2\">"
+        "<Node idx=\"0\"><OP>VMUL</OP></Node>"
+        "<Node idx=\"1\"><OP>VRED</OP></Node>"
+        "</DFG>\n",
+        encoding="utf-8",
+      )
+      (root / "probe_SIMD_manifest.json").write_text(
+        json.dumps(
+          {
+            "schema_version": 1,
+            "transform": "vector_pack",
+            "status": "applied",
+            "lanes": 4,
+            "original_node_count": 5,
+            "final_node_count": 2,
+            "pruned_nodes": [4],
+            "pruned_artifact_vars": ["morpher.reduce.tmp"],
+            "synthesized_nodes": [
+              {"final_idx": 1, "op": "VRED", "reduce_op": "ADD"}
+            ],
+            "packed_groups": [
+              {
+                "simd_group": 7,
+                "final_idx": 0,
+                "vector_op": "VMUL",
+                "lanes": [0, 1, 2, 3],
+              }
+            ],
+            "index_map": [
+              {"original_idx": idx, "final_idx": 0} for idx in range(4)
+            ],
+          }
+        ),
+        encoding="utf-8",
+      )
+      mapping = validate_simd_manifest(
+        SimpleNamespace(
+          dfg_gen_kernel=str(root),
+          kernel="probe",
+          config=SimpleNamespace(arch_simd_width=4),
+        )
+      )
+      self.assertEqual(mapping.simd_groups, {0: [0, 1, 2, 3]})
+      self.assertEqual(mapping.artifact_vars_pruned, frozenset({"morpher.reduce.tmp"}))
 
 
 if __name__ == "__main__":

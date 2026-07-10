@@ -22,6 +22,8 @@
 #include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
+#include "llvm/Transforms/Scalar/LoopInterchange.h"
+#include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include <map>
 
 using namespace llvm;
@@ -39,6 +41,9 @@ static cl::opt<unsigned> MorpherUnrollFactor(
 static cl::opt<bool> MorpherFuseInnermostLoops(
     "morpher-fuse-innermost-loops", cl::init(false),
     cl::desc("Run LLVM loop-flattening before Morpher unroll to fuse legal inner loop nests"));
+
+static constexpr StringLiteral MorpherStrippedMarkerAttr =
+    "morpher.map-marker-stripped-depth";
 
 static cl::opt<unsigned> MorpherReductionLanes(
     "morpher-reduction-lanes", cl::init(1),
@@ -210,6 +215,116 @@ CallBase *findAnnotatedLoopMarker(Function &F, LoopInfo &LI, Loop *&TargetLoop) 
 
   return Marker;
 }
+
+void collectInnermostLoops(Loop *L, SmallVectorImpl<Loop *> &Innermost) {
+  if (L->getSubLoops().empty()) {
+    Innermost.push_back(L);
+    return;
+  }
+  for (Loop *SubLoop : L->getSubLoops())
+    collectInnermostLoops(SubLoop, Innermost);
+}
+
+SmallVector<Loop *, 4> findDeepestLoops(LoopInfo &LI) {
+  SmallVector<Loop *, 8> Innermost;
+  for (Loop *TopLevel : LI)
+    collectInnermostLoops(TopLevel, Innermost);
+
+  unsigned MaxDepth = 0;
+  for (Loop *L : Innermost)
+    MaxDepth = std::max(MaxDepth, L->getLoopDepth());
+
+  SmallVector<Loop *, 4> Deepest;
+  for (Loop *L : Innermost)
+    if (L->getLoopDepth() == MaxDepth)
+      Deepest.push_back(L);
+  return Deepest;
+}
+
+struct MorpherStripMapMarkerPass
+    : public PassInfoMixin<MorpherStripMapMarkerPass> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+    if (F.isDeclaration() ||
+        (!MorpherUnrollFn.empty() && F.getName() != MorpherUnrollFn))
+      return PreservedAnalyses::all();
+
+    LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
+    Loop *TargetLoop = nullptr;
+    CallBase *Marker = findAnnotatedLoopMarker(F, LI, TargetLoop);
+    SmallVector<Loop *, 4> Deepest = findDeepestLoops(LI);
+    if (Deepest.size() != 1 || Deepest.front() != TargetLoop)
+      report_fatal_error(
+          "loop interchange requires please_map_me() to identify the unique deepest loop");
+
+    for (Loop *L = TargetLoop; L->getParentLoop(); L = L->getParentLoop())
+      if (L->getParentLoop()->getSubLoops().size() != 1)
+        report_fatal_error(
+            "loop interchange requires a single-child loop nest around please_map_me()");
+
+    if (!Marker->use_empty())
+      report_fatal_error("please_map_me() return value cannot be used");
+
+    const unsigned Depth = TargetLoop->getLoopDepth();
+    F.addFnAttr(MorpherStrippedMarkerAttr, Twine(Depth).str());
+    Marker->eraseFromParent();
+    errs() << "Morpher loop interchange: temporarily removed map marker from "
+           << F.getName() << " at depth " << Depth << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
+struct MorpherInsertMapMarkerPass
+    : public PassInfoMixin<MorpherInsertMapMarkerPass> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+    if (F.isDeclaration() ||
+        (!MorpherUnrollFn.empty() && F.getName() != MorpherUnrollFn))
+      return PreservedAnalyses::all();
+
+    Attribute DepthAttr = F.getFnAttribute(MorpherStrippedMarkerAttr);
+    if (!DepthAttr.isStringAttribute())
+      return PreservedAnalyses::all();
+
+    unsigned ExpectedDepth = 0;
+    if (DepthAttr.getValueAsString().getAsInteger(10, ExpectedDepth))
+      report_fatal_error("invalid stripped map-marker depth attribute");
+
+    for (BasicBlock &BB : F)
+      for (Instruction &I : BB)
+        if (auto *CB = dyn_cast<CallBase>(&I))
+          if (isPleaseMapMe(CB))
+            report_fatal_error(
+                "please_map_me() unexpectedly present before marker reinsertion");
+
+    LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
+    SmallVector<Loop *, 4> Deepest = findDeepestLoops(LI);
+    if (Deepest.size() != 1 ||
+        Deepest.front()->getLoopDepth() != ExpectedDepth)
+      report_fatal_error(
+          "loop interchange did not preserve one unambiguous deepest mapping loop");
+
+    Function *MarkerFn = F.getParent()->getFunction("please_map_me");
+    if (!MarkerFn)
+      report_fatal_error("please_map_me() declaration disappeared during interchange");
+
+    Instruction *InsertBefore = Deepest.front()->getHeader()->getTerminator();
+    IRBuilder<> Builder(InsertBefore);
+    Builder.CreateCall(MarkerFn->getFunctionType(), MarkerFn);
+    F.removeFnAttr(MorpherStrippedMarkerAttr);
+    errs() << "Morpher loop interchange: restored map marker in unique depth-"
+           << ExpectedDepth << " loop of " << F.getName() << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
+struct MorpherLoopInterchangePass
+    : public PassInfoMixin<MorpherLoopInterchangePass> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+    if (F.isDeclaration() ||
+        (!MorpherUnrollFn.empty() && F.getName() != MorpherUnrollFn))
+      return PreservedAnalyses::all();
+    return createFunctionToLoopPassAdaptor(LoopInterchangePass()).run(F, AM);
+  }
+};
 
 bool normalizePleaseMapMeMarkers(Function &F, LoopInfo &LI, Loop *TargetLoop) {
   SmallVector<CallBase *, 8> Markers;
@@ -500,7 +615,6 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
   if (PreheaderIdx < 0 || LatchIdx < 0)
     return false;
 
-  Value *Init = Phi->getIncomingValue(PreheaderIdx);
   Value *BackedgeValue = Phi->getIncomingValue(LatchIdx);
   if (!Phi->getType()->isIntegerTy())
     return false;
@@ -594,8 +708,11 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
   for (unsigned Lane = 1; Lane < LaneOutputs.size(); ++Lane)
     Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
                                  Combined, LaneOutputs[Lane], "morpher.psum.final");
+  // The unrolled lane terms replace one original reduction step. Preserve the
+  // loop-carried accumulator by combining the horizontal lane sum with the
+  // PHI, not its preheader initializer on every unrolled iteration.
   Combined = createReductionOp(ExitBuilder, finalCombineOpcode(ReductionOpcode),
-                               Init, Combined, "morpher.psum.final.init");
+                               Phi, Combined, "morpher.psum.final.init");
   StringRef ReduceOpName = reductionOpcodeName(ReductionOpcode);
   StringRef ReduceBaseName = Combined->hasName() ? Combined->getName() : "morpher.psum.final.init";
   for (StoreInst *Store : VectorStores) {
@@ -606,7 +723,7 @@ bool expandIntegerReductionPackedPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
   for (Use *U : ExternalBackedgeUses)
     U->set(Combined);
 
-  Phi->setIncomingValue(LatchIdx, LaneOutputs[0]);
+  Phi->setIncomingValue(LatchIdx, Combined);
   for (auto It = Chain.rbegin(); It != Chain.rend(); ++It)
     if ((*It)->use_empty())
       (*It)->eraseFromParent();
@@ -1562,5 +1679,13 @@ FunctionPassManager createMorpherLoopUnrollPipeline() {
   if (MorpherFuseInnermostLoops)
     FPM.addPass(MorpherLoopFlattenPass());
   FPM.addPass(MorpherLoopUnrollPass());
+  return FPM;
+}
+
+FunctionPassManager createMorpherLoopInterchangePipeline() {
+  FunctionPassManager FPM;
+  FPM.addPass(MorpherStripMapMarkerPass());
+  FPM.addPass(MorpherLoopInterchangePass());
+  FPM.addPass(MorpherInsertMapMarkerPass());
   return FPM;
 }
