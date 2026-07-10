@@ -161,7 +161,11 @@ def build_unroll_command(context, unroll_factor, input_ir=None):
   simd_active = simd_packing_active_for_factor(context.config, unroll_factor)
   if simd_active:
     reduction_lanes = context.config.arch_simd_width
-    reduction_policy = "packed-psum"
+    reduction_policy = (
+      "vector-psum"
+      if "VRED" in context.config.arch_vector_ops
+      else "packed-psum"
+    )
   elif context.config.auto_unroll_scalar_reduction_policy == "none":
     reduction_lanes = 1
     reduction_policy = "tree"
@@ -386,9 +390,9 @@ def validate_iter_manifest(context):
   if set(reindex.values()) != set(range(final_count)):
     raise RuntimeError("Iterator manifest %s final index space is not contiguous." % manifest_path)
 
-  # SIMD packing runs after C++ iterator externalization. In that combined
-  # path the emitted XML is in the post-SIMD index space, so its node count is
-  # checked against the SIMD manifest below instead of this intermediate map.
+  # In a combined verified-SIMD path, the other manifest determines whether
+  # this is an intermediate or final index space. Cross-manifest validation is
+  # performed after both files have been read.
   config = getattr(context, "config", None)
   if not (
       getattr(config, "simd_pack", "off") == "verified"
@@ -510,6 +514,14 @@ def validate_simd_manifest(context):
     raise RuntimeError("SIMD manifest %s has an unsupported schema." % manifest_path)
   if manifest.get("status") != "applied":
     raise RuntimeError("SIMD manifest %s did not apply cleanly." % manifest_path)
+  post_pack_iterator_externalized = manifest.get(
+    "post_pack_iterator_externalized", False
+  )
+  if not isinstance(post_pack_iterator_externalized, bool):
+    raise RuntimeError(
+      "SIMD manifest %s has invalid post_pack_iterator_externalized."
+      % manifest_path
+    )
 
   original_count = manifest.get("original_node_count")
   final_count = manifest.get("final_node_count")
@@ -593,9 +605,55 @@ def validate_simd_manifest(context):
     simd_groups[final_idx] = lane_indices
     covered_lanes.update(lane_indices)
 
+  exit_reduction_sources = set()
+  expected_vector_updates = {
+    "ADD": "VADD",
+    "AND": "VAND",
+    "OR": "VOR",
+    "XOR": "VXOR",
+  }
+  for entry in manifest.get("exit_reductions", []):
+    if not isinstance(entry, dict):
+      raise RuntimeError("SIMD manifest %s has an invalid exit reduction." % manifest_path)
+    source_idx = entry.get("source_final_idx")
+    reduce_op = entry.get("reduce_op")
+    source_node = xml_nodes.get(source_idx) if isinstance(source_idx, int) else None
+    source_op_elem = source_node.find("OP") if source_node is not None else None
+    source_op = (source_op_elem.text or "").strip() if source_op_elem is not None else ""
+    has_self_recurrence = source_node is not None and any(
+      output.get("idx") == str(source_idx) and
+      output.get("nextiter") == "1" and output.get("type") == "I1"
+      for output in source_node.findall("./Outputs/Output")
+    )
+    if (
+        not isinstance(source_idx, int) or source_idx in exit_reduction_sources or
+        source_idx not in simd_groups or reduce_op not in expected_vector_updates or
+        source_op != expected_vector_updates[reduce_op] or
+        source_node.get("simd_accumulator_op") != reduce_op or
+        entry.get("op") != "VRED" or entry.get("execution") != "loop_exit" or
+        entry.get("accumulator_identity") != (
+          "all_ones" if reduce_op == "AND" else "zero"
+        ) or entry.get("accumulator_init_execution") != "loop_preheader" or
+        entry.get("accumulator_init_scheduled") is not False or
+        entry.get("combines_scalar_initializer") is not True or
+        entry.get("stores_result") is not True or
+        entry.get("scheduled") is not False or not has_self_recurrence):
+      raise RuntimeError(
+        "SIMD manifest %s has an inconsistent exit reduction contract."
+        % manifest_path
+      )
+    exit_reduction_sources.add(source_idx)
+
   print(
-    "SIMD manifest verified: %s packed_groups=%d, original_nodes=%d, final_nodes=%d\n"
-    % (manifest_path.name, len(simd_groups), original_count, final_count)
+    "SIMD manifest verified: %s packed_groups=%d, exit_reductions=%d, "
+    "original_nodes=%d, final_nodes=%d\n"
+    % (
+      manifest_path.name,
+      len(simd_groups),
+      len(exit_reduction_sources),
+      original_count,
+      final_count,
+    )
   )
   return SimdMapping(
     reindex=reindex,
@@ -604,6 +662,7 @@ def validate_simd_manifest(context):
     simd_reduced_store_groups=frozenset(),
     simd_no_vector_word_groups=frozenset(),
     artifact_vars_pruned=frozenset(artifact_vars_pruned),
+    post_pack_iterator_externalized=post_pack_iterator_externalized,
   )
 
 
@@ -762,14 +821,22 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
   if iter_reindex:
     agi_reindex = iter_reindex
     if simd_mapping is not None:
-      if set(iter_reindex.values()) != set(simd_mapping.reindex):
-        raise RuntimeError(
-          "Iterator and SIMD manifests use incompatible intermediate index spaces."
-        )
-      agi_reindex = {
-        before_iter: simd_mapping.reindex[after_iter]
-        for before_iter, after_iter in iter_reindex.items()
-      }
+      if simd_mapping.post_pack_iterator_externalized:
+        if not set(iter_reindex.values()).issuperset(
+            set(simd_mapping.reindex.values())):
+          raise RuntimeError(
+            "Post-pack iterator and SIMD manifests have incompatible final index spaces."
+          )
+        agi_reindex = simd_mapping.reindex
+      else:
+        if set(iter_reindex.values()) != set(simd_mapping.reindex):
+          raise RuntimeError(
+            "Iterator and SIMD manifests use incompatible intermediate index spaces."
+          )
+        agi_reindex = {
+          before_iter: simd_mapping.reindex[after_iter]
+          for before_iter, after_iter in iter_reindex.items()
+        }
     # AGI boundary references are emitted before iterator removal (and SIMD,
     # when enabled). This is metadata remapping only; the main DFG XML is
     # already final C++ output.
@@ -908,8 +975,11 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
     for trace_path in sorted(_glob.glob("%s/%s_trace_*.txt" % (addr_trace_dir, kernel))):
       filter_trace_vars(trace_path, trace_path, iter_artifact_vars_pruned)
-    for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
-      reindex_addr_trace(addr_trace_path, addr_trace_path, iter_reindex)
+    if not (
+        simd_mapping is not None and
+        simd_mapping.post_pack_iterator_externalized):
+      for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
+        reindex_addr_trace(addr_trace_path, addr_trace_path, iter_reindex)
   if simd_mapping is not None:
     import glob as _glob
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")

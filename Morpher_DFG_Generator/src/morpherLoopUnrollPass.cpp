@@ -51,7 +51,7 @@ static cl::opt<unsigned> MorpherReductionLanes(
 
 static cl::opt<std::string> MorpherReductionPolicy(
     "morpher-reduction-policy", cl::init("tree"),
-    cl::desc("Reduction lowering policy: tree, packed-psum, or scalar-psum"));
+    cl::desc("Reduction lowering policy: tree, packed-psum, scalar-psum, or vector-psum"));
 
 // Loop-peel P/E: opt-in retagging of the runtime remainder loop's marker.
 // Default off until Phase 2b (peel DFG emission in dfggenPass) is robust
@@ -867,6 +867,140 @@ bool expandIntegerReductionScalarPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
   return true;
 }
 
+bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
+                                      unsigned Lanes, unsigned UpdateGroup) {
+  if (Lanes <= 1)
+    return false;
+
+  BasicBlock *Preheader = L->getLoopPreheader();
+  BasicBlock *Latch = L->getLoopLatch();
+  BasicBlock *Exit = L->getExitBlock();
+  if (!Preheader || !Latch || !Exit)
+    return false;
+  if (Exit->getSinglePredecessor() != Latch)
+    return false;
+
+  int PreheaderIdx = Phi->getBasicBlockIndex(Preheader);
+  int LatchIdx = Phi->getBasicBlockIndex(Latch);
+  if (PreheaderIdx < 0 || LatchIdx < 0 || !Phi->getType()->isIntegerTy())
+    return false;
+
+  Value *Init = Phi->getIncomingValue(PreheaderIdx);
+  Value *BackedgeValue = Phi->getIncomingValue(LatchIdx);
+  std::string PhiName = Phi->getName().str();
+
+  SmallVector<BinaryOperator *, 32> Chain;
+  SmallVector<Value *, 32> Terms;
+  unsigned ReductionOpcode = 0;
+  if (!collectReductionAddChain(Phi, BackedgeValue, ReductionOpcode, Chain,
+                                Terms))
+    return false;
+
+  // These are exactly the integer operations supported by the VRED lowering.
+  // SUB and MUL need a different exit contract, and floating-point reductions
+  // require explicit reassociation permission.
+  if (ReductionOpcode != Instruction::Add &&
+      ReductionOpcode != Instruction::And &&
+      ReductionOpcode != Instruction::Or &&
+      ReductionOpcode != Instruction::Xor)
+    return false;
+
+  bool HasNonConstantTerm = false;
+  for (Value *Term : Terms)
+    if (!isa<ConstantInt>(Term)) {
+      HasNonConstantTerm = true;
+      break;
+    }
+  // One mapped iteration is one hardware vector update. Wider unroll factors
+  // would require either multiple scheduled vector updates or another level
+  // of partial accumulators, neither of which this contract represents.
+  if (!HasNonConstantTerm || Terms.size() != Lanes)
+    return false;
+
+  SmallVector<PHINode *, 8> ExternalLCSSAPhis;
+  SmallVector<Use *, 8> DirectExternalUses;
+  for (Use &U : BackedgeValue->uses()) {
+    auto *UserI = dyn_cast<Instruction>(U.getUser());
+    if (UserI && L->contains(UserI))
+      continue;
+    if (auto *UserPhi = dyn_cast_or_null<PHINode>(UserI)) {
+      if (UserPhi->getParent() == Exit) {
+        ExternalLCSSAPhis.push_back(UserPhi);
+        continue;
+      }
+    }
+    DirectExternalUses.push_back(&U);
+  }
+  if (!DirectExternalUses.empty() || ExternalLCSSAPhis.empty())
+    return false;
+
+  Value *Identity = identityForReduction(ReductionOpcode, Phi->getType());
+  if (!Identity)
+    return false;
+
+  // Scalar lane PHIs preserve legal LLVM IR. The verified DFG pack recognizes
+  // the annotated lane updates below, replaces their PHI/select/merge
+  // scaffolding with one vector recurrence, and records the exit-only work in
+  // its manifest.
+  IRBuilder<> PhiBuilder(&*Phi->getParent()->getFirstInsertionPt());
+  SmallVector<PHINode *, 16> LanePartials;
+  for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
+    PHINode *Partial = PhiBuilder.CreatePHI(
+        Phi->getType(), 2, Phi->getName() + ".morpher.vpsum");
+    Partial->addIncoming(Identity, Preheader);
+    LanePartials.push_back(Partial);
+  }
+
+  IRBuilder<> BodyBuilder(Chain.back());
+  StringRef ReduceOpName = reductionOpcodeName(ReductionOpcode);
+  SmallVector<Value *, 16> Updates;
+  for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
+    Value *Update = createReductionOp(
+        BodyBuilder, ReductionOpcode, LanePartials[Lane], Terms[Lane],
+        "morpher.vpsum.update");
+    auto *UpdateI = cast<Instruction>(Update);
+    setSIMDMetadata(*UpdateI, UpdateGroup, Lanes);
+    setStringMetadata(*UpdateI, "morpher.simd.accumulator", ReduceOpName);
+    LanePartials[Lane]->addIncoming(Update, Latch);
+    Updates.push_back(Update);
+  }
+
+  // This executes once after the mapped loop. It deliberately consumes the
+  // original initializer here rather than placing it on any lane recurrence.
+  IRBuilder<> ExitBuilder(&*Exit->getFirstInsertionPt());
+  Value *Horizontal = Updates[0];
+  for (unsigned Lane = 1; Lane < Updates.size(); ++Lane)
+    Horizontal = createReductionOp(
+        ExitBuilder, ReductionOpcode, Horizontal, Updates[Lane],
+        "morpher.vpsum.exit.reduce");
+  Value *Final = createReductionOp(
+      ExitBuilder, ReductionOpcode, Init, Horizontal,
+      "morpher.vpsum.exit.init");
+
+  for (PHINode *LCSSAPhi : ExternalLCSSAPhis) {
+    LCSSAPhi->replaceAllUsesWith(Final);
+    if (LCSSAPhi->use_empty())
+      LCSSAPhi->eraseFromParent();
+  }
+
+  // Break the now-dead original scalar recurrence before erasing its chain.
+  // Without this, Phi -> Chain -> Phi remains a use cycle even though no live
+  // value consumes it, and the DFG extractor would retain both recurrences.
+  Phi->setIncomingValue(LatchIdx, Init);
+  for (auto It = Chain.rbegin(); It != Chain.rend(); ++It)
+    if ((*It)->use_empty())
+      (*It)->eraseFromParent();
+  if (Phi->use_empty())
+    Phi->eraseFromParent();
+
+  errs() << "Morpher reduction expansion (vector-psum): phi=" << PhiName
+         << " lanes=" << Lanes
+         << " terms=" << Terms.size()
+         << " vector_groups=1"
+         << " vector_recurrence=1 exit_horizontal=1\n";
+  return true;
+}
+
 bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
   if (Lanes <= 1)
     return false;
@@ -876,11 +1010,15 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
     Phis.push_back(&Phi);
 
   bool Changed = false;
+  unsigned VectorAccumulatorGroup = 2000000;
   for (PHINode *Phi : Phis) {
     if (Policy == "packed-psum")
       Changed |= expandIntegerReductionPackedPsum(Phi, L, Lanes);
     else if (Policy == "scalar-psum")
       Changed |= expandIntegerReductionScalarPsum(Phi, L, Lanes);
+    else if (Policy == "vector-psum")
+      Changed |= expandIntegerReductionVectorPsum(
+          Phi, L, Lanes, VectorAccumulatorGroup++);
     else
       Changed |= expandIntegerAddReduction(Phi, L, Lanes);
   }
@@ -1612,8 +1750,9 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
     if (MorpherReductionPolicy != "tree" &&
         MorpherReductionPolicy != "packed-psum" &&
-        MorpherReductionPolicy != "scalar-psum") {
-      report_fatal_error("morpher-reduction-policy must be tree, packed-psum, or scalar-psum");
+        MorpherReductionPolicy != "scalar-psum" &&
+        MorpherReductionPolicy != "vector-psum") {
+      report_fatal_error("morpher-reduction-policy must be tree, packed-psum, scalar-psum, or vector-psum");
     }
 
     Loop *TargetLoop = nullptr;

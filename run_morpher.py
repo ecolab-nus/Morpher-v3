@@ -452,9 +452,12 @@ def _set_auto_unroll_dirs(context, dirs):
   os.makedirs(context.mem_trace, exist_ok=True)
 
 
-def _candidate_auto_unroll_dirs(golden_dirs, factor):
+def _candidate_auto_unroll_dirs(golden_dirs, factor, loop_order="original"):
+  suffix = "_uf%d" % factor
+  if loop_order == "interchanged":
+    suffix += "_li"
   return {
-    label: "%s_uf%d" % (path.rstrip("/"), factor)
+    label: "%s%s" % (path.rstrip("/"), suffix)
     for label, path in golden_dirs.items()
   }
 
@@ -492,6 +495,7 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
       outfile,
       fieldnames=[
         "factor",
+        "loop_order",
         "status",
         "ii",
         "score",
@@ -501,10 +505,13 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
       ],
     )
     writer.writeheader()
-    best_factor = best["factor"] if best else None
     for row in rows:
       out_row = dict(row)
-      out_row["selected"] = "1" if row.get("factor") == best_factor else "0"
+      out_row["selected"] = "1" if (
+        best and
+        row.get("factor") == best["factor"] and
+        row.get("loop_order") == best["loop_order"]
+      ) else "0"
       writer.writerow(out_row)
 
 
@@ -519,6 +526,10 @@ def _run_auto_unroll(context):
   print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
   if config.auto_unroll_fuse_innermost_loops:
     print("Innermost loop fusion: enabled where LLVM can prove legality")
+  if config.auto_unroll_try_loop_interchange:
+    print(
+      "Loop-order search: original plus LLVM-interchanged perfect-nest candidate"
+    )
   if config.arch_simd_enabled:
     print(
       "Architecture-driven SIMD packing activates only for candidates with unroll_factor >= SIMD_WIDTH=%d."
@@ -541,98 +552,125 @@ def _run_auto_unroll(context):
     source_template = os.path.join(temp_root, "source_template")
     shutil.copytree(golden_dirs["dfg"], source_template)
 
+    loop_orders = [("original", False)]
+    if config.auto_unroll_try_loop_interchange:
+      loop_orders.append(("interchanged", True))
+
     for factor in factors:
-      print("== Auto-unroll candidate factor %d ==\n" % factor)
+      best_before_factor = best
+      factor_improved = False
+      factor_succeeded = False
       if config.arch_simd_enabled and not simd_packing_active_for_factor(config, factor):
         print(
           "Candidate factor %d will map as scalar on the SIMD-capable architecture.\n"
           % factor
         )
-      candidate_dirs = _candidate_auto_unroll_dirs(golden_dirs, factor)
-      _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs)
-      _set_auto_unroll_dirs(context, candidate_dirs)
-      start_time = time.time()
-      try:
-        run_dfg_generator(
-          context,
-          unroll_factor=factor,
-        )
-        run_mapper(context)
-      except subprocess.CalledProcessError as exc:
+      for loop_order, interchange_loops in loop_orders:
         print(
-          "Candidate factor %d failed with exit code %d; trying the next lower factor.\n"
-          % (factor, exc.returncode)
+          "== Auto-unroll candidate factor %d, loop_order=%s ==\n"
+          % (factor, loop_order)
         )
-        rows.append({
-          "factor": factor,
-          "status": "failed_exit_%d" % exc.returncode,
-          "ii": "",
-          "score": "",
-          "promoted": "0",
-          "candidate_mapper_dir": candidate_dirs["mapper"],
-        })
-        _set_auto_unroll_dirs(context, golden_dirs)
-        _write_auto_unroll_results(golden_dirs, rows, best)
-        continue
+        candidate_dirs = _candidate_auto_unroll_dirs(
+          golden_dirs, factor, loop_order
+        )
+        _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs)
+        _set_auto_unroll_dirs(context, candidate_dirs)
+        start_time = time.time()
+        try:
+          run_dfg_generator(
+            context,
+            unroll_factor=factor,
+            interchange_loops=interchange_loops,
+          )
+          run_mapper(context)
+        except subprocess.CalledProcessError as exc:
+          print(
+            "Candidate factor %d, loop_order=%s failed with exit code %d.\n"
+            % (factor, loop_order, exc.returncode)
+          )
+          rows.append({
+            "factor": factor,
+            "loop_order": loop_order,
+            "status": "failed_exit_%d" % exc.returncode,
+            "ii": "",
+            "score": "",
+            "promoted": "0",
+            "candidate_mapper_dir": candidate_dirs["mapper"],
+          })
+          _set_auto_unroll_dirs(context, golden_dirs)
+          _write_auto_unroll_results(golden_dirs, rows, best)
+          continue
 
-      ii, status = _latest_mapper_result(context, start_time)
-      if status != "success" or ii is None:
+        ii, status = _latest_mapper_result(context, start_time)
+        if status != "success" or ii is None:
+          print(
+            "Candidate factor %d, loop_order=%s did not map successfully.\n"
+            % (factor, loop_order)
+          )
+          rows.append({
+            "factor": factor,
+            "loop_order": loop_order,
+            "status": status or "no_result",
+            "ii": ii if ii is not None else "",
+            "score": "",
+            "promoted": "0",
+            "candidate_mapper_dir": candidate_dirs["mapper"],
+          })
+          _set_auto_unroll_dirs(context, golden_dirs)
+          _write_auto_unroll_results(golden_dirs, rows, best)
+          continue
+
+        factor_succeeded = True
+        score = _auto_unroll_score(ii, factor)
         print(
-          "Candidate factor %d did not produce a successful mapper result; trying the next lower factor.\n"
-          % factor
+          "Candidate factor %d, loop_order=%s: II=%d, score=%.4f\n"
+          % (factor, loop_order, ii, score)
         )
+
+        candidate = {
+          "factor": factor,
+          "loop_order": loop_order,
+          "ii": ii,
+          "score": score,
+        }
+        better = best is None or score < best["score"] or (
+          score == best["score"] and factor > best["factor"]
+        )
+        if better:
+          best = candidate
+          factor_improved = True
+          _promote_auto_unroll_candidate(candidate_dirs, golden_dirs)
+          row_status = "success"
+          promoted = "1"
+          print(
+            "Candidate factor %d, loop_order=%s is the new best; "
+            "promoted to golden artifacts.\n"
+            % (factor, loop_order)
+          )
+        else:
+          row_status = "success_degraded"
+          promoted = "0"
+
         rows.append({
           "factor": factor,
-          "status": status or "no_result",
-          "ii": ii if ii is not None else "",
-          "score": "",
-          "promoted": "0",
-          "candidate_mapper_dir": candidate_dirs["mapper"],
-        })
-        _set_auto_unroll_dirs(context, golden_dirs)
-        _write_auto_unroll_results(golden_dirs, rows, best)
-        continue
-
-      score = _auto_unroll_score(ii, factor)
-      print("Candidate factor %d: II=%d, score=%.4f\n" % (factor, ii, score))
-
-      candidate = {"factor": factor, "ii": ii, "score": score}
-      if best is None or score < best["score"] or (
-        score == best["score"] and factor > best["factor"]
-      ):
-        best = candidate
-        _promote_auto_unroll_candidate(candidate_dirs, golden_dirs)
-        rows.append({
-          "factor": factor,
-          "status": "success",
+          "loop_order": loop_order,
+          "status": row_status,
           "ii": ii,
           "score": "%.8f" % score,
-          "promoted": "1",
+          "promoted": promoted,
           "candidate_mapper_dir": candidate_dirs["mapper"],
         })
         _set_auto_unroll_dirs(context, golden_dirs)
         _write_auto_unroll_results(golden_dirs, rows, best)
-        print(
-          "Candidate factor %d is the new best; promoted to golden artifacts.\n"
-          % factor
-        )
-        continue
 
-      rows.append({
-        "factor": factor,
-        "status": "success_degraded",
-        "ii": ii,
-        "score": "%.8f" % score,
-        "promoted": "0",
-        "candidate_mapper_dir": candidate_dirs["mapper"],
-      })
-      _set_auto_unroll_dirs(context, golden_dirs)
-      _write_auto_unroll_results(golden_dirs, rows, best)
-      if config.auto_unroll_stop_on_degradation:
+      if (
+          config.auto_unroll_stop_on_degradation and
+          best_before_factor is not None and factor_succeeded and
+          not factor_improved):
         print(
-          "Factor %d is worse than best factor %d; stopping lower-factor search. "
-          "Golden artifacts remain at the best factor.\n"
-          % (factor, best["factor"])
+          "Factor %d did not improve on best factor %d in either loop order; "
+          "stopping lower-factor search.\n"
+          % (factor, best_before_factor["factor"])
         )
         break
 
@@ -642,8 +680,8 @@ def _run_auto_unroll(context):
     raise RuntimeError("auto_unroll failed: no candidate factor mapped successfully.")
 
   print(
-    "Selected auto-unroll factor %d (II=%d, score=%.4f).\n"
-    % (best["factor"], best["ii"], best["score"])
+    "Selected auto-unroll factor %d, loop_order=%s (II=%d, score=%.4f).\n"
+    % (best["factor"], best["loop_order"], best["ii"], best["score"])
   )
 
   if context.config.enable_simulation:

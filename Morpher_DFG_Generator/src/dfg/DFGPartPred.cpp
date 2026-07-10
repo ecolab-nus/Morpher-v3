@@ -1631,6 +1631,9 @@ void DFGPartPred::printNewDFGXML() {
 		if(!node->getSimdReduceBase().empty()){
 			xmlFile << " simd_reduce_base=\"" << node->getSimdReduceBase() << "\"";
 		}
+		if(!node->getSimdAccumulatorOp().empty()){
+			xmlFile << " simd_accumulator_op=\"" << node->getSimdAccumulatorOp() << "\"";
+		}
 		if(node->getSimdPacked()){
 			xmlFile << " simd_packed=\"true\"";
 			xmlFile << " simd_lane_sources=\"";
@@ -1890,6 +1893,10 @@ int DFGPartPred::classifyParents() {
 			Instruction* ins;
 			Value* parentIns;
 
+			if (parent == node && !node->getSimdAccumulatorOp().empty()) {
+				node->parentClassification[1] = parent;
+				continue;
+			}
 
 
 			if(node->getNode()!=NULL){

@@ -3105,7 +3105,7 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 				LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][InstrumentInOutVars begin]\n");
 				LoopDFG->InstrumentInOutVars(F,mem_acceses,OLNodesWithPtrTyUsage,spm_base_address);
 				LLVM_DEBUG(dbgs() << "[Skeleton.cpp][InstrumentInOutVars end]\n\n");
-				if (ExternalizeAccess == "agi_iter")
+				if (ExternalizeAccess == "agi_iter" && SIMDPackLanes <= 1)
 				{
 					LoopDFG->removeIteratorOnlyControl();
 					LoopDFG->classifyParents();

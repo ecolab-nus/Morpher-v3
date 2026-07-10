@@ -49,6 +49,7 @@ dfgNode::dfgNode(Instruction *ins, DFG* parent){
 	this->simdLanes = readIntMetadata(ins, "morpher.simd.lanes", 1);
 	this->simdReduceOp = readStringMetadata(ins, "morpher.simd.reduce_op");
 	this->simdReduceBase = readStringMetadata(ins, "morpher.simd.reduce_base");
+	this->simdAccumulatorOp = readStringMetadata(ins, "morpher.simd.accumulator");
 
 	for (int i = 0; i < ins->getNumOperands(); ++i) {
 		if(ConstantInt *CI = dyn_cast<ConstantInt>(ins->getOperand(i))){

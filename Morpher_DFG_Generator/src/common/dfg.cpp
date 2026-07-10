@@ -10608,6 +10608,7 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 		bool active = true;
 		std::string reason;
 		bool reductionProducer = false;
+		bool vectorAccumulator = false;
 	};
 
 	struct RejectedGroup
@@ -10684,6 +10685,13 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 		std::unordered_set<dfgNode*> scalarTree;
 		dfgNode* scalarTreeRoot = nullptr;
 		dfgNode* finalAccumulator = nullptr;
+		std::string op;
+	};
+
+	struct AccumulatorRewrite
+	{
+		std::unordered_set<dfgNode*> scaffolding;
+		std::vector<dfgNode*> exitTransfers;
 		std::string op;
 	};
 
@@ -10821,6 +10829,103 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 		}
 	}
 
+	std::unordered_map<int, AccumulatorRewrite> accumulatorRewrites;
+	for (std::pair<const int, std::vector<dfgNode*> >& entry : groups)
+	{
+		std::vector<dfgNode*>& updates = entry.second;
+		if ((int)updates.size() != lanes || updates.empty() ||
+			updates.front()->getSimdAccumulatorOp().empty())
+			continue;
+
+		AccumulatorRewrite rewrite;
+		rewrite.op = updates.front()->getSimdAccumulatorOp();
+		if (rewrite.op != "ADD" && rewrite.op != "AND" &&
+			rewrite.op != "OR" && rewrite.op != "XOR")
+			continue;
+
+		bool valid = true;
+		for (dfgNode* update : updates)
+		{
+			if (update->getSimdAccumulatorOp() != rewrite.op ||
+				HyCUBEInsStrings[update->getFinalIns()] != rewrite.op)
+			{
+				valid = false;
+				break;
+			}
+
+			dfgNode* select = nullptr;
+			for (dfgNode* parent : update->getAncestors())
+				if (HyCUBEInsStrings[parent->getFinalIns()] == "SELECT")
+				{
+					if (select) valid = false;
+					select = parent;
+				}
+			if (!valid || !select || select->getChildren().size() != 1 ||
+				select->getChildren().front() != update ||
+				select->getAncestors().size() != 2)
+			{
+				valid = false;
+				break;
+			}
+
+			dfgNode* backMerge = nullptr;
+			dfgNode* initMerge = nullptr;
+			for (dfgNode* parent : select->getAncestors())
+			{
+				if (HyCUBEInsStrings[parent->getFinalIns()] != "CMERGE" ||
+					parent->getChildren().size() != 1 ||
+					parent->getChildren().front() != select)
+				{
+					valid = false;
+					break;
+				}
+				auto back = parent->childBackEdgeMap.find(select);
+				if (back != parent->childBackEdgeMap.end() && back->second)
+					backMerge = parent;
+				else
+					initMerge = parent;
+			}
+			const std::vector<dfgNode*> backMergeParents =
+				backMerge ? backMerge->getAncestors() : std::vector<dfgNode*>();
+			if (!valid || !backMerge || !initMerge ||
+				std::find(backMergeParents.begin(), backMergeParents.end(), update) ==
+					backMergeParents.end())
+			{
+				valid = false;
+				break;
+			}
+
+			std::vector<dfgNode*> exitTransfers;
+			for (dfgNode* child : update->getChildren())
+			{
+				if (child == backMerge)
+					continue;
+				if (child->getNameType() != "OutLoopSTORE" ||
+					child->getAncestors().size() != 1 ||
+					child->getAncestors().front() != update ||
+					!child->getChildren().empty())
+				{
+					valid = false;
+					break;
+				}
+				exitTransfers.push_back(child);
+			}
+			if (!valid || exitTransfers.size() != 1)
+			{
+				valid = false;
+				break;
+			}
+
+			rewrite.scaffolding.insert(select);
+			rewrite.scaffolding.insert(backMerge);
+			rewrite.scaffolding.insert(initMerge);
+			rewrite.exitTransfers.push_back(exitTransfers.front());
+		}
+		if (valid && rewrite.scaffolding.size() == (size_t)(3 * lanes) &&
+			rewrite.exitTransfers.size() == (size_t)lanes)
+			accumulatorRewrites.emplace(entry.first, std::move(rewrite));
+	}
+
 	std::vector<Candidate> candidates;
 	std::vector<RejectedGroup> rejected;
 	for (std::pair<const int, std::vector<dfgNode*> >& entry : groups)
@@ -10868,7 +10973,8 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 			continue;
 		}
 		candidates.push_back({entry.first, groupNodes, vectorInstruction, vectorOp,
-			true, "", reductionRewrites.count(entry.first) != 0});
+			true, "", reductionRewrites.count(entry.first) != 0,
+			accumulatorRewrites.count(entry.first) != 0});
 	}
 
 	auto isSharedScalarParent = [](const Candidate& candidate, dfgNode* parent) {
@@ -10908,6 +11014,9 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 				dfgNode* node = candidate.laneNodes[lane];
 				for (dfgNode* parent : node->getAncestors())
 				{
+					if (candidate.vectorAccumulator &&
+						accumulatorRewrites.at(candidate.group).scaffolding.count(parent))
+						continue;
 					auto it = candidateLane.find(parent);
 					if (it == candidateLane.end())
 					{
@@ -10925,7 +11034,7 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 						break;
 					}
 				}
-				if (!candidate.reductionProducer)
+				if (!candidate.reductionProducer && !candidate.vectorAccumulator)
 				{
 					for (dfgNode* child : node->getChildren())
 					{
@@ -11005,7 +11114,10 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 	const int originalNodeCount = (int)NodeList.size();
 	std::unordered_set<dfgNode*> removedNodes;
 	std::unordered_set<dfgNode*> reductionPrunedNodes;
+	std::unordered_set<dfgNode*> accumulatorPrunedNodes;
+	std::unordered_set<dfgNode*> postPackIteratorPrunedNodes;
 	std::vector<Candidate*> packedCandidates;
+	std::vector<Candidate*> packedAccumulators;
 	for (Candidate& candidate : candidates)
 	{
 		if (!candidate.active)
@@ -11048,8 +11160,27 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 			for (dfgNode* node : rewrite.scalarTree)
 				reductionPrunedNodes.insert(node);
 		}
+
+		if (candidate.vectorAccumulator)
+		{
+			AccumulatorRewrite& rewrite = accumulatorRewrites.at(candidate.group);
+			accumulatorPrunedNodes.insert(rewrite.scaffolding.begin(),
+				rewrite.scaffolding.end());
+			accumulatorPrunedNodes.insert(rewrite.exitTransfers.begin(),
+				rewrite.exitTransfers.end());
+			packedAccumulators.push_back(&candidate);
+
+			// The scalar PHIs represented one independent lane recurrence each.
+			// After packing, their only steady-state meaning is a next-iteration
+			// edge from the vector update back to itself.
+			representative->addChildNode(
+				representative, EDGE_TYPE_DATA, true, false, true);
+			representative->addAncestorNode(
+				representative, EDGE_TYPE_DATA, true, false, true);
+		}
 	}
 	removedNodes.insert(reductionPrunedNodes.begin(), reductionPrunedNodes.end());
+	removedNodes.insert(accumulatorPrunedNodes.begin(), accumulatorPrunedNodes.end());
 
 	if (!removedNodes.empty())
 	{
@@ -11060,6 +11191,14 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 		{
 			if (removedNodes.count(node))
 				continue;
+			const std::vector<dfgNode*> ancestors = node->getAncestors();
+			for (dfgNode* parent : ancestors)
+			{
+				if (!removedNodes.count(parent))
+					continue;
+				parent->removeChild(node);
+				node->removeAncestor(parent);
+			}
 			const std::vector<dfgNode*> children = node->getChildren();
 			for (dfgNode* child : children)
 			{
@@ -11105,6 +11244,21 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 			if (removedNodes.count(it->first)) it = OutLoopNodeMapReverse.erase(it); else ++it;
 	}
 
+	// SIMD packing must precede iterator externalization for vector partial
+	// accumulators: only packing removes the scalar PHI control scaffolding and
+	// exposes the iterator as an independent component. Keep both transforms in
+	// this method so the SIMD manifest is emitted in the final XML index space.
+	if (iteratorExternalized)
+	{
+		for (size_t index = 0; index < NodeList.size(); ++index)
+			NodeList[index]->setIdx((int)index);
+		std::unordered_set<dfgNode*> beforeIterator(NodeList.begin(), NodeList.end());
+		removeIteratorOnlyControl();
+		for (dfgNode* node : beforeIterator)
+			if (std::find(NodeList.begin(), NodeList.end(), node) == NodeList.end())
+				postPackIteratorPrunedNodes.insert(node);
+	}
+
 	for (size_t index = 0; index < NodeList.size(); ++index)
 		NodeList[index]->setIdx((int)index);
 
@@ -11124,6 +11278,14 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 	std::set<int> prunedOriginalIndices;
 	for (dfgNode* node : reductionPrunedNodes)
 		prunedOriginalIndices.insert(originalIndex.at(node));
+	for (dfgNode* node : accumulatorPrunedNodes)
+		prunedOriginalIndices.insert(originalIndex.at(node));
+	for (dfgNode* node : postPackIteratorPrunedNodes)
+	{
+		auto originalIt = originalIndex.find(node);
+		if (originalIt != originalIndex.end())
+			prunedOriginalIndices.insert(originalIt->second);
+	}
 	if ((int)finalIndexByOriginal.size() + (int)prunedOriginalIndices.size() != originalNodeCount)
 		report_fatal_error("SIMD manifest does not cover every original DFG node");
 
@@ -11147,6 +11309,8 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 	manifestFile << "  \"lanes\": " << lanes << ",\n";
 	manifestFile << "  \"original_node_count\": " << originalNodeCount << ",\n";
 	manifestFile << "  \"final_node_count\": " << NodeList.size() << ",\n";
+	manifestFile << "  \"post_pack_iterator_externalized\": "
+			 << (iteratorExternalized ? "true" : "false") << ",\n";
 	manifestFile << "  \"pruned_nodes\": [";
 	bool firstPruned = true;
 	for (int index : prunedOriginalIndices)
@@ -11158,6 +11322,9 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 	manifestFile << "],\n";
 	std::set<std::string> prunedArtifactVars;
 	for (dfgNode* node : reductionPrunedNodes)
+		if (node->getArrBasePtr() != "NOT_A_MEM_OP")
+			prunedArtifactVars.insert(node->getArrBasePtr());
+	for (dfgNode* node : accumulatorPrunedNodes)
 		if (node->getArrBasePtr() != "NOT_A_MEM_OP")
 			prunedArtifactVars.insert(node->getArrBasePtr());
 	manifestFile << "  \"pruned_artifact_vars\": [";
@@ -11182,6 +11349,26 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 		if (!node->getSimdReduceOp().empty())
 			manifestFile << ", \"reduce_op\": " << jsonString(node->getSimdReduceOp());
 		manifestFile << "}";
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"exit_reductions\": [";
+	for (size_t i = 0; i < packedAccumulators.size(); ++i)
+	{
+		Candidate* candidate = packedAccumulators[i];
+		if (i != 0) manifestFile << ", ";
+		manifestFile << "{\"source_final_idx\": "
+				 << candidate->laneNodes.front()->getIdx()
+				 << ", \"op\": \"VRED\", \"reduce_op\": "
+				 << jsonString(accumulatorRewrites.at(candidate->group).op)
+				 << ", \"accumulator_identity\": "
+				 << jsonString(accumulatorRewrites.at(candidate->group).op == "AND"
+					? "all_ones" : "zero")
+				 << ", \"accumulator_init_execution\": \"loop_preheader\""
+				 << ", \"accumulator_init_scheduled\": false"
+				 << ", \"execution\": \"loop_exit\""
+				 << ", \"combines_scalar_initializer\": true"
+				 << ", \"stores_result\": true"
+				 << ", \"scheduled\": false}";
 	}
 	manifestFile << "],\n";
 	manifestFile << "  \"packed_groups\": [\n";
