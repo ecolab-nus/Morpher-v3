@@ -8,6 +8,7 @@
 #include <functional>
 #include <bitset>
 #include <set>
+#include <sstream>
 #include <unordered_set>
 #include <morpherdfggen/common/astar.h>
 #include <morpherdfggen/arch/CGRA.h>
@@ -19,6 +20,41 @@
 
 static bool isPositivePowerOfTwo(int value);
 static void configureGEPScaleNode(dfgNode *node, int stride);
+
+static std::string jsonEscape(const std::string &value)
+{
+	std::ostringstream os;
+	for (char ch : value)
+	{
+		switch (ch)
+		{
+		case '\\':
+			os << "\\\\";
+			break;
+		case '"':
+			os << "\\\"";
+			break;
+		case '\n':
+			os << "\\n";
+			break;
+		case '\r':
+			os << "\\r";
+			break;
+		case '\t':
+			os << "\\t";
+			break;
+		default:
+			os << ch;
+			break;
+		}
+	}
+	return os.str();
+}
+
+static std::string jsonString(const std::string &value)
+{
+	return "\"" + jsonEscape(value) + "\"";
+}
 
 dfgNode *DFG::getEntryNode()
 {
@@ -10234,6 +10270,109 @@ void DFG::removeAGINodes()
 		xmlFile.close();
 		llvm::outs() << "[removeAGINodes] Wrote AGI sub-graph (" << agiLocalIdx.size()
 					 << " nodes) to " << fileName << "\n";
+
+		std::string manifestName = name + "_AGI_manifest.json";
+		std::ofstream manifestFile;
+		manifestFile.open(manifestName.c_str());
+		if (!manifestFile.is_open())
+		{
+			std::string error = "Could not open AGI manifest for writing: " + manifestName;
+			llvm::report_fatal_error(llvm::StringRef(error));
+		}
+
+		auto nodeOp = [this](dfgNode *node) {
+			std::string op = node->getNameType();
+			if (op.empty() && node->getFinalIns() != NOP)
+				op = HyCUBEInsStrings[node->getFinalIns()];
+			return op;
+		};
+
+		int boundaryInputs = 0;
+		int boundaryOutputs = 0;
+		for (dfgNode *n : NodeList)
+		{
+			if (!agiSet.count(n))
+				continue;
+			for (dfgNode *p : n->getAncestors())
+				if (!agiSet.count(p))
+					boundaryInputs++;
+			for (dfgNode *c : n->getChildren())
+				if (!agiSet.count(c))
+					boundaryOutputs++;
+		}
+
+		manifestFile << "{\n";
+		manifestFile << "  \"schema_version\": 1,\n";
+		manifestFile << "  \"transform\": \"externalize_agi\",\n";
+		manifestFile << "  \"dfg_name\": " << jsonString(name) << ",\n";
+		manifestFile << "  \"original_node_count\": " << NodeList.size() << ",\n";
+		manifestFile << "  \"removed_node_count\": " << agiLocalIdx.size() << ",\n";
+		manifestFile << "  \"remaining_node_count\": " << postRemoveIdx.size() << ",\n";
+		manifestFile << "  \"boundary_input_count\": " << boundaryInputs << ",\n";
+		manifestFile << "  \"boundary_output_count\": " << boundaryOutputs << ",\n";
+		manifestFile << "  \"nodes\": [\n";
+
+		bool firstNode = true;
+		for (dfgNode *n : NodeList)
+		{
+			if (!agiSet.count(n))
+				continue;
+			if (!firstNode)
+				manifestFile << ",\n";
+			firstNode = false;
+
+			manifestFile << "    {\n";
+			manifestFile << "      \"local_idx\": " << agiLocalIdx[n] << ",\n";
+			manifestFile << "      \"original_idx\": " << n->getIdx() << ",\n";
+			manifestFile << "      \"op\": " << jsonString(nodeOp(n)) << ",\n";
+			manifestFile << "      \"name_type\": " << jsonString(n->getNameType()) << ",\n";
+			manifestFile << "      \"final_instruction\": " << jsonString(HyCUBEInsStrings[n->getFinalIns()]) << ",\n";
+			manifestFile << "      \"bb\": " << jsonString(n->BB ? n->BB->getName().str() : "") << ",\n";
+			manifestFile << "      \"base_pointer\": " << jsonString(n->getArrBasePtr()) << ",\n";
+			manifestFile << "      \"is_gep\": " << (n->isGEP() ? "true" : "false") << ",\n";
+			manifestFile << "      \"constant\": ";
+			if (n->hasConstantVal())
+				manifestFile << n->getConstantVal();
+			else
+				manifestFile << "null";
+			manifestFile << ",\n";
+
+			auto writeRefs = [&](const char *fieldName, const std::vector<dfgNode *> &refs) {
+				manifestFile << "      \"" << fieldName << "\": [";
+				bool firstRef = true;
+				for (dfgNode *ref : refs)
+				{
+					if (!firstRef)
+						manifestFile << ", ";
+					firstRef = false;
+					manifestFile << "{";
+					manifestFile << "\"original_idx\": " << ref->getIdx() << ", ";
+					if (agiSet.count(ref))
+					{
+						manifestFile << "\"kind\": \"agi\", ";
+						manifestFile << "\"local_idx\": " << agiLocalIdx[ref];
+					}
+					else
+					{
+						manifestFile << "\"kind\": \"external\", ";
+						manifestFile << "\"external_idx\": " << postRemoveIdx[ref];
+					}
+					manifestFile << "}";
+				}
+				manifestFile << "]";
+			};
+
+			writeRefs("inputs", n->getAncestors());
+			manifestFile << ",\n";
+			writeRefs("outputs", n->getChildren());
+			manifestFile << "\n";
+			manifestFile << "    }";
+		}
+		manifestFile << "\n";
+		manifestFile << "  ]\n";
+		manifestFile << "}\n";
+		manifestFile.close();
+		llvm::outs() << "[removeAGINodes] Wrote AGI manifest to " << manifestName << "\n";
 	}
 
 	// Step 4: Disconnect AGI nodes from remaining non-AGI nodes

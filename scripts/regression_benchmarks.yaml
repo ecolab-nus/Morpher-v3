@@ -27,6 +27,17 @@ suites:
         function: stencil2d
         max_ii: 8
 
+  ci_4x4_scalar_agi_pruned:
+    description: 4x4 scalar regression suite for C++ DFG-side AGI externalization with manifest validation.
+    config: config/scalar_agi_pruned.yaml
+    runmode: runall
+    jobs: 4
+    timeout_sec: 720
+    benchmarks:
+      - benchmark: morpher_benchmarks/array_cond/array_cond.c
+        function: array_cond
+        max_ii: 4
+
   ci_4x4_simd4_noiter:
     description: 4x4 SIMD-4 regression suite with iterator pruning enabled.
     config: config/simd4_noiter.yaml

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -289,6 +290,96 @@ def validate_dfg_outputs(context):
     )
 
 
+def validate_agi_manifest(context):
+  manifest_paths = sorted(Path(context.dfg_gen_kernel).glob("*_AGI_manifest.json"))
+  if not manifest_paths:
+    raise RuntimeError(
+      "remove_agi requested, but DFG generation did not emit any *_AGI_manifest.json files under %s"
+      % context.dfg_gen_kernel
+    )
+
+  for manifest_path in manifest_paths:
+    _validate_one_agi_manifest(manifest_path)
+  return manifest_paths
+
+
+def _validate_one_agi_manifest(manifest_path):
+  try:
+    with manifest_path.open("r", encoding="utf-8") as stream:
+      manifest = json.load(stream)
+  except (OSError, json.JSONDecodeError) as exc:
+    raise RuntimeError("Could not read AGI manifest %s: %s" % (manifest_path, exc))
+
+  if manifest.get("schema_version") != 1:
+    raise RuntimeError("AGI manifest %s has unsupported schema_version." % manifest_path)
+  if manifest.get("transform") != "externalize_agi":
+    raise RuntimeError("AGI manifest %s has unexpected transform." % manifest_path)
+
+  nodes = manifest.get("nodes")
+  if not isinstance(nodes, list):
+    raise RuntimeError("AGI manifest %s is missing nodes list." % manifest_path)
+  removed_count = int(manifest.get("removed_node_count", -1))
+  remaining_count = int(manifest.get("remaining_node_count", -1))
+  original_count = int(manifest.get("original_node_count", -1))
+  if removed_count != len(nodes):
+    raise RuntimeError(
+      "AGI manifest %s removed_node_count=%d but contains %d node records."
+      % (manifest_path, removed_count, len(nodes))
+    )
+  if original_count != removed_count + remaining_count:
+    raise RuntimeError(
+      "AGI manifest %s has inconsistent counts: original=%d removed=%d remaining=%d."
+      % (manifest_path, original_count, removed_count, remaining_count)
+    )
+
+  seen_local = set()
+  boundary_inputs = 0
+  boundary_outputs = 0
+  for node in nodes:
+    if not isinstance(node, dict):
+      raise RuntimeError("AGI manifest %s has a non-object node record." % manifest_path)
+    local_idx = node.get("local_idx")
+    if not isinstance(local_idx, int) or local_idx < 0:
+      raise RuntimeError("AGI manifest %s has invalid local_idx=%r." % (manifest_path, local_idx))
+    if local_idx in seen_local:
+      raise RuntimeError("AGI manifest %s repeats local_idx=%d." % (manifest_path, local_idx))
+    seen_local.add(local_idx)
+
+    for field, counter_name in (("inputs", "input"), ("outputs", "output")):
+      refs = node.get(field)
+      if not isinstance(refs, list):
+        raise RuntimeError("AGI manifest %s node %d missing %s list." % (manifest_path, local_idx, field))
+      for ref in refs:
+        if not isinstance(ref, dict):
+          raise RuntimeError("AGI manifest %s node %d has invalid %s ref." % (manifest_path, local_idx, field))
+        kind = ref.get("kind")
+        if kind == "agi":
+          if not isinstance(ref.get("local_idx"), int):
+            raise RuntimeError("AGI manifest %s has AGI ref without local_idx." % manifest_path)
+        elif kind == "external":
+          external_idx = ref.get("external_idx")
+          if not isinstance(external_idx, int) or external_idx < 0 or external_idx >= remaining_count:
+            raise RuntimeError("AGI manifest %s has invalid external_idx=%r." % (manifest_path, external_idx))
+          if counter_name == "input":
+            boundary_inputs += 1
+          else:
+            boundary_outputs += 1
+        else:
+          raise RuntimeError("AGI manifest %s has invalid ref kind=%r." % (manifest_path, kind))
+
+  if seen_local != set(range(removed_count)):
+    raise RuntimeError("AGI manifest %s local_idx values are not contiguous." % manifest_path)
+  if int(manifest.get("boundary_input_count", -1)) != boundary_inputs:
+    raise RuntimeError("AGI manifest %s boundary_input_count is inconsistent." % manifest_path)
+  if int(manifest.get("boundary_output_count", -1)) != boundary_outputs:
+    raise RuntimeError("AGI manifest %s boundary_output_count is inconsistent." % manifest_path)
+
+  print(
+    "AGI manifest verified: %s removed_nodes=%d, remaining_nodes=%d, boundary_inputs=%d, boundary_outputs=%d\n"
+    % (manifest_path.name, removed_count, remaining_count, boundary_inputs, boundary_outputs)
+  )
+
+
 def build_instrumentation_commands(context):
   kernel = context.kernel
   clang_tool = resolve_llvm_tool("clang")
@@ -425,6 +516,8 @@ def run_dfg_generator(context, unroll_factor=None):
   _run_dfg_pass_with_banksize_retry(context, skeleton_ir)
 
   validate_dfg_outputs(context)
+  if config.remove_agi:
+    validate_agi_manifest(context)
 
   if config.generate_dfg_pdf and not config.suppress_dfg_dot:
     run_command(Command(
@@ -486,6 +579,8 @@ def run_dfg_generator(context, unroll_factor=None):
   # Stage the AGI sub-graph next to the DFG XML so the layout solver can find it.
   for agi_path in Path(dfg_kernel).glob("*_AGI_subgraph.xml"):
     copy_file(str(agi_path), context.mapper_kernel)
+  for agi_manifest_path in Path(dfg_kernel).glob("*_AGI_manifest.json"):
+    copy_file(str(agi_manifest_path), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 
   if not config.enable_simulation:

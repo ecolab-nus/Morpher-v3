@@ -79,3 +79,6 @@ jobs:
 
       - name: Trusted scalar mapper regression suite 4x4
         run: python3 -u scripts/run_regression_benchmarks.py --suite ci_4x4
+
+      - name: AGI externalization regression suite 4x4
+        run: python3 -u scripts/run_regression_benchmarks.py --suite ci_4x4_scalar_agi_pruned
