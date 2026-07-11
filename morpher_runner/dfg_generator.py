@@ -11,8 +11,6 @@ from morpher_runner.exec import run_commands
 from morpher_runner.fs_ops import copy_file
 from morpher_runner.fs_ops import remove_glob
 from morpher_runner.simd_packer import filter_trace_vars
-from morpher_runner.simd_packer import pack_simd_xml
-from morpher_runner.simd_packer import prune_iter_control_xml
 from morpher_runner.simd_packer import remap_agi_subgraph_externalidx
 from morpher_runner.simd_packer import reindex_addr_trace
 from morpher_runner.simd_packer import remap_addr_trace
@@ -118,17 +116,10 @@ def build_ir_generation_commands(context):
 
 
 def simd_packing_active_for_factor(config, unroll_factor):
-  return config.arch_simd_enabled and unroll_factor >= config.arch_simd_width
-
-
-def _require_experimental_python_semantic_transforms(config, feature):
-  if config.experimental_python_semantic_transforms:
-    return
-  raise RuntimeError(
-    "%s is currently implemented as a Python XML semantic transform. "
-    "Trusted flows keep XML as a serialization boundary; set "
-    "experimental_python_semantic_transforms: true only for unstable experiments."
-    % feature
+  return (
+    config.simd_pack == "verified"
+    and config.arch_simd_enabled
+    and unroll_factor >= config.arch_simd_width
   )
 
 
@@ -194,6 +185,7 @@ def build_unroll_command(context, unroll_factor, input_ir=None):
       kernel,
       "--morpher-unroll-factor",
       str(unroll_factor),
+      "--morpher-promote-memory-reductions",
       "--morpher-reduction-lanes",
       str(reduction_lanes),
       "--morpher-reduction-policy",
@@ -335,7 +327,7 @@ def validate_agi_manifest(context):
   manifest_paths = sorted(Path(context.dfg_gen_kernel).glob("*_AGI_manifest.json"))
   if not manifest_paths:
     raise RuntimeError(
-      "remove_agi requested, but DFG generation did not emit any *_AGI_manifest.json files under %s"
+      "Access externalization requested, but DFG generation did not emit any *_AGI_manifest.json files under %s"
       % context.dfg_gen_kernel
     )
 
@@ -358,16 +350,17 @@ def validate_iter_manifest(context):
   except (OSError, json.JSONDecodeError) as exc:
     raise RuntimeError("Could not read iterator manifest %s: %s" % (manifest_path, exc))
 
+  status = manifest.get("status")
   if (manifest.get("schema_version") != 1 or
       manifest.get("transform") != "externalize_iterator_only" or
-      manifest.get("status") != "applied"):
+      status not in ("applied", "skipped")):
     raise RuntimeError("Iterator manifest %s has an unsupported schema or status." % manifest_path)
 
   original_count = manifest.get("original_node_count")
   removed_count = manifest.get("removed_node_count")
   final_count = manifest.get("final_node_count")
   if (not isinstance(original_count, int) or original_count < 1 or
-      not isinstance(removed_count, int) or removed_count < 1 or
+      not isinstance(removed_count, int) or removed_count < 0 or
       not isinstance(final_count, int) or final_count < 1 or
       original_count != removed_count + final_count):
     raise RuntimeError("Iterator manifest %s has inconsistent node counts." % manifest_path)
@@ -395,6 +388,14 @@ def validate_iter_manifest(context):
     raise RuntimeError("Iterator manifest %s does not cover its original index space." % manifest_path)
   if set(reindex.values()) != set(range(final_count)):
     raise RuntimeError("Iterator manifest %s final index space is not contiguous." % manifest_path)
+
+  if status == "skipped":
+    if removed_count != 0 or reindex != {index: index for index in range(original_count)}:
+      raise RuntimeError("Skipped iterator manifest %s must contain an identity mapping." % manifest_path)
+    reason = manifest.get("reason")
+    if not isinstance(reason, str) or not reason:
+      raise RuntimeError("Skipped iterator manifest %s is missing its reason." % manifest_path)
+    print("Iterator externalization skipped conservatively: %s\n" % reason)
 
   # In a combined verified-SIMD path, the other manifest determines whether
   # this is an intermediate or final index space. Cross-manifest validation is
@@ -798,7 +799,7 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
       )
   if unroll_factor > 1:
     print(
-      "Requested Morpher scalar loop unroll: factor=%d (remainders preserved)\n"
+      "Requested Morpher scalar loop unroll: factor=%d (remainders preserved; not SIMD width)\n"
       % unroll_factor
     )
   if config.auto_unroll_fuse_innermost_loops and config.auto_unroll_enabled:
@@ -894,43 +895,6 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
     tuple(sorted(simd_mapping.artifact_vars_pruned))
     if simd_mapping is not None else ()
   )
-  scalar_iter_reindex: "dict[int, int]" = {}
-  if config.remove_iter and not simd_active:
-    _require_experimental_python_semantic_transforms(config, "remove_iter")
-    pruned_xml = "%s/%s_noiter_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
-    n, scalar_iter_reindex = prune_iter_control_xml(dfg_xml, pruned_xml)
-    print("Iter-control prune (scalar): removed %d nodes\n" % n)
-    mapper_xml = pruned_xml
-  if simd_active and not verified_simd_active:
-    _require_experimental_python_semantic_transforms(config, "SIMD XML packing")
-    simd_xml = "%s/%s_simd%d_PartPredDFG.xml" % (
-      dfg_kernel.rstrip("/"),
-      kernel,
-      config.arch_simd_width,
-    )
-    report, simd_mapping = pack_simd_xml(
-      dfg_xml,
-      simd_xml,
-      lanes=config.arch_simd_width,
-      vector_ops=config.arch_vector_ops,
-      scalar_broadcast=config.arch_scalar_broadcast,
-      prune_scalar_lane_outputs=config.remove_agi,
-      prune_iter_control=config.remove_iter,
-    )
-    mapper_xml = simd_xml
-    print(
-      "SIMD pack: input_nodes=%d, output_nodes=%d, packed_groups=%d, "
-      "removed_nodes=%d, pruned_artifact_nodes=%d, pack_ratio=%.3f\n"
-      % (
-        report.input_nodes,
-        report.output_nodes,
-        report.packed_groups,
-        report.packed_nodes_removed,
-        report.artifact_nodes_pruned,
-        report.pack_ratio,
-      )
-    )
-    simd_artifact_vars_pruned = report.artifact_vars_pruned
   copy_file(mapper_xml, context.mapper_kernel)
   if mapper_xml != dfg_xml:
     staged_xml = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel)
@@ -1002,11 +966,6 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
       print("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
 
-  if scalar_iter_reindex:
-    import glob as _glob
-    addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
-    for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
-      reindex_addr_trace(addr_trace_path, addr_trace_path, scalar_iter_reindex)
   if iter_reindex:
     import glob as _glob
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")

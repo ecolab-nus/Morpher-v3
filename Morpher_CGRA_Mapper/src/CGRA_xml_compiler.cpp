@@ -255,22 +255,37 @@ int main(int argn, char *argc[])
 	pf_mapper->setMaxIter(args.maxiter);
 	sa_mapper->setMaxIter(args.maxiter);
 	int pfGuardSeconds = 120;
+	int pfGuardAbsoluteSeconds = 600;
 	int pfGuardMaxConsecutive = 5;
 	if (args.pf_guard_mode == "fast")
 	{
-		pfGuardSeconds = 90;
+		pfGuardSeconds = 60;
+		pfGuardAbsoluteSeconds = 300;
 		pfGuardMaxConsecutive = 3;
+	}
+	else if (args.pf_guard_mode == "quality")
+	{
+		pfGuardSeconds = 180;
+		pfGuardAbsoluteSeconds = 1200;
+		pfGuardMaxConsecutive = 8;
+	}
+	else if (args.pf_guard_mode == "exhaust")
+	{
+		pfGuardSeconds = 300;
+		pfGuardAbsoluteSeconds = 3600;
+		pfGuardMaxConsecutive = 16;
 	}
 	if (args.pf_guard_seconds > 0)
 	{
 		pfGuardSeconds = args.pf_guard_seconds;
+		pfGuardAbsoluteSeconds = std::max(pfGuardAbsoluteSeconds, pfGuardSeconds * 5);
 	}
 	if (args.pf_guard_max_consecutive > 0)
 	{
 		pfGuardMaxConsecutive = args.pf_guard_max_consecutive;
 	}
-	pf_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardMaxConsecutive);
-	sa_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardMaxConsecutive);
+	pf_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardAbsoluteSeconds, pfGuardMaxConsecutive);
+	sa_mapper->setIterationGuardPolicy(pfGuardSeconds, pfGuardAbsoluteSeconds, pfGuardMaxConsecutive);
 	pf_mapper->setFrontierStallPolicy(args.pf_frontier_stall_repeats,
 	                                  args.pf_frontier_stall_min_mapped);
 	sa_mapper->setFrontierStallPolicy(args.pf_frontier_stall_repeats,
@@ -282,7 +297,8 @@ int main(int argn, char *argc[])
 	pf_mapper->setRecMinPolicy(args.recmin_policy);
 	sa_mapper->setRecMinPolicy(args.recmin_policy);
 	std::cout << "PF guard policy: mode=" << args.pf_guard_mode
-	          << ", seconds=" << pfGuardSeconds
+	          << ", idle_seconds=" << pfGuardSeconds
+	          << ", absolute_seconds=" << pfGuardAbsoluteSeconds
 	          << ", max_consecutive=" << pfGuardMaxConsecutive << "\n";
 	std::cout << "MAP begin... \n";
 	int resII = 0;

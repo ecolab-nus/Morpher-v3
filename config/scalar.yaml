@@ -8,11 +8,8 @@ max_test_samples: 2
 enable_simulation: true
 validation_mode: functional
 spm_mode: 'off'
-remove_agi: false
-remove_iter: false
 layout_solver: false
 replicate_data: false
-experimental_python_semantic_transforms: false
 source_template:
   enabled: off
 auto_unroll:

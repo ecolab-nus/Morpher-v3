@@ -357,7 +357,7 @@ public:
 	int pfCandidateTopK = 0;
 	int pfAstarExpansionBudget = 200000;
 	FanoutRoutePolicy fanoutRoutePolicy = FanoutRoutePolicy::ADAPTIVE;
-	std::string recMinPolicy = "asap";
+	std::string recMinPolicy = "path";
 
 	int upperboundII = 1000000;
 	int upperboundIter = -1;
@@ -402,9 +402,10 @@ public:
 	bool canExitCurrPE(LatPort p);
 	static bool checkMEMOp(string op);
 	void setMaxIter(int m){maxIter = m;}
-	void setIterationGuardPolicy(int seconds, int maxConsecutive)
+	void setIterationGuardPolicy(int idleSeconds, int absoluteSeconds, int maxConsecutive)
 	{
-		progressMaxSecondsInIter = seconds;
+		progressMaxIdleSecondsInIter = idleSeconds;
+		progressMaxAbsoluteSecondsInIter = absoluteSeconds;
 		maxConsecutiveIterationGuards = maxConsecutive;
 	}
 	void setFrontierStallPolicy(int repeats, int minMapped)
@@ -506,12 +507,15 @@ protected:
 	size_t progressAstarExpanded = 0;
 	size_t progressAstarMaxQueue = 0;
 	int progressLastHeartbeatSec = -1;
-	int progressMaxSecondsInIter = 120;
+	int progressMaxIdleSecondsInIter = 120;
+	int progressMaxAbsoluteSecondsInIter = 600;
+	size_t progressBestUnmappedCount = static_cast<size_t>(-1);
 	int maxConsecutiveIterationGuards = 5;
 	int frontierStallRepeats = 0;
 	int frontierStallMinMapped = 0;
 	int rutRecoverySeed = 1;
 	std::chrono::steady_clock::time_point progressIterationStart;
+	std::chrono::steady_clock::time_point progressLastImprovement;
 	std::unordered_map<LatPort, std::vector<LatPort>, LatPortHash> nextPortsCache;
 	std::unordered_map<Port *, std::set<Port *>> conflictPortsCache;
 

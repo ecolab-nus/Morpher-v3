@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "configs",
         nargs="*",
-        default=["config/default.yaml"],
+        default=["config/scalar.yaml"],
         help="Config YAML files to validate.",
     )
     return parser.parse_args()
@@ -31,13 +31,10 @@ def validate(path: Path) -> list[str]:
     failures: list[str] = []
 
     expected_false = {
-        "remove_agi": cfg.remove_agi,
-        "remove_iter": cfg.remove_iter,
         "layout_solver": cfg.layout_solver,
         "replicate_data": cfg.replicate_data,
         "auto_unroll_enabled": cfg.auto_unroll_enabled,
         "arch_simd_enabled": cfg.arch_simd_enabled,
-        "experimental_python_semantic_transforms": cfg.experimental_python_semantic_transforms,
         "proximity_sort": cfg.proximity_sort,
     }
     for key, value in expected_false.items():
@@ -50,8 +47,8 @@ def validate(path: Path) -> list[str]:
         "ii_restarts": (cfg.ii_restarts, 0),
         "off_spm_mem_candidate_topk": (cfg.off_spm_mem_candidate_topk, 0),
         "pf_candidate_topk": (cfg.pf_candidate_topk, 0),
-        "pf_frontier_stall_repeats": (cfg.pf_frontier_stall_repeats, 0),
-        "pf_frontier_stall_min_mapped": (cfg.pf_frontier_stall_min_mapped, 0),
+        "pf_frontier_stall_repeats": (cfg.pf_frontier_stall_repeats, 8),
+        "pf_frontier_stall_min_mapped": (cfg.pf_frontier_stall_min_mapped, 3),
         "rut_recovery_seed": (cfg.rut_recovery_seed, 0),
         "sa_stall_min_unmapped": (cfg.sa_stall_min_unmapped, 1),
         "source_template_mode": (cfg.source_template_mode, "off"),

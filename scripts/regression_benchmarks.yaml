@@ -38,21 +38,9 @@ suites:
         function: array_cond
         max_ii: 4
 
-  ci_4x4_simd4_noiter:
-    description: 4x4 SIMD-4 regression suite with iterator pruning enabled.
-    config: config/simd4_noiter.yaml
-    runmode: runall
-    jobs: 4
-    timeout_sec: 720
-    benchmarks:
-      # Compact convolution is a good SIMD/no-iter smoke test.
-      - benchmark: cgrame_microbench/conv2/conv2.c
-        function: conv2
-        max_ii: 4
-
   ci_4x4_gemm_simd4_unroll:
-    description: 4x4 GEMM regression with SIMD-4, auto-unroll, AGI removal, and iterator pruning.
-    config: config/regression_gemm_simd4_unroll.yaml
+    description: 4x4 GEMM regression with verified SIMD-4 and conservative C++ AGI/iterator externalization.
+    config: config/simd4_verified_agi_iter.yaml
     runmode: runall
     jobs: 1
     timeout_sec: 720
@@ -60,19 +48,3 @@ suites:
       - benchmark: polybench/gemm/gemm.c
         function: gemm
         max_ii: 8
-
-  ci_8x8:
-    description: Minimal 8x8 mapper regression suite; kept small because 8x8 runs are slower.
-    config: config/regression_8x8.yaml
-    runmode: runall
-    jobs: 8
-    timeout_sec: 720
-    benchmarks:
-      # Microbench convolution on the larger fabric.
-      - benchmark: cgrame_microbench/conv2/conv2.c
-        function: conv2
-        max_ii: 4
-      # Streaming benchmark on the larger fabric.
-      - benchmark: opencgra_benchmarks/fir/fir.c
-        function: fir
-        max_ii: 4

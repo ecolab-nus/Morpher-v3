@@ -65,6 +65,8 @@ void CGRAXMLCompile::PathFinderMapper::beginIterationProgress(int iteration, siz
 	progressAstarMaxQueue = 0;
 	progressLastHeartbeatSec = -1;
 	progressIterationStart = std::chrono::steady_clock::now();
+	progressLastImprovement = progressIterationStart;
+	progressBestUnmappedCount = static_cast<size_t>(-1);
 	nextPortsCache.clear();
 	conflictPortsCache.clear();
 }
@@ -76,6 +78,11 @@ void CGRAXMLCompile::PathFinderMapper::updateAttemptProgress(const char *phase, 
 	progressMappedCount = mappedCount;
 	progressUnmappedCount = unmappedCount;
 	progressCandidateCount = candidateCount;
+	if (unmappedCount < progressBestUnmappedCount)
+	{
+		progressBestUnmappedCount = unmappedCount;
+		progressLastImprovement = std::chrono::steady_clock::now();
+	}
 }
 
 bool CGRAXMLCompile::PathFinderMapper::iterationGuardHit(const char *phase)
@@ -84,8 +91,11 @@ bool CGRAXMLCompile::PathFinderMapper::iterationGuardHit(const char *phase)
 	{
 		return false;
 	}
+	const auto now = std::chrono::steady_clock::now();
 	const int elapsed = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
-		std::chrono::steady_clock::now() - progressIterationStart).count());
+		now - progressIterationStart).count());
+	const int idle = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+		now - progressLastImprovement).count());
 	bool emitHeartbeat = false;
 	{
 		if (elapsed >= 10 && (progressLastHeartbeatSec < 0 || elapsed - progressLastHeartbeatSec >= 10))
@@ -107,13 +117,20 @@ bool CGRAXMLCompile::PathFinderMapper::iterationGuardHit(const char *phase)
 		          << ", astar_calls = " << progressAstarCalls
 		          << ", astar_expanded = " << progressAstarExpanded
 		          << ", astar_max_queue = " << progressAstarMaxQueue
+		          << ", best_unmapped = " << progressBestUnmappedCount
+		          << ", idle = " << idle << " sec"
 		          << ", elapsed = " << elapsed << " sec\n";
 	}
-	if (elapsed > progressMaxSecondsInIter)
+	const bool idleGuard = idle > progressMaxIdleSecondsInIter;
+	const bool absoluteGuard = elapsed > progressMaxAbsoluteSecondsInIter;
+	if (idleGuard || absoluteGuard)
 	{
-		std::cout << "PF iteration guard hit inside " << phase
+		std::cout << "PF " << (idleGuard ? "no-progress" : "absolute")
+		          << " guard hit inside " << phase
 		          << " at II = " << (cgra ? cgra->get_t_max() : -1)
 		          << ", Iteration = " << progressIteration
+		          << ", best_unmapped = " << progressBestUnmappedCount
+		          << ", idle = " << idle << " sec"
 		          << ", elapsed = " << elapsed << " sec. Failing this attempt.\n";
 		setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
 		return true;
@@ -1806,12 +1823,14 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		const size_t nodeCount = sortedNodeList.size();
 		const size_t progressPrintEvery = 2000;
 		const size_t maxNodeAttemptsInIter = std::max<size_t>(10000, nodeCount * 1000);
-		const int maxSecondsInIter = progressMaxSecondsInIter;
+		const int maxIdleSecondsInIter = progressMaxIdleSecondsInIter;
+		const int maxAbsoluteSecondsInIter = progressMaxAbsoluteSecondsInIter;
 		size_t nodeAttemptsInIter = 0;
 		int lastPrintedElapsedSec = -1;
 		auto iterStartTime = std::chrono::steady_clock::now();
 		beginIterationProgress(i, mappedNodes.size(), unmappedNodes.size());
-		progressMaxSecondsInIter = maxSecondsInIter;
+		progressMaxIdleSecondsInIter = maxIdleSecondsInIter;
+		progressMaxAbsoluteSecondsInIter = maxAbsoluteSecondsInIter;
 		progressIterationStart = iterStartTime;
 
 		std::string mappingLogFileName_withIter = mappingLogFileName + "_Iter=" + std::to_string(i) + ".mapping.csv";
@@ -1850,6 +1869,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		size_t lastFrontierMapped = 0;
 		size_t lastFrontierUnmapped = 0;
 		size_t lastFrontierRouteCount = 0;
+		size_t lastFrontierMappingHash = 0;
 		int repeatedFrontierFailures = 0;
 		auto frontierStallHit = [&](DFGNode *frontierNode, size_t routeCount) -> bool
 		{
@@ -1858,10 +1878,19 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 			{
 				return false;
 			}
+			size_t mappingHash = 1469598103934665603ull;
+			for (DFGNode *mappedNode : sortedNodeList)
+			{
+				mappingHash ^= static_cast<size_t>(mappedNode->idx + 1);
+				mappingHash *= 1099511628211ull;
+				mappingHash ^= reinterpret_cast<size_t>(mappedNode->rootDP);
+				mappingHash *= 1099511628211ull;
+			}
 			if (lastFrontierNodeIdx == frontierNode->idx &&
 			    lastFrontierMapped == mappedNodes.size() &&
 			    lastFrontierUnmapped == unmappedNodes.size() &&
-			    lastFrontierRouteCount == routeCount)
+			    lastFrontierRouteCount == routeCount &&
+			    lastFrontierMappingHash == mappingHash)
 			{
 				repeatedFrontierFailures++;
 			}
@@ -1871,6 +1900,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				lastFrontierMapped = mappedNodes.size();
 				lastFrontierUnmapped = unmappedNodes.size();
 				lastFrontierRouteCount = routeCount;
+				lastFrontierMappingHash = mappingHash;
 				repeatedFrontierFailures = 1;
 			}
 			if (repeatedFrontierFailures >= frontierStallRepeats)
@@ -1921,13 +1951,14 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				          << ", btCredits = " << backTrackCredits
 				          << ", elapsed = " << elapsedInIter << " sec\n";
 			}
-			if (nodeAttemptsInIter > maxNodeAttemptsInIter || elapsedInIter > maxSecondsInIter)
+			const bool timeGuardHit = iterationGuardHit("node-loop");
+			if (nodeAttemptsInIter > maxNodeAttemptsInIter || timeGuardHit)
 			{
-				std::cout << "Iteration guard hit at II = " << cgra->get_t_max()
-				          << ", Iteration = " << i
-				          << " (attempts = " << nodeAttemptsInIter
-				          << ", elapsed = " << elapsedInIter
-				          << " sec). Failing this PF iteration.\n";
+				if (!timeGuardHit)
+					std::cout << "PF node-attempt guard hit at II = " << cgra->get_t_max()
+					          << ", Iteration = " << i
+					          << " (attempts = " << nodeAttemptsInIter
+					          << "). Failing this PF iteration.\n";
 				mappingLog << "Iteration guard hit; failing this PF iteration.\n";
 				mappingLog2 << "Iteration guard hit; failing this PF iteration.\n";
 				mappingLog4 << "Iteration guard hit; failing this PF iteration.\n";

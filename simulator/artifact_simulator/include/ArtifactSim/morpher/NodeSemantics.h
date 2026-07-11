@@ -71,7 +71,7 @@ private:
   TraceImage trace_;
   MemoryImage initialSnapshot_;
   // Implicit memory layout for pruned DFGs whose address computation was
-  // removed (remove_iter): accesses without GEP/const/dynamic offsets are
+  // externalized (agi_iter): accesses without GEP/const/dynamic offsets are
   // laid out per base in canonical node order, one "round" per iteration:
   //   address = base + k * roundBytes(base) + prefixBytes(node)
   // where k counts the node's own executions. Unlike a shared running

@@ -13,10 +13,8 @@ spm_mode: 'off'
 # generated address traces already use the surviving DFG node indices.
 dfg_pipeline:
   externalize_access: agi
-remove_iter: false
 layout_solver: false
 replicate_data: false
-experimental_python_semantic_transforms: false
 
 source_template:
   enabled: off

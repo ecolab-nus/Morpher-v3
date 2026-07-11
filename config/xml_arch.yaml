@@ -10,4 +10,5 @@ max_test_samples: 5
 enable_simulation: false
 validation_mode: "functional"
 spm_mode: "off"
-remove_agi: true
+dfg_pipeline:
+  externalize_access: agi

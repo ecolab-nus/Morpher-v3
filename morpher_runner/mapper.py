@@ -216,12 +216,16 @@ def build_mapper_commands(context):
     str(config.pf_frontier_stall_repeats),
     "--pf_frontier_stall_min_mapped",
     str(config.pf_frontier_stall_min_mapped),
+    "--pf_guard_mode",
+    (
+      config.mapper_preset
+      if config.mapper_preset in ("fast", "quality", "exhaust")
+      else "balanced"
+    ),
     "--rut_recovery_seed",
     str(config.rut_recovery_seed),
     "--pf_node_order",
     pf_node_order,
-    "--recmin_policy",
-    str(getattr(config, "recmin_policy", "asap")),
     "--spm_mode",
     str(config.spm_mode),
     "--proximity_sort",

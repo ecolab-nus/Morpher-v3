@@ -14,7 +14,7 @@ Linux
 - Auto-unroll and loop-order search: sweeps candidate unroll factors and can compare the original perfect nest with LLVM-legal loop interchange (`auto_unroll`)
 - Architecture-driven SIMD packing: SIMD width and vector ops are inferred from the architecture JSON; the verified mode packs closed lane-isomorphic DFG subgraphs in C++ before mapping
 - Trace-driven access externalization: removes AGI before instrumentation and, for verified data-parallel loops, removes the disconnected iterator component (`dfg_pipeline.externalize_access: agi_iter`)
-- Legacy iterator pruning: Python XML graph rewrite for loop-control and PHI-merge nodes (`remove_iter`)
+- Conservative C++ iterator/control externalization (`dfg_pipeline.externalize_access: agi_iter`)
 - Optional post-mapping data-layout solver with read-only data replication (`layout_solver`, `replicate_data`)
 - Functional and event-driven simulation validation (`validation_mode`)
 - Artifact simulator: validates SIMD-packed mappings against instrumented memory traces (`runall_artifact_sim`)
@@ -148,21 +148,12 @@ Default config: `config/default.yaml`. Provided configs include:
 
 | Config | Description |
 |--------|-------------|
-| `config/default.yaml` | Trusted scalar baseline: HyCUBE auto-memory config, PF-only mapper, AGI/iterator removal disabled, no auto-unroll. |
-| `config/scalar.yaml` | Alias-style trusted scalar baseline with functional validation and no layout solver. |
-| `config/scalar_no_solver.yaml` | Same trusted scalar baseline retained for older scripts. |
+| `config/default.yaml` | Default scalar architecture with automatic bounded unroll and original/interchanged loop-order search, plus conservative C++ AGI/iterator externalization. |
+| `config/scalar.yaml` | Baseline retaining AGI and iterator/control nodes. |
 | `config/scalar_agi_pruned.yaml` | Explicit opt-in scalar config that enables C++ DFG-side AGI removal only. |
-| `config/scalar_agi_iter_pruned.yaml` | Restricted C++ iterator externalization for data-parallel loops whose control component is disconnected after AGI removal. |
-| `config/scalar_edgemem.yaml` | Scalar flow on the edge-memory HyCUBE architecture. |
-| `config/scalar_edgemem_unroll.yaml` | Edge-memory scalar flow with a fixed auto-unroll factor of 2. |
-| `config/simd4_verified.yaml` | 4-lane verified C++ SIMD smoke config: AGI externalization, manifest-backed packing, mapper-only validation. |
 | `config/simd4_verified_agi_iter.yaml` | 4-lane verified SIMD plus restricted iterator externalization; also compares original and LLVM-interchanged perfect-nest candidates. |
 | `config/simd4_verified_vred.yaml` | 4-lane reduction-axis SIMD with a vector partial-sum recurrence and an exit-only VRED contract. |
 | `config/simd4_verified_vred_u8.yaml` | Same reduction-axis path at factor 8: two SIMD-4 product groups are combined before one vector recurrence. |
-| `config/simd4_noiter.yaml` | Legacy experimental Python SIMD/iterator-pruning flow. |
-| `config/hycube_vectorization.yaml` | Vectorized architecture config with auto-unroll factor 3, layout solver enabled. |
-| `config/regression_gemm_simd4_unroll.yaml` | Focused GEMM SIMD/unroll regression config. |
-| `config/regression_8x8.yaml` | 8×8 HyCUBE regression config with simulation disabled. |
 | `config/xml_arch.yaml` | Static architecture config useful for XML-only mapping. |
 
 ### Core knobs
@@ -192,12 +183,9 @@ Default config: `config/default.yaml`. Provided configs include:
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
 | `dfg_pipeline.externalize_access` | `off`, `agi`, `agi_iter` | `off` | Trace-driven C++ access externalization. `agi` removes address-generation nodes before instrumentation. `agi_iter` additionally removes the iterator/control component only when it has no edge to surviving work; addresses are trace-driven and the iterator manifest remaps their final node indices. It rejects data, predicate, recurrence, or reduction boundaries. |
 | `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi` or `agi_iter`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
-| `remove_agi` | Boolean: `true` or `false` | `false` | Deprecated alias for `dfg_pipeline.externalize_access: agi`; emits and runner-validates `*_AGI_manifest.json`. |
-| `remove_iter` | Boolean: `true` or `false` | `false` | Experimental iterator/control removal. The current implementation is a Python XML graph rewrite and requires `experimental_python_semantic_transforms: true`. |
-| `source_template.enabled` | `off`, `auto`, Boolean | `off` | Experimental source-bound template lowering. `auto` currently stages lowered XML from Python and requires `experimental_python_semantic_transforms: true`. |
+| `source_template.enabled` | `off`, `auto`, Boolean | `off` | Source-bound template lowering. `auto` stages an accepted synthesized template or falls back to normal DFG generation. |
 | `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |
 | `replicate_data` | Boolean: `true` or `false` | `false` | With `layout_solver: true`, allow read-only array replication across banks. |
-| `experimental_python_semantic_transforms` | Boolean: `true` or `false` | `false` | Opt-in escape hatch for legacy Python transforms that mutate semantic DFG XML, including `remove_iter`, source-template lowering, and SIMD XML packing. Trusted flows leave this off. |
 
 Bundled architecture JSON options currently include:
 
@@ -228,16 +216,46 @@ stdnoc_verbose.json
 
 ### Auto-unroll (`auto_unroll.*`)
 
-For `runall` C-source runs, auto-unroll sweeps candidate factors, maps each candidate, and keeps the candidate with the best `II / unroll_factor` score. Factors are tried high-to-low after de-duplication.
+For `runall` C-source runs, the default search evaluates bounded unroll factors,
+original and legal interchanged loop orders, and linear/tree scalar reduction
+forms where applicable. It keeps the candidate with the best
+`II / unroll_factor` score. A final-graph recurrence bound can discard a
+candidate before PathFinder only when its normalized lower bound is strictly
+worse than an already mapped incumbent. Interchanged candidates are tried first
+because they commonly expose a recurrence-free data-parallel inner loop.
+
+All valid candidates are generated before mapping, then exact duplicate DFGs
+are removed and the remainder are ranked by normalized recurrence bound,
+iterator-externalization success, memory-node pressure, total graph size, and
+loop order. The initial full-mapping beam comes from the mapper preset:
+
+| Preset | Initial fully mapped candidates |
+|--------|---------------------------------:|
+| `fast` | 1 |
+| `trusted_pf`, `balanced` | 2 |
+| `quality` | 4 |
+| `exhaust` | all unique candidates |
+
+If the initial beam produces no mapping, the runner expands it. Once an
+incumbent exists, a remaining candidate is mapped only if its optimistic bound
+can strictly improve `II / unroll_factor`, or can tie while improving the
+larger-factor tie-breaker. A candidate that can only reproduce the incumbent is
+pruned before PathFinder.
 
 | Key | Accepted values | Default | Description |
 |-----|-----------------|---------|-------------|
 | `auto_unroll` | Mapping or boolean | `{}` | A bare boolean is accepted as shorthand for `auto_unroll.enabled`. |
 | `auto_unroll.enabled` | Boolean: `true` or `false` | `false` | Enable the search. |
-| `auto_unroll.factors` | Non-empty list of integers `>= 1` | `[1, 2, 4, 8]` | Candidate factors to try; duplicate factors are ignored and candidates are run high-to-low. |
+| `auto_unroll.factors` | Non-empty list of integers `>= 1` | internal `[1, 2, 4, 8]` | Optional exact override for the internally selected candidate factors; duplicate factors are ignored and candidates are run high-to-low. |
 | `auto_unroll.fuse_innermost_loops` | Boolean: `true` or `false` | `true` | Before unrolling, attempt a conservative fusion/flattening of the annotated innermost loop with its direct parent when the nest is canonical and constant-trip. |
-| `auto_unroll.try_loop_interchange` | Boolean: `true` or `false` | `false` | For each factor, also map a candidate produced by LLVM loop interchange after temporarily removing the map marker. This requires the marker to identify the unique deepest loop in a single-child nest; a rejected interchanged candidate does not discard the original candidate. |
-| `auto_unroll.stop_on_degradation` | Boolean: `true` or `false` | `true` | Stop searching early if effective II worsens. |
+| `auto_unroll.try_loop_interchange` | Boolean: `true` or `false` | `true` | For each factor, also map a candidate produced by LLVM loop interchange after temporarily removing the map marker. This requires the marker to identify the unique deepest loop in a single-child nest; a rejected interchanged candidate does not discard the original candidate. |
+| `auto_unroll.stop_on_degradation` | Boolean: `true` or `false` | `false` | Optional search-budget override: after the initial preset beam finds an incumbent, do not adaptively expand to lower-ranked candidates. Failure still expands the beam. |
+
+RecMin has no normal configuration policy. The mapper normalizes explicit
+`nextiter` edges and reversed `RecParents` memory constraints from the final
+transformed DFG, then measures their same-iteration return paths. Missing paths
+start conservatively at II 1 so PathFinder can raise II on failure; stale
+serialized ASAP levels never skip a potentially valid mapping.
 
 Removed keys: `auto_unroll.remainder_policy` and `auto_unroll.outer_factor` now raise errors. Remainders are always preserved; size benchmarks so the mapped trip counts are valid multiples of the desired unroll/SIMD factor.
 
@@ -257,13 +275,21 @@ On an architecture exposing `VRED`, integer `ADD`, `AND`, `OR`, and `XOR` reduct
 
 The manifest records the vector identity initialization as preheader work and records `VRED`, the scalar-initializer combine, and the final store as exit-only work. Both boundary phases are explicitly `scheduled: false`: the runner maps only the steady-state XML and prints this scope during DFG generation and simulation. When source traces are available, the artifact simulator does not ignore the omitted work. It seeds the first recurrence from traced per-lane preheader values (and checks that they equal the manifest identity), checks every final vector lane against retained live-out trace variables, performs the horizontal reduction and scalar combine in the host model, and checks the result against a traced scalar exit value. The final store is still not cycle-scheduled or applied to simulated memory; separate CGRA preheader/exit DFGs remain future work.
 
-It cannot be combined with legacy Python `remove_iter`, but it can compose with C++ `agi_iter`. For verified SIMD, packing runs first so a vector accumulator can replace its scalar PHI control path; restricted iterator externalization then removes only the newly disconnected control component. The two manifests are emitted in the final XML index space and validated together.
+Verified SIMD can compose with C++ `agi_iter`. Packing runs first so a vector accumulator can replace its scalar PHI control path; restricted iterator externalization then removes only the newly disconnected control component. The two manifests are emitted in the final XML index space and validated together.
 
-With `auto_unroll.try_loop_interchange: true`, the search maps both loop orders for each factor. Morpher removes `please_map_me()` only while LLVM checks and applies interchange, then restores it in the unique deepest loop. For GEMM this can move the reduction loop outward and expose an output-parallel inner loop; `agi_iter` can then remove all iterator/control nodes, while verified SIMD retains only essential memory and compute operations. This is deliberately opt-in because legality does not guarantee a better CGRA mapping, and ambiguous or branched nests are rejected.
+With `auto_unroll.try_loop_interchange: true`, the search maps both loop orders for each factor. Morpher removes `please_map_me()` only while LLVM checks and applies interchange, then restores it in the unique deepest loop. For GEMM this can move the reduction loop outward and expose an output-parallel inner loop; `agi_iter` can then remove all iterator/control nodes, while verified SIMD retains only essential memory and compute operations. This is enabled by the default config, but legality does not guarantee a better CGRA mapping, and ambiguous or branched nests retain only the original candidate.
 
-`dfg_pipeline.externalize_access: agi_iter` is separate from legacy `remove_iter`. It removes the remaining loop-start/end, PHI/control, and synthetic iterator live-out component only when every edge stays within that component. Without verified SIMD it runs immediately after AGI externalization. With verified SIMD it runs after packing, which is necessary for vector partial sums whose scalar PHI scaffolding initially connects control to computation. The mapped DFG is then the steady-state body, while address-trace exhaustion determines artifact-simulation completion. Any iterator-derived predicate, data value, recurrence, or reduction still reaching surviving work is a hard error rather than an externalized behavior; unrelated data-dependent control remains in the DFG. The runner validates the post-pack iterator and SIMD manifests before remapping AGI boundary metadata.
+Automatic selection minimizes `II / unroll_factor`, equivalently maximizing
+useful source-iteration throughput and, for a fixed kernel and architecture,
+useful compute utilization. After the preset's initial mapping beam, a candidate
+is sent to PathFinder only when its optimistic recurrence bound can strictly
+improve that objective, or can tie it while improving the explicit larger-factor
+tie-breaker. Raw DFG-node occupancy is diagnostic only because retained control
+work must not be rewarded as useful computation.
 
-The older Python XML packer remains available only with `experimental_python_semantic_transforms: true` when `dfg_pipeline.simd_pack` is left `off`. It is not part of the verified SIMD contract.
+`dfg_pipeline.externalize_access: agi_iter` removes the remaining loop-start/end, PHI/control, and synthetic iterator live-out component only when every edge stays within that component. Without verified SIMD it runs immediately after AGI externalization. With verified SIMD it runs after packing, which is necessary for vector partial sums whose scalar PHI scaffolding initially connects control to computation. The mapped DFG is then the steady-state body, while address-trace exhaustion determines artifact-simulation completion. If iterator-derived predicates, data, recurrences, or reductions still reach surviving work, iterator removal is skipped with an identity manifest while AGI removal remains applied.
+
+The legacy Python XML iterator and SIMD rewrites have been removed. See `Morpher_DFG_Generator/TRANSFORM_LIMITATIONS.md` for the supported C++ transform contract.
 
 ### Mapper Presets
 
@@ -274,6 +300,14 @@ The older Python XML packer remains available only with `experimental_python_sem
 | `balanced` | Default starting point. Moderate search effort and DFG logging. |
 | `quality` | Higher mapping effort, more SA restarts/moves, larger II search range. |
 | `exhaust` | Largest built-in search budget; useful for difficult kernels, but slow. |
+
+PathFinder guards are progress-aware. Progress means reaching a new minimum
+unmapped-node count, not merely performing more A* work. `fast` allows 60
+seconds without progress and 300 seconds absolute per PF iteration;
+`trusted_pf` and `balanced` use 120/600 seconds, `quality` uses 180/1200,
+and `exhaust` uses 300/3600. Exact repeated partial placements are also detected
+using the frontier plus a stable placement hash. Guarded retries still clear
+the attempt, perturb node order, and apply local routing pressure.
 
 Advanced tuning keys available for overriding presets: `mapping_method`, `backtrack_limit`, `max_mapper_iter`, `max_II`, `ii_restarts`, `skip_ii_estimation`, `print_dfg`, `sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_temp_max`, `sa_temp_min`, `sa_candidate_topk`, `off_spm_mem_candidate_topk` (`0` uncapped, `auto_fast` aggressive adaptive, `auto_balanced` moderate adaptive), `pf_candidate_topk` (`0` uncapped, `auto_fast` aggressive adaptive, `auto_balanced` moderate adaptive), and `proximity_sort`.
 

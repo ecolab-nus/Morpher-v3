@@ -130,6 +130,7 @@ def unroll_ir(kernel, opt_ir, factor, out_dir, reduction_lanes=1,
     kernel,
     "--morpher-unroll-factor",
     str(factor),
+    "--morpher-promote-memory-reductions",
     "--morpher-reduction-lanes",
     str(reduction_lanes),
     "--morpher-reduction-policy",
@@ -217,8 +218,7 @@ def run_dfg_check(bench, factor):
       tag,
     )
     ctx.config.enable_simulation = False
-    ctx.config.remove_agi = True
-    ctx.config.remove_iter = True
+    ctx.config.externalize_access = "agi_iter"
     run_dfg_generator(ctx, unroll_factor=uf)
 
   base_arith, base_ops = dfg_op_counts(base_tag, bench, 1)

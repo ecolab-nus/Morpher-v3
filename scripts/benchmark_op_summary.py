@@ -243,8 +243,18 @@ def write_summary_config(
     config["enable_simulation"] = False
     config["generate_dfg_pdf"] = False
     config["suppress_dfg_dot"] = True
-    config["remove_agi"] = remove_agi
-    config["remove_iter"] = remove_iter
+    if remove_iter:
+        externalize_access = "agi_iter"
+    elif remove_agi:
+        externalize_access = "agi"
+    else:
+        externalize_access = "off"
+    pipeline = config.get("dfg_pipeline", {})
+    if not isinstance(pipeline, dict):
+        pipeline = {}
+    pipeline = dict(pipeline)
+    pipeline["externalize_access"] = externalize_access
+    config["dfg_pipeline"] = pipeline
     auto = config.get("auto_unroll", {})
     if not isinstance(auto, dict):
         auto = {"enabled": bool(auto)}

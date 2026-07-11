@@ -16,6 +16,9 @@ from morpher_runner.artifact_simulator import resolve_simd_manifest
 from morpher_runner.mapper import build_mapper_commands
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.simd_packer import SimdMapping
+from run_morpher import _final_graph_recurrence_lower_bound
+from run_morpher import _mapping_beam_width
+from run_morpher import _candidate_can_improve
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,11 +37,9 @@ class ExternalizeAccessConfigTests(unittest.TestCase):
       "agi",
     )
 
-  def test_legacy_remove_agi_is_an_alias(self):
-    self.assertEqual(
-      RunnerConfig._parse_externalize_access({"remove_agi": True}),
-      "agi",
-    )
+  def test_legacy_remove_agi_is_rejected(self):
+    with self.assertRaisesRegex(RuntimeError, "were removed"):
+      RunnerConfig._parse_externalize_access({"remove_agi": True})
 
   def test_agi_iter_is_accepted_for_the_restricted_control_only_mode(self):
     self.assertEqual(
@@ -49,7 +50,7 @@ class ExternalizeAccessConfigTests(unittest.TestCase):
     )
 
   def test_pipeline_does_not_combine_with_legacy_iterator_pruning(self):
-    with self.assertRaisesRegex(RuntimeError, "cannot be combined"):
+    with self.assertRaisesRegex(RuntimeError, "were removed"):
       RunnerConfig._parse_externalize_access(
         {
           "dfg_pipeline": {"externalize_access": "agi"},
@@ -94,7 +95,7 @@ class TraceDrivenCommandTests(unittest.TestCase):
 
   def test_dfg_generator_passes_the_iterator_externalization_flag(self):
     config = RunnerConfig.from_yaml(
-      str(REPO_ROOT / "config" / "scalar_agi_iter_pruned.yaml")
+      str(REPO_ROOT / "config" / "default.yaml")
     )
     context = SimpleNamespace(
       config=config,
@@ -124,6 +125,72 @@ class TraceDrivenCommandTests(unittest.TestCase):
     )
     self.assertTrue(parsed[3])
 
+  def test_internal_unroll_defaults_and_explicit_factor_override(self):
+    defaults = RunnerConfig._parse_auto_unroll({"auto_unroll": {"enabled": True}})
+    explicit = RunnerConfig._parse_auto_unroll(
+      {"auto_unroll": {"enabled": True, "factors": [3, 6]}}
+    )
+    self.assertEqual(defaults[1], [1, 2, 4, 8])
+    self.assertEqual(explicit[1], [3, 6])
+    self.assertTrue(defaults[3])
+    self.assertFalse(defaults[4])
+
+  def test_final_graph_recurrence_bound_ignores_stale_asap_levels(self):
+    with tempfile.TemporaryDirectory() as directory:
+      path = Path(directory) / "probe.xml"
+      path.write_text(
+        '<DFG count="3">'
+        '<Node idx="0" ASAP="40"><OP>ADD</OP><Outputs>'
+        '<Output idx="1" nextiter="0"/></Outputs></Node>'
+        '<Node idx="1" ASAP="70"><OP>ADD</OP><Outputs>'
+        '<Output idx="2" nextiter="1"/></Outputs></Node>'
+        '<Node idx="2" ASAP="2"><OP>CMERGE</OP><Outputs>'
+        '<Output idx="0" nextiter="0"/></Outputs></Node>'
+        '</DFG>\n',
+        encoding="utf-8",
+      )
+      self.assertEqual(_final_graph_recurrence_lower_bound(path), 2)
+
+  def test_final_graph_recurrence_bound_includes_reversed_recparents(self):
+    with tempfile.TemporaryDirectory() as directory:
+      path = Path(directory) / "probe.xml"
+      path.write_text(
+        '<DFG count="3">'
+        '<Node idx="0"><OP>LOAD</OP><Outputs>'
+        '<Output idx="1" nextiter="0"/></Outputs><RecParents/></Node>'
+        '<Node idx="1"><OP>ADD</OP><Outputs>'
+        '<Output idx="2" nextiter="0"/></Outputs><RecParents/></Node>'
+        '<Node idx="2"><OP>STORE</OP><Outputs/><RecParents>'
+        '<RecParent idx="0"/></RecParents></Node>'
+        '</DFG>\n',
+        encoding="utf-8",
+      )
+      self.assertEqual(_final_graph_recurrence_lower_bound(path), 2)
+
+  def test_mapping_beam_width_follows_preset(self):
+    self.assertEqual(_mapping_beam_width("fast", 7), 1)
+    self.assertEqual(_mapping_beam_width("trusted_pf", 7), 2)
+    self.assertEqual(_mapping_beam_width("quality", 7), 4)
+    self.assertEqual(_mapping_beam_width("exhaust", 7), 7)
+
+  def test_adaptive_candidate_must_have_a_path_to_win(self):
+    incumbent = {"score": 0.25, "factor": 8}
+    self.assertFalse(_candidate_can_improve(
+      {"lower_score": 0.25, "factor": 8}, incumbent
+    ))
+    self.assertFalse(_candidate_can_improve(
+      {"lower_score": 0.25, "factor": 4}, incumbent
+    ))
+    self.assertTrue(_candidate_can_improve(
+      {"lower_score": 0.125, "factor": 4}, incumbent
+    ))
+
+  def test_equal_bound_can_improve_factor_tie_breaker(self):
+    incumbent = {"score": 0.25, "factor": 4}
+    self.assertTrue(_candidate_can_improve(
+      {"lower_score": 0.25, "factor": 8}, incumbent
+    ))
+
   def test_mapper_binary_emission_is_disabled(self):
     context = SimpleNamespace(
       config=self.config,
@@ -137,9 +204,30 @@ class TraceDrivenCommandTests(unittest.TestCase):
     mapper_command = commands[-1].argv
     emit_binary_index = mapper_command.index("--emit_binary")
     self.assertEqual(mapper_command[emit_binary_index + 1], "0")
+    guard_index = mapper_command.index("--pf_guard_mode")
+    self.assertEqual(mapper_command[guard_index + 1], "balanced")
+
+  def test_fast_mapper_preset_selects_fast_progress_guard(self):
+    config = RunnerConfig.from_yaml(
+      str(REPO_ROOT / "config" / "simd4_verified_agi_iter.yaml")
+    )
+    context = SimpleNamespace(
+      config=config,
+      kernel="probe",
+      morpher_home=str(REPO_ROOT),
+      mapper_home=str(REPO_ROOT / "Morpher_CGRA_Mapper"),
+      mapper_kernel="/tmp",
+      selected_simd_artifact_only=False,
+    )
+    commands, _ = build_mapper_commands(context)
+    mapper_command = commands[-1].argv
+    guard_index = mapper_command.index("--pf_guard_mode")
+    self.assertEqual(mapper_command[guard_index + 1], "fast")
 
   def test_verified_simd_adds_cxx_pass_flags(self):
-    config = RunnerConfig.from_yaml(str(REPO_ROOT / "config" / "simd4_verified.yaml"))
+    config = RunnerConfig.from_yaml(
+      str(REPO_ROOT / "config" / "simd4_verified_agi_iter.yaml")
+    )
     context = SimpleNamespace(
       config=config,
       kernel="probe",
@@ -164,6 +252,19 @@ class TraceDrivenCommandTests(unittest.TestCase):
     command = build_unroll_command(context, 4)
     policy_index = command.argv.index("--morpher-reduction-policy")
     self.assertEqual(command.argv[policy_index + 1], "vector-psum")
+
+  def test_scalar_unroll_promotes_memory_reductions_without_claiming_simd_lanes(self):
+    config = RunnerConfig.from_yaml(str(REPO_ROOT / "config" / "default.yaml"))
+    context = SimpleNamespace(
+      config=config,
+      kernel="probe",
+      dfg_gen_home=str(REPO_ROOT / "Morpher_DFG_Generator"),
+      dfg_gen_kernel="/tmp/probe",
+    )
+    command = build_unroll_command(context, 8)
+    self.assertIn("--morpher-promote-memory-reductions", command.argv)
+    lanes_index = command.argv.index("--morpher-reduction-lanes")
+    self.assertEqual(command.argv[lanes_index + 1], "1")
 
   def test_vred_rejects_partial_vector_chunk_unroll(self):
     config = RunnerConfig.from_yaml(
@@ -277,6 +378,40 @@ class TraceDrivenCommandTests(unittest.TestCase):
         )
       )
       self.assertEqual(reindex, {0: 0, 1: 1})
+
+  def test_iterator_manifest_accepts_conservative_identity_skip(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "probe_PartPredDFG.xml").write_text(
+        "<DFG count=\"2\"><Node idx=\"0\"><OP>MUL</OP></Node>"
+        "<Node idx=\"1\"><OP>ADD</OP></Node></DFG>\n",
+        encoding="utf-8",
+      )
+      (root / "probe_ITER_manifest.json").write_text(
+        json.dumps(
+          {
+            "schema_version": 1,
+            "transform": "externalize_iterator_only",
+            "status": "skipped",
+            "reason": "iterator control reaches a live accumulator",
+            "original_node_count": 2,
+            "removed_node_count": 0,
+            "final_node_count": 2,
+            "removed_nodes": [],
+            "artifact_vars_pruned": [],
+            "index_map": [
+              {"original_idx": 0, "final_idx": 0},
+              {"original_idx": 1, "final_idx": 1},
+            ],
+          }
+        ),
+        encoding="utf-8",
+      )
+      reindex, artifact_vars = validate_iter_manifest(
+        SimpleNamespace(dfg_gen_kernel=str(root), kernel="probe")
+      )
+      self.assertEqual(reindex, {0: 0, 1: 1})
+      self.assertEqual(artifact_vars, ())
 
   def test_vred_manifest_covers_pruned_and_synthesized_nodes(self):
     with tempfile.TemporaryDirectory() as directory:

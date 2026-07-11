@@ -1010,7 +1010,7 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
   else
     writeQuoted(OS, "unsupported source-equivalent lowering family");
   if (verdict != "no") {
-    OS << ",\"recommended_flags\":{\"remove_iter\":true,\"remove_agi\":true}";
+    OS << ",\"recommended_dfg_pipeline\":{\"externalize_access\":\"agi_iter\"}";
   }
   OS << ",\"reject_reason\":";
   if (rejectReason.empty())

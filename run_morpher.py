@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import csv
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -9,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
+from collections import deque
 from pathlib import Path
 
 import yaml
@@ -448,6 +451,113 @@ def _auto_unroll_score(ii, factor):
   return float(ii) / float(factor)
 
 
+def _candidate_can_improve(candidate, incumbent):
+  """Whether an optimistic candidate bound can still win the selection.
+
+  Equal throughput is useful only when the candidate improves the explicit
+  factor tie-breaker.  In particular, do not spend a PathFinder run merely to
+  reproduce an incumbent with the same (or a smaller) unroll factor.
+  """
+  if incumbent is None:
+    return True
+  if candidate["lower_score"] < incumbent["score"]:
+    return True
+  return (
+    candidate["lower_score"] == incumbent["score"] and
+    candidate["factor"] > incumbent["factor"]
+  )
+
+
+def _final_graph_recurrence_lower_bound(dfg_xml):
+  """Cheap unit-latency lower bound from explicit final-DFG recurrence edges.
+
+  This deliberately underestimates when operation latencies differ. It is safe
+  for pruning only when its normalized value is strictly worse than an already
+  mapped incumbent.
+  """
+  text = Path(dfg_xml).read_text(encoding="utf-8")
+  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  dfg = root.find("DFG")
+  if dfg is None:
+    return 1
+  adjacency = {}
+  recurrences = []
+  for node in dfg.findall("Node"):
+    src = int(node.attrib["idx"])
+    adjacency.setdefault(src, [])
+    for output in node.findall("./Outputs/Output"):
+      dst = int(output.attrib["idx"])
+      if int(output.attrib.get("nextiter", "0")) == 0:
+        adjacency[src].append(dst)
+      else:
+        recurrences.append((src, dst))
+    for rec_parent in node.findall("./RecParents/RecParent"):
+      # RecParents are reversed in the mapper representation: this node is
+      # the recurrence producer and the referenced node is the next-iteration
+      # consumer.
+      recurrences.append((src, int(rec_parent.attrib["idx"])))
+
+  bound = 1
+  for producer, consumer in recurrences:
+    pending = deque([(consumer, 0)])
+    visited = {consumer}
+    distance = None
+    while pending:
+      node, depth = pending.popleft()
+      if node == producer:
+        distance = depth
+        break
+      for child in adjacency.get(node, ()):
+        if child not in visited:
+          visited.add(child)
+          pending.append((child, depth + 1))
+    if distance is not None and distance > 0:
+      bound = max(bound, distance)
+  return bound
+
+
+def _candidate_graph_metrics(candidate_dirs, kernel, factor, loop_order):
+  dfg_xml = Path(candidate_dirs["mapper"]) / ("%s_PartPredDFG.xml" % kernel)
+  text = dfg_xml.read_text(encoding="utf-8")
+  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  nodes = root.find("DFG").findall("Node")
+  memory_nodes = sum(
+    1 for node in nodes
+    if "LOAD" in (node.findtext("OP") or "") or
+       "STORE" in (node.findtext("OP") or "")
+  )
+  iter_manifests = sorted(Path(candidate_dirs["mapper"]).glob("*_ITER_manifest.json"))
+  iterator_applied = False
+  if len(iter_manifests) == 1:
+    iterator_applied = json.loads(
+      iter_manifests[0].read_text(encoding="utf-8")
+    ).get("status") == "applied"
+  recurrence_bound = _final_graph_recurrence_lower_bound(dfg_xml)
+  return {
+    "dfg_xml": str(dfg_xml),
+    "fingerprint": hashlib.sha256(dfg_xml.read_bytes()).hexdigest(),
+    "recurrence_lower_bound": recurrence_bound,
+    "lower_score": _auto_unroll_score(recurrence_bound, factor),
+    "iterator_applied": iterator_applied,
+    "memory_nodes": memory_nodes,
+    "total_nodes": len(nodes),
+    "rank_key": (
+      _auto_unroll_score(recurrence_bound, factor),
+      0 if iterator_applied else 1,
+      memory_nodes,
+      len(nodes),
+      0 if loop_order == "interchanged" else 1,
+    ),
+  }
+
+
+def _mapping_beam_width(mapper_preset, candidate_count):
+  widths = {"fast": 1, "trusted_pf": 2, "balanced": 2, "quality": 4}
+  if mapper_preset == "exhaust":
+    return candidate_count
+  return min(candidate_count, widths.get(mapper_preset, 2))
+
+
 def _auto_unroll_dirs(context):
   return {
     "dfg": context.dfg_gen_kernel.rstrip("/"),
@@ -467,10 +577,14 @@ def _set_auto_unroll_dirs(context, dirs):
   os.makedirs(context.mem_trace, exist_ok=True)
 
 
-def _candidate_auto_unroll_dirs(golden_dirs, factor, loop_order="original"):
+def _candidate_auto_unroll_dirs(
+  golden_dirs, factor, loop_order="original", reduction_form="linear"
+):
   suffix = "_uf%d" % factor
   if loop_order == "interchanged":
     suffix += "_li"
+  if reduction_form != "linear":
+    suffix += "_%s" % reduction_form.replace("-", "_")
   return {
     label: "%s%s" % (path.rstrip("/"), suffix)
     for label, path in golden_dirs.items()
@@ -511,6 +625,10 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
       fieldnames=[
         "factor",
         "loop_order",
+        "reduction_form",
+        "recurrence_lower_bound",
+        "rank",
+        "beam_decision",
         "status",
         "ii",
         "score",
@@ -525,17 +643,21 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
       out_row["selected"] = "1" if (
         best and
         row.get("factor") == best["factor"] and
-        row.get("loop_order") == best["loop_order"]
+        row.get("loop_order") == best["loop_order"] and
+        row.get("reduction_form") == best["reduction_form"]
       ) else "0"
       writer.writerow(out_row)
 
 
-def _run_auto_unroll(context):
+def _run_auto_unroll_sequential(context):
   config = context.config
   factors = sorted(config.auto_unroll_factors, reverse=True)
   best = None
   rows = []
   golden_dirs = _auto_unroll_dirs(context)
+  configured_reduction_policy = config.auto_unroll_scalar_reduction_policy
+  configured_reduction_terms = config.auto_unroll_scalar_reduction_terms
+  seen_dfg_fingerprints = {}
 
   print("\n-----Running Morpher auto-unroll search-----\n")
   print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
@@ -567,9 +689,12 @@ def _run_auto_unroll(context):
     source_template = os.path.join(temp_root, "source_template")
     shutil.copytree(golden_dirs["dfg"], source_template)
 
-    loop_orders = [("original", False)]
+    loop_orders = []
     if config.auto_unroll_try_loop_interchange:
+      # For affine nests this often exposes the data-parallel dimension and
+      # establishes a useful incumbent before recurrence-heavy originals.
       loop_orders.append(("interchanged", True))
+    loop_orders.append(("original", False))
 
     for factor in factors:
       best_before_factor = best
@@ -580,13 +705,30 @@ def _run_auto_unroll(context):
           "Candidate factor %d will map as scalar on the SIMD-capable architecture.\n"
           % factor
         )
+      candidate_modes = []
       for loop_order, interchange_loops in loop_orders:
+        if configured_reduction_policy != "none":
+          candidate_modes.append(
+            (loop_order, interchange_loops, configured_reduction_policy)
+          )
+        else:
+          if factor > 1 and not simd_packing_active_for_factor(config, factor):
+            candidate_modes.append((loop_order, interchange_loops, "tree"))
+          candidate_modes.append((loop_order, interchange_loops, "linear"))
+
+      for loop_order, interchange_loops, reduction_form in candidate_modes:
+        config.auto_unroll_scalar_reduction_policy = (
+          "none" if reduction_form == "linear" else reduction_form
+        )
+        config.auto_unroll_scalar_reduction_terms = (
+          factor if reduction_form == "tree" else configured_reduction_terms
+        )
         print(
-          "== Auto-unroll candidate factor %d, loop_order=%s ==\n"
-          % (factor, loop_order)
+          "== Auto-unroll candidate factor %d, loop_order=%s, reduction=%s ==\n"
+          % (factor, loop_order, reduction_form)
         )
         candidate_dirs = _candidate_auto_unroll_dirs(
-          golden_dirs, factor, loop_order
+          golden_dirs, factor, loop_order, reduction_form
         )
         _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs)
         _set_auto_unroll_dirs(context, candidate_dirs)
@@ -597,6 +739,56 @@ def _run_auto_unroll(context):
             unroll_factor=factor,
             interchange_loops=interchange_loops,
           )
+          dfg_xml = os.path.join(
+            candidate_dirs["mapper"], "%s_PartPredDFG.xml" % context.kernel
+          )
+          fingerprint = hashlib.sha256(Path(dfg_xml).read_bytes()).hexdigest()
+          duplicate_of = seen_dfg_fingerprints.get(fingerprint)
+          if duplicate_of is not None:
+            print(
+              "Candidate skipped before PathFinder: final DFG duplicates %s.\n"
+              % duplicate_of
+            )
+            rows.append({
+              "factor": factor,
+              "loop_order": loop_order,
+              "reduction_form": reduction_form,
+              "recurrence_lower_bound": "",
+              "status": "skipped_duplicate_dfg",
+              "ii": "",
+              "score": "",
+              "promoted": "0",
+              "candidate_mapper_dir": candidate_dirs["mapper"],
+            })
+            _set_auto_unroll_dirs(context, golden_dirs)
+            _write_auto_unroll_results(golden_dirs, rows, best)
+            continue
+          seen_dfg_fingerprints[fingerprint] = (
+            "factor=%d,loop_order=%s,reduction=%s"
+            % (factor, loop_order, reduction_form)
+          )
+          recurrence_lower_bound = _final_graph_recurrence_lower_bound(dfg_xml)
+          lower_score = _auto_unroll_score(recurrence_lower_bound, factor)
+          if best is not None and lower_score > best["score"]:
+            print(
+              "Candidate pruned before PathFinder: recurrence lower score "
+              "%.4f is worse than incumbent %.4f.\n"
+              % (lower_score, best["score"])
+            )
+            rows.append({
+              "factor": factor,
+              "loop_order": loop_order,
+              "reduction_form": reduction_form,
+              "recurrence_lower_bound": recurrence_lower_bound,
+              "status": "pruned_recurrence_bound",
+              "ii": "",
+              "score": "",
+              "promoted": "0",
+              "candidate_mapper_dir": candidate_dirs["mapper"],
+            })
+            _set_auto_unroll_dirs(context, golden_dirs)
+            _write_auto_unroll_results(golden_dirs, rows, best)
+            continue
           run_mapper(context)
         except subprocess.CalledProcessError as exc:
           print(
@@ -606,6 +798,8 @@ def _run_auto_unroll(context):
           rows.append({
             "factor": factor,
             "loop_order": loop_order,
+            "reduction_form": reduction_form,
+            "recurrence_lower_bound": "",
             "status": "failed_exit_%d" % exc.returncode,
             "ii": "",
             "score": "",
@@ -625,6 +819,8 @@ def _run_auto_unroll(context):
           rows.append({
             "factor": factor,
             "loop_order": loop_order,
+            "reduction_form": reduction_form,
+            "recurrence_lower_bound": recurrence_lower_bound,
             "status": status or "no_result",
             "ii": ii if ii is not None else "",
             "score": "",
@@ -645,6 +841,8 @@ def _run_auto_unroll(context):
         candidate = {
           "factor": factor,
           "loop_order": loop_order,
+          "reduction_form": reduction_form,
+          "recurrence_lower_bound": recurrence_lower_bound,
           "ii": ii,
           "score": score,
         }
@@ -669,6 +867,8 @@ def _run_auto_unroll(context):
         rows.append({
           "factor": factor,
           "loop_order": loop_order,
+          "reduction_form": reduction_form,
+          "recurrence_lower_bound": recurrence_lower_bound,
           "status": row_status,
           "ii": ii,
           "score": "%.8f" % score,
@@ -690,19 +890,200 @@ def _run_auto_unroll(context):
         break
 
     _set_auto_unroll_dirs(context, golden_dirs)
+    config.auto_unroll_scalar_reduction_policy = configured_reduction_policy
+    config.auto_unroll_scalar_reduction_terms = configured_reduction_terms
 
   if best is None:
     raise RuntimeError("auto_unroll failed: no candidate factor mapped successfully.")
 
   print(
-    "Selected auto-unroll factor %d, loop_order=%s (II=%d, score=%.4f).\n"
-    % (best["factor"], best["loop_order"], best["ii"], best["score"])
+    "Selected auto-unroll factor %d, loop_order=%s, reduction=%s "
+    "(II=%d, score=%.4f).\n"
+    % (
+      best["factor"], best["loop_order"], best["reduction_form"],
+      best["ii"], best["score"],
+    )
   )
 
   if context.config.enable_simulation:
     run_artifact_simulator(context, context.config.validation_mode)
   else:
     print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
+
+
+def _run_auto_unroll(context):
+  """Generate all candidates, rank cheaply, then map an adaptive beam."""
+  config = context.config
+  factors = sorted(config.auto_unroll_factors, reverse=True)
+  golden_dirs = _auto_unroll_dirs(context)
+  configured_policy = config.auto_unroll_scalar_reduction_policy
+  configured_terms = config.auto_unroll_scalar_reduction_terms
+  generated = []
+  rows = []
+  seen = {}
+
+  print("\n-----Generating and ranking Morpher candidates-----\n")
+  print("Factors: %s" % ", ".join(str(factor) for factor in factors))
+  print("Objective: minimum mapped II / represented source iterations\n")
+
+  with tempfile.TemporaryDirectory(prefix="morpher_ranked_search_") as temp_root:
+    source_template = os.path.join(temp_root, "source_template")
+    shutil.copytree(golden_dirs["dfg"], source_template)
+    loop_orders = [("original", False)]
+    if config.auto_unroll_try_loop_interchange:
+      loop_orders.insert(0, ("interchanged", True))
+
+    try:
+      for factor in factors:
+        for loop_order, interchange_loops in loop_orders:
+          if configured_policy != "none":
+            forms = [configured_policy]
+          else:
+            forms = []
+            if factor > 1 and not simd_packing_active_for_factor(config, factor):
+              forms.append("tree")
+            forms.append("linear")
+
+          for reduction_form in forms:
+            config.auto_unroll_scalar_reduction_policy = (
+              "none" if reduction_form == "linear" else reduction_form
+            )
+            config.auto_unroll_scalar_reduction_terms = (
+              factor if reduction_form == "tree" else configured_terms
+            )
+            candidate_dirs = _candidate_auto_unroll_dirs(
+              golden_dirs, factor, loop_order, reduction_form
+            )
+            _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs)
+            _set_auto_unroll_dirs(context, candidate_dirs)
+            label = "factor=%d,loop_order=%s,reduction=%s" % (
+              factor, loop_order, reduction_form
+            )
+            print("== Generate %s ==\n" % label)
+            try:
+              run_dfg_generator(
+                context, unroll_factor=factor,
+                interchange_loops=interchange_loops,
+              )
+              metrics = _candidate_graph_metrics(
+                candidate_dirs, context.kernel, factor, loop_order
+              )
+            except (subprocess.CalledProcessError, RuntimeError) as exc:
+              rows.append({
+                "factor": factor, "loop_order": loop_order,
+                "reduction_form": reduction_form,
+                "recurrence_lower_bound": "", "rank": "",
+                "beam_decision": "generation_failed",
+                "status": "generation_failed", "ii": "", "score": "",
+                "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
+              })
+              print("Candidate generation failed: %s\n" % exc)
+              continue
+
+            duplicate = seen.get(metrics["fingerprint"])
+            if duplicate is not None:
+              rows.append({
+                "factor": factor, "loop_order": loop_order,
+                "reduction_form": reduction_form,
+                "recurrence_lower_bound": metrics["recurrence_lower_bound"],
+                "rank": "", "beam_decision": "duplicate_of_%s" % duplicate,
+                "status": "skipped_duplicate_dfg", "ii": "", "score": "",
+                "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
+              })
+              print("Duplicate final DFG; reuses %s.\n" % duplicate)
+              continue
+            seen[metrics["fingerprint"]] = label
+            generated.append({
+              "factor": factor, "loop_order": loop_order,
+              "interchange_loops": interchange_loops,
+              "reduction_form": reduction_form,
+              "dirs": candidate_dirs, **metrics,
+            })
+    finally:
+      config.auto_unroll_scalar_reduction_policy = configured_policy
+      config.auto_unroll_scalar_reduction_terms = configured_terms
+      _set_auto_unroll_dirs(context, golden_dirs)
+
+  if not generated:
+    raise RuntimeError("Automatic search produced no valid unique DFG candidate.")
+
+  generated.sort(key=lambda candidate: candidate["rank_key"])
+  for rank, candidate in enumerate(generated, 1):
+    candidate["rank"] = rank
+    print(
+      "Rank %d: factor=%d order=%s reduction=%s lower_score=%.4f "
+      "iter=%s memory=%d nodes=%d"
+      % (
+        rank, candidate["factor"], candidate["loop_order"],
+        candidate["reduction_form"], candidate["lower_score"],
+        "applied" if candidate["iterator_applied"] else "retained",
+        candidate["memory_nodes"], candidate["total_nodes"],
+      )
+    )
+
+  beam = _mapping_beam_width(config.mapper_preset, len(generated))
+  print("\nInitial mapping beam: %d candidate(s), preset=%s\n" % (beam, config.mapper_preset))
+  best = None
+  mapped_attempts = 0
+  for candidate in generated:
+    in_initial_beam = candidate["rank"] <= beam
+    can_beat = (
+      not config.auto_unroll_stop_on_degradation and
+      _candidate_can_improve(candidate, best)
+    )
+    if not in_initial_beam and best is not None and not can_beat:
+      decision = "pruned_no_objective_improvement"
+      status = "pruned_no_objective_improvement"
+      ii = None
+    else:
+      decision = "initial_beam" if in_initial_beam else "adaptive_expansion"
+      _set_auto_unroll_dirs(context, candidate["dirs"])
+      start_time = time.time()
+      try:
+        run_mapper(context)
+        ii, status = _latest_mapper_result(context, start_time)
+      except subprocess.CalledProcessError as exc:
+        ii, status = None, "failed_exit_%d" % exc.returncode
+      mapped_attempts += 1
+      if status == "success" and ii is not None:
+        score = _auto_unroll_score(ii, candidate["factor"])
+        choice = {**candidate, "ii": ii, "score": score}
+        if best is None or score < best["score"] or (
+          score == best["score"] and candidate["factor"] > best["factor"]
+        ):
+          best = choice
+          _promote_auto_unroll_candidate(candidate["dirs"], golden_dirs)
+      else:
+        score = None
+
+    rows.append({
+      "factor": candidate["factor"], "loop_order": candidate["loop_order"],
+      "reduction_form": candidate["reduction_form"],
+      "recurrence_lower_bound": candidate["recurrence_lower_bound"],
+      "rank": candidate["rank"], "beam_decision": decision,
+      "status": status, "ii": "" if ii is None else ii,
+      "score": "" if ii is None else "%.8f" % _auto_unroll_score(ii, candidate["factor"]),
+      "promoted": "1" if best is not None and best["fingerprint"] == candidate["fingerprint"] else "0",
+      "candidate_mapper_dir": candidate["dirs"]["mapper"],
+    })
+    _set_auto_unroll_dirs(context, golden_dirs)
+    _write_auto_unroll_results(golden_dirs, rows, best)
+
+  if best is None:
+    raise RuntimeError(
+      "Automatic search failed: none of %d unique candidates mapped." % mapped_attempts
+    )
+  print(
+    "Selected rank %d: factor=%d, loop_order=%s, reduction=%s, II=%d, score=%.4f.\n"
+    % (
+      best["rank"], best["factor"], best["loop_order"],
+      best["reduction_form"], best["ii"], best["score"],
+    )
+  )
+  if config.enable_simulation:
+    run_artifact_simulator(context, config.validation_mode)
+  else:
+    print("\nSimulation disabled by config; skipping validation.\n")
 
 
 def main(

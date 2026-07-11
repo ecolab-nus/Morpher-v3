@@ -13,7 +13,6 @@ suites:
       validation_mode: functional
       layout_solver: false
       replicate_data: false
-      experimental_python_semantic_transforms: true
     arches:
     - edge_mem_4x4/scalar_1side.json
     - edge_mem_4x4/scalar_2side.json
@@ -39,8 +38,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'off'
         multihop: 1
         auto_unroll:
@@ -56,8 +55,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'off'
         multihop: 4
         auto_unroll:
@@ -73,8 +72,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'on'
         multihop: 1
         auto_unroll:
@@ -90,8 +89,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'on'
         multihop: 4
         auto_unroll:
@@ -107,8 +106,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/vec(4|8)_(1|2|3|4)side(_unidir)?\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'off'
         multihop: 1
         auto_unroll:
@@ -124,8 +123,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/vec(4|8)_(1|2|3|4)side(_unidir)?\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'off'
         multihop: 4
         auto_unroll:
@@ -141,8 +140,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/vec(4|8)_(1|2|3|4)side(_unidir)?\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'on'
         multihop: 1
         auto_unroll:
@@ -158,8 +157,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/vec(4|8)_(1|2|3|4)side(_unidir)?\.json$
       overrides:
-        remove_agi: true
-        remove_iter: true
+        dfg_pipeline:
+          externalize_access: agi_iter
         spm_mode: 'on'
         multihop: 4
         auto_unroll:
@@ -175,8 +174,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: false
-        remove_iter: false
+        dfg_pipeline:
+          externalize_access: off
         spm_mode: 'off'
         multihop: 1
         auto_unroll:
@@ -192,8 +191,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: false
-        remove_iter: false
+        dfg_pipeline:
+          externalize_access: off
         spm_mode: 'off'
         multihop: 4
         auto_unroll:
@@ -209,8 +208,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: false
-        remove_iter: false
+        dfg_pipeline:
+          externalize_access: off
         spm_mode: 'on'
         multihop: 1
         auto_unroll:
@@ -226,8 +225,8 @@ suites:
       arch_filter:
       - ^edge_mem_4x4/scalar_.*\.json$
       overrides:
-        remove_agi: false
-        remove_iter: false
+        dfg_pipeline:
+          externalize_access: off
         spm_mode: 'on'
         multihop: 4
         auto_unroll:

@@ -112,9 +112,12 @@ def read_config_summary(repo_root: Path, config_rel: str) -> tuple[str, str]:
         unroll_enabled = bool(auto_unroll)
         unroll_factors = []
     factors = ",".join(str(item) for item in unroll_factors) if unroll_factors else "-"
+    pipeline = config_dict.get("dfg_pipeline", {}) or {}
+    externalize = pipeline.get("externalize_access", "off") if isinstance(pipeline, dict) else "off"
+    simd_pack = pipeline.get("simd_pack", "off") if isinstance(pipeline, dict) else "off"
     knobs = [
-        f"rm_agi={int(bool(config_dict.get('remove_agi', False)))}",
-        f"rm_iter={int(bool(config_dict.get('remove_iter', False)))}",
+        f"externalize={externalize}",
+        f"simd_pack={simd_pack}",
         f"unroll={'on' if unroll_enabled else 'off'}[{factors}]",
         f"layout={int(bool(config_dict.get('layout_solver', False)))}",
         f"repl={int(bool(config_dict.get('replicate_data', False)))}",

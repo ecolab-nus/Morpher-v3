@@ -47,7 +47,12 @@ static constexpr StringLiteral MorpherStrippedMarkerAttr =
 
 static cl::opt<unsigned> MorpherReductionLanes(
     "morpher-reduction-lanes", cl::init(1),
-    cl::desc("SIMD width for scalar reduction expansion after unroll"));
+    cl::desc("Architecture-derived SIMD lane count for reduction lowering"));
+
+static cl::opt<bool> MorpherPromoteMemoryReductions(
+    "morpher-promote-memory-reductions", cl::init(false),
+    cl::desc("Promote invariant-address load/update/store reductions to SSA "
+             "before unrolling; independent of SIMD width"));
 
 static cl::opt<std::string> MorpherReductionPolicy(
     "morpher-reduction-policy", cl::init("tree"),
@@ -1864,7 +1869,7 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
     }
     bool Changed = false;
     canonicalizeLoopForUnroll(TargetLoop, LI, SE, DT, AC);
-    if (MorpherReductionLanes > 1)
+    if (MorpherPromoteMemoryReductions)
       Changed |= scalarizeInvariantAddressReductionForLoop(TargetLoop, SE, DT, AA);
     Changed |= hoistLoopInvariantLoadsForUnroll(TargetLoop, AA);
     Changed |= unrollAnnotatedLoop(TargetLoop, LI, SE, DT, AC);
@@ -1880,6 +1885,8 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
            << (MorpherFuseInnermostLoops ? "true" : "false")
            << " remainder_policy=preserve"
            << " reduction_lanes=" << MorpherReductionLanes
+           << " promote_memory_reductions="
+           << (MorpherPromoteMemoryReductions ? "true" : "false")
            << " reduction_policy=" << MorpherReductionPolicy << "\n";
     return Changed;
   }

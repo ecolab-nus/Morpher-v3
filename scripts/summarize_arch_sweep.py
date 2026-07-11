@@ -276,10 +276,10 @@ def summarize_candidate(candidate: RowCandidate) -> dict[str, str]:
     cfg = exp.config
     row = candidate.row
     arch = str(cfg.get("arch_template_json", ""))
-    remove_agi = bool(cfg.get("remove_agi", False))
-    remove_iter = bool(cfg.get("remove_iter", False))
-    agu = int(not remove_agi)
-    iterator = int(not remove_iter)
+    pipeline = cfg.get("dfg_pipeline", {}) or {}
+    mode = pipeline.get("externalize_access", "off") if isinstance(pipeline, dict) else "off"
+    agu = int(mode == "off")
+    iterator = int(mode != "agi_iter")
     addrgen = str(agu) if agu == iterator else f"agu{agu}_iter{iterator}"
 
     log_path = compact_status(row, "log_file")

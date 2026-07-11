@@ -648,51 +648,40 @@ int CGRAXMLCompile::PathFinderMapper::getRecMinimumII(DFG *dfg)
 {
 	int recMinII = 0;
 	int number_of_backedges = 0;
-	int recDistance = 0;
+	std::set<std::pair<DFGNode *, DFGNode *>> seenRecurrences;
+	auto accountRecurrence = [&](DFGNode *producer, DFGNode *consumer,
+	                            const char *kind) {
+		if (!seenRecurrences.insert({producer, consumer}).second)
+			return;
+		LOG(MAPPING) << kind << " Recurrence Parent: " << producer->idx
+		             << ", Child: " << consumer->idx << "\n";
+		number_of_backedges++;
+		int recDistance = shortestSameIterationPathDistance(consumer, producer);
+		if (recDistance <= 0)
+		{
+			recDistance = 1;
+			LOG(MAPPING) << "Final-graph RecMin path unavailable; using 1\n";
+		}
+		else
+			LOG(MAPPING) << "Final-graph RecMin distance: " << recDistance << "\n";
+		recMinII = std::max(recMinII, recDistance);
+	};
 	for (DFGNode &node : dfg->nodeList)
 	{
-
 		for (DFGNode *child : node.children)
 		{
+			auto nextIter = node.childNextIter.find(child);
+			if (nextIter == node.childNextIter.end() || nextIter->second == 0)
+				continue;
 
-			if (child->ASAP <= node.ASAP)
-			{
-				LOG(MAPPING) << "Backedge Parent: " << node.idx << ", Child: " << child->idx <<"\n";
-
-				LOG(MAPPING) << "Parent ASAP: " << node.ASAP << ", Child ASAP: " << child->ASAP <<"\n";
-
-				LOG(MAPPING) << "Parent ALAP: " << node.ALAP << ", Child ALAP: " << child->ALAP <<"\n";
-				number_of_backedges = number_of_backedges+ 1;
-				recDistance = node.ASAP - child->ASAP + 1;
-				bool isLoopCarriedEdge = false;
-				auto nextIter = node.childNextIter.find(child);
-				if (nextIter != node.childNextIter.end() && nextIter->second != 0)
-				{
-					isLoopCarriedEdge = true;
-				}
-				if (recMinPolicy == "path" && isLoopCarriedEdge)
-				{
-					int pathDistance = shortestSameIterationPathDistance(child, &node);
-					if (pathDistance > 0)
-					{
-						LOG(MAPPING) << "Path RecMin distance: " << pathDistance << "\n";
-						recDistance = pathDistance;
-					}
-					else
-					{
-						LOG(MAPPING) << "Path RecMin fallback to ASAP distance\n";
-					}
-				}
-				assert(recDistance>=0);
-				if(recDistance > recMinII){
-					recMinII = recDistance;
-				}
-
-			}
+			accountRecurrence(&node, child, "nextiter");
 		}
+		// RecParents are stored in reverse: a producer (typically STORE)
+		// names the consumer (typically LOAD) constrained in the next
+		// iteration. Normalize it to the same producer->consumer recurrence.
+		for (DFGNode *recConsumer : node.recParents)
+			accountRecurrence(&node, recConsumer, "RecParent");
 	}
-
-
 	LOG(MAPPING) << "Number of Backedges: " << number_of_backedges <<"\n";
 	LOG(MAPPING) << "Recurrence Minimum II: " << recMinII <<"\n";
 	return recMinII;

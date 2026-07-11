@@ -12,10 +12,8 @@ spm_mode: 'off'
 dfg_pipeline:
   externalize_access: agi_iter
   simd_pack: verified
-remove_iter: false
 layout_solver: false
 replicate_data: false
-experimental_python_semantic_transforms: false
 
 source_template:
   enabled: off

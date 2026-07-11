@@ -49,14 +49,14 @@ struct arguments
 	int sa_stall_min_unmapped = 1;
 	int off_spm_mem_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap PF memory candidates when SPM modelling is off
 	int pf_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap non-memory PF candidates during route estimation
-	std::string pf_guard_mode = "balanced"; // fast | balanced
+	std::string pf_guard_mode = "balanced"; // fast | balanced | quality | exhaust
 	int pf_guard_seconds = 0; // 0=mode default
 	int pf_guard_max_consecutive = 0; // 0=mode default
 	int pf_frontier_stall_repeats = 0; // 0=disabled; fail PF iteration after repeated same-frontier failures
 	int pf_frontier_stall_min_mapped = 0;
 	int rut_recovery_seed = 1; // deterministic seed for PF same-II rut recovery perturbations
 	std::string pf_node_order = "default"; // default | mem_first
-	std::string recmin_policy = "asap"; // asap | path
+	std::string recmin_policy = "path"; // retained for CLI compatibility; final-graph path analysis is mandatory
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
@@ -103,14 +103,14 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<int>("", "--sa_stall_min_unmapped", "only apply SA stall abort when at least this many nodes remain unmapped", 1)
 					.add_option<std::string>("", "--off_spm_mem_candidate_topk", "cap PathFinder memory candidates when spm_mode=off (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
 					.add_option<std::string>("", "--pf_candidate_topk", "cap non-memory PathFinder candidates during route estimation (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
-					.add_option<std::string>("", "--pf_guard_mode", "PathFinder iteration guard mode: fast|balanced", "balanced")
+					.add_option<std::string>("", "--pf_guard_mode", "PathFinder iteration guard mode: fast|balanced|quality|exhaust", "balanced")
 					.add_option<int>("", "--pf_guard_seconds", "PathFinder per-iteration guard seconds (0=mode default)", 0)
 					.add_option<int>("", "--pf_guard_max_consecutive", "consecutive guarded PF iterations before failing PF phase (0=mode default)", 0)
 					.add_option<int>("", "--pf_frontier_stall_repeats", "fail PF iteration after repeated same-frontier route failures (0=disabled)", 0)
 					.add_option<int>("", "--pf_frontier_stall_min_mapped", "only apply PF frontier stall detector after this many mapped nodes", 0)
 					.add_option<int>("", "--rut_recovery_seed", "deterministic seed for same-II rut recovery perturbations", 1)
 					.add_option<std::string>("", "--pf_node_order", "PathFinder node ordering policy: default|mem_first", "default")
-					.add_option<std::string>("", "--recmin_policy", "RecMin estimator policy: asap|path", "asap")
+					.add_option<std::string>("", "--recmin_policy", "Deprecated compatibility option; final-graph path RecMin is always used", "path")
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
@@ -204,9 +204,10 @@ inline arguments parse_arguments(int argn, char *argc[]){
 		exit(EXIT_FAILURE);
 	}
 	ret.pf_guard_mode = args.get_option<std::string>("--pf_guard_mode");
-	if (ret.pf_guard_mode != "fast" && ret.pf_guard_mode != "balanced")
+	if (ret.pf_guard_mode != "fast" && ret.pf_guard_mode != "balanced" &&
+	    ret.pf_guard_mode != "quality" && ret.pf_guard_mode != "exhaust")
 	{
-		std::cerr << "Error: --pf_guard_mode must be one of: fast, balanced.\n";
+		std::cerr << "Error: --pf_guard_mode must be one of: fast, balanced, quality, exhaust.\n";
 		exit(EXIT_FAILURE);
 	}
 	ret.pf_guard_seconds = args.get_option<int>("--pf_guard_seconds");

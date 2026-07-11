@@ -49,8 +49,6 @@ def _print_deprecation_warning(config_dict):
     deprecated_keys.append("json_arch_before_memupdate")
   if "simd" in config_dict:
     deprecated_keys.append("simd")
-  if bool(config_dict.get("remove_agi", False)):
-    deprecated_keys.append("remove_agi")
   if deprecated_keys:
     print(
       "Warning: deprecated config keys in use (%s). "
@@ -78,12 +76,11 @@ MAPPER_PRESETS = {
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
-    "pf_frontier_stall_repeats": 0,
-    "pf_frontier_stall_min_mapped": 0,
+    "pf_frontier_stall_repeats": 8,
+    "pf_frontier_stall_min_mapped": 3,
     "rut_recovery_seed": 0,
     "proximity_sort": False,
     "membound_mapping": False,
-    "recmin_policy": "asap",
   },
   "fast": {
     "mapping_method": 2,
@@ -108,7 +105,6 @@ MAPPER_PRESETS = {
     "rut_recovery_seed": 1,
     "proximity_sort": True,
     "membound_mapping": False,
-    "recmin_policy": "asap",
   },
   "balanced": {
     "mapping_method": 2,
@@ -128,12 +124,11 @@ MAPPER_PRESETS = {
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": "auto_balanced",
     "pf_candidate_topk": "auto_balanced",
-    "pf_frontier_stall_repeats": 4,
+    "pf_frontier_stall_repeats": 6,
     "pf_frontier_stall_min_mapped": 3,
     "rut_recovery_seed": 1,
     "proximity_sort": True,
     "membound_mapping": False,
-    "recmin_policy": "asap",
   },
   "quality": {
     "mapping_method": 2,
@@ -153,12 +148,11 @@ MAPPER_PRESETS = {
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
-    "pf_frontier_stall_repeats": 0,
-    "pf_frontier_stall_min_mapped": 0,
+    "pf_frontier_stall_repeats": 10,
+    "pf_frontier_stall_min_mapped": 3,
     "rut_recovery_seed": 1,
     "proximity_sort": True,
     "membound_mapping": False,
-    "recmin_policy": "asap",
   },
   "exhaust": {
     "mapping_method": 2,
@@ -178,12 +172,11 @@ MAPPER_PRESETS = {
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
     "pf_candidate_topk": 0,
-    "pf_frontier_stall_repeats": 0,
-    "pf_frontier_stall_min_mapped": 0,
+    "pf_frontier_stall_repeats": 16,
+    "pf_frontier_stall_min_mapped": 3,
     "rut_recovery_seed": 1,
     "proximity_sort": False,
     "membound_mapping": False,
-    "recmin_policy": "asap",
   },
 }
 
@@ -220,7 +213,6 @@ def _parse_mapper_preset(config_dict):
     "rut_recovery_seed",
     "proximity_sort",
     "membound_mapping",
-    "recmin_policy",
   ]
   used_overrides = []
   for key in override_keys:
@@ -236,25 +228,6 @@ def _parse_mapper_preset(config_dict):
     )
 
   return preset_name, resolved
-
-
-def _auto_select_recmin_policy(
-    config_dict,
-    mapper_tuning,
-    auto_unroll_enabled,
-    scalar_reduction_policy,
-):
-  if not auto_unroll_enabled or scalar_reduction_policy == "none":
-    return
-  if "recmin_policy" in config_dict:
-    return
-
-  mapper_tuning["recmin_policy"] = "path"
-  print(
-    "Auto-selected recmin_policy=path because auto_unroll.scalar_reduction_policy=%s. "
-    "Set recmin_policy explicitly to override."
-    % scalar_reduction_policy
-  )
 
 
 def resolve_arch_template_path(morpher_home, mapper_home, arch_template_json):
@@ -525,13 +498,6 @@ def _resolve_membound_mapping(value):
   raise RuntimeError("membound_mapping must be boolean or one of: off, auto, force.")
 
 
-def _resolve_recmin_policy(value):
-  policy = str(value or "asap").strip().lower()
-  if policy not in ("asap", "path"):
-    raise RuntimeError("recmin_policy must be one of: asap, path.")
-  return policy
-
-
 VECTOR_OP_PREFIX = "V"
 VECTOR_MEMORY_OP_PREFIXES = ("VLOAD", "VSTORE", "VOLOAD", "VOSTORE")
 
@@ -701,7 +667,6 @@ class RunnerConfig:
   pf_frontier_stall_min_mapped: int
   rut_recovery_seed: int
   membound_mapping: str
-  recmin_policy: str
   arch_mem_pe_count: int
   enable_simulation: bool
   generate_dfg_pdf: bool
@@ -710,13 +675,10 @@ class RunnerConfig:
   spm_mode: str
   proximity_sort: bool
   node_pin: str
-  remove_agi: bool
   externalize_access: str
   simd_pack: str
-  remove_iter: bool
   layout_solver: bool
   replicate_data: bool
-  experimental_python_semantic_transforms: bool
   auto_unroll_enabled: bool
   auto_unroll_factors: list
   auto_unroll_fuse_innermost_loops: bool
@@ -769,9 +731,9 @@ class RunnerConfig:
         "innermost loop fusion with auto_unroll.fuse_innermost_loops instead."
       )
     fuse_innermost_loops = bool(auto_cfg.get("fuse_innermost_loops", True))
-    try_loop_interchange = bool(auto_cfg.get("try_loop_interchange", False))
+    try_loop_interchange = bool(auto_cfg.get("try_loop_interchange", True))
 
-    stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", True))
+    stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", False))
     scalar_reduction_policy = str(
       auto_cfg.get("scalar_reduction_policy", "none")
     ).strip().lower()
@@ -856,18 +818,10 @@ class RunnerConfig:
       )
     mode = aliases[mode]
 
-    if bool(config_dict.get("remove_agi", False)):
-      if mode != "off" and mode != "agi":
-        raise RuntimeError(
-          "remove_agi conflicts with dfg_pipeline.externalize_access. "
-          "Use only dfg_pipeline.externalize_access for new configurations."
-        )
-      mode = "agi"
-
-    if "dfg_pipeline" in config_dict and mode != "off" and bool(config_dict.get("remove_iter", False)):
+    if "remove_agi" in config_dict or "remove_iter" in config_dict:
       raise RuntimeError(
-        "dfg_pipeline.externalize_access cannot be combined with remove_iter. "
-        "Iterator removal remains an experimental Python XML transform."
+        "remove_agi/remove_iter were removed. Use "
+        "dfg_pipeline.externalize_access: agi or agi_iter."
       )
     return mode
 
@@ -887,10 +841,6 @@ class RunnerConfig:
       raise RuntimeError(
         "dfg_pipeline.simd_pack=verified currently requires "
         "dfg_pipeline.externalize_access=agi or agi_iter."
-      )
-    if mode == "verified" and bool(config_dict.get("remove_iter", False)):
-      raise RuntimeError(
-        "dfg_pipeline.simd_pack=verified cannot be combined with remove_iter."
       )
     return mode
 
@@ -913,29 +863,18 @@ class RunnerConfig:
       auto_unroll_scalar_reduction_policy,
       auto_unroll_scalar_reduction_terms,
     ) = cls._parse_auto_unroll(config_dict)
-    _auto_select_recmin_policy(
-      config_dict,
-      mapper_tuning,
-      auto_unroll_enabled,
-      auto_unroll_scalar_reduction_policy,
-    )
+    if "recmin_policy" in config_dict:
+      raise RuntimeError(
+        "recmin_policy was removed; RecMin is derived from explicit recurrence "
+        "edges in the final transformed DFG."
+      )
     source_template_mode = cls._parse_source_template(config_dict)
     externalize_access = cls._parse_externalize_access(config_dict)
     simd_pack = cls._parse_simd_pack(config_dict, externalize_access)
-    experimental_python_semantic_transforms = bool(
-      config_dict.get("experimental_python_semantic_transforms", False)
-    )
-    if source_template_mode != "off" and not experimental_python_semantic_transforms:
+    if "experimental_python_semantic_transforms" in config_dict:
       raise RuntimeError(
-        "source_template lowering is an experimental Python semantic transform. "
-        "Set experimental_python_semantic_transforms: true to opt in, or keep "
-        "source_template.enabled: off for trusted flows."
-      )
-    if bool(config_dict.get("remove_iter", False)) and not experimental_python_semantic_transforms:
-      raise RuntimeError(
-        "remove_iter is currently implemented as a Python XML graph rewrite. "
-        "Set experimental_python_semantic_transforms: true to opt in, or keep "
-        "remove_iter: false for trusted flows."
+        "experimental_python_semantic_transforms was removed; source templates "
+        "are configured directly with source_template.enabled."
       )
     _print_deprecation_warning(config_dict)
     validation_mode = str(config_dict.get("validation_mode", "functional")).strip().lower()
@@ -1056,23 +995,17 @@ class RunnerConfig:
       membound_mapping=_resolve_membound_mapping(
         mapper_tuning.get("membound_mapping", False),
       ),
-      recmin_policy=_resolve_recmin_policy(
-        mapper_tuning.get("recmin_policy", "asap"),
-      ),
       arch_mem_pe_count=int(inferred_mem_pes or 0),
       enable_simulation=config_dict.get("enable_simulation", True),
       generate_dfg_pdf=bool(config_dict.get("generate_dfg_pdf", True)),
       suppress_dfg_dot=bool(config_dict.get("suppress_dfg_dot", False)),
       validation_mode=validation_mode,
       spm_mode=config_dict.get("spm_mode", "on"),
-      remove_agi=(externalize_access != "off"),
       externalize_access=externalize_access,
       simd_pack=simd_pack,
       node_pin=str(config_dict.get("node_pin", "") or ""),
-      remove_iter=config_dict.get("remove_iter", False),
       layout_solver=bool(config_dict.get("layout_solver", False)),
       replicate_data=bool(config_dict.get("replicate_data", False)),
-      experimental_python_semantic_transforms=experimental_python_semantic_transforms,
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,

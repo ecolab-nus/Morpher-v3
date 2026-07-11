@@ -537,7 +537,7 @@ bool NodeExecutor::shouldStop() const {
     return true;
   }
 
-  // When remove_iter prunes loop-control stores, loopend is never written.
+  // When agi_iter externalizes loop-control stores, loopend is never written.
   // Stop once all traced node address streams are consumed; otherwise the
   // simulator falls back to synthetic memory addresses and overwrites valid
   // outputs after the last traced iteration.
@@ -557,7 +557,7 @@ bool NodeExecutor::shouldStop() const {
 
 SimResult NodeExecutor::compare() const {
   // Identify which allocation bases have at least one STORE node in the DFG.
-  // When remove_iter prunes OSTORE nodes, their bases have no stores; expected
+  // When agi_iter externalizes OSTORE nodes, their bases have no stores; expected
   // bytes in those ranges should be skipped rather than reported as mismatches.
   std::unordered_set<std::string> storedBases;
   for (const auto &[idx, node] : graph_.nodes()) {

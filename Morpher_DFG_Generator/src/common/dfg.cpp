@@ -10463,6 +10463,32 @@ void DFG::removeIteratorOnlyControl()
 	auto fail = [](const std::string& message) {
 		report_fatal_error(llvm::StringRef(message));
 	};
+	auto writeSkippedManifest = [this](const std::string& reason) {
+		std::ofstream manifestFile(name + "_ITER_manifest.json");
+		if (!manifestFile.is_open())
+			report_fatal_error("Could not write skipped iterator manifest");
+		manifestFile << "{\n";
+		manifestFile << "  \"schema_version\": 1,\n";
+		manifestFile << "  \"transform\": \"externalize_iterator_only\",\n";
+		manifestFile << "  \"status\": \"skipped\",\n";
+		manifestFile << "  \"reason\": " << jsonString(reason) << ",\n";
+		manifestFile << "  \"original_node_count\": " << NodeList.size() << ",\n";
+		manifestFile << "  \"removed_node_count\": 0,\n";
+		manifestFile << "  \"final_node_count\": " << NodeList.size() << ",\n";
+		manifestFile << "  \"removed_nodes\": [],\n";
+		manifestFile << "  \"artifact_vars_pruned\": [],\n";
+		manifestFile << "  \"index_map\": [\n";
+		for (size_t index = 0; index < NodeList.size(); ++index)
+		{
+			if (index != 0) manifestFile << ",\n";
+			manifestFile << "    {\"original_idx\": " << index
+			             << ", \"final_idx\": " << index << "}";
+		}
+		manifestFile << "\n  ]\n";
+		manifestFile << "}\n";
+		llvm::outs() << "[agi_iter] Skipped iterator externalization: "
+		             << reason << "\n";
+	};
 
 	std::unordered_set<dfgNode*> iteratorSet;
 	std::queue<dfgNode*> pending;
@@ -10478,28 +10504,39 @@ void DFG::removeIteratorOnlyControl()
 		report_fatal_error(
 			"agi_iter requires canonical loop boundary nodes after AGI externalization");
 
-	while (!pending.empty())
+	std::string skipReason;
+	while (!pending.empty() && skipReason.empty())
 	{
 		dfgNode* node = pending.front();
 		pending.pop();
 		for (dfgNode* neighbor : node->getAncestors())
 		{
 			if (!isControlCandidate(neighbor))
-			fail(
-					"agi_iter cannot externalize iterator control: " + describeNode(node) +
-					" has a non-control parent " + describeNode(neighbor));
+			{
+				skipReason = "iterator control " + describeNode(node) +
+					" has a live data parent " + describeNode(neighbor);
+				break;
+			}
 			if (iteratorSet.insert(neighbor).second)
 				pending.push(neighbor);
 		}
+		if (!skipReason.empty()) break;
 		for (dfgNode* neighbor : node->getChildren())
 		{
 			if (!isControlCandidate(neighbor))
-			fail(
-					"agi_iter cannot externalize iterator control: " + describeNode(node) +
-					" has a surviving work child " + describeNode(neighbor));
+			{
+				skipReason = "iterator control " + describeNode(node) +
+					" has a live work child " + describeNode(neighbor);
+				break;
+			}
 			if (iteratorSet.insert(neighbor).second)
 				pending.push(neighbor);
 		}
+	}
+	if (!skipReason.empty())
+	{
+		writeSkippedManifest(skipReason);
+		return;
 	}
 
 	for (dfgNode* node : iteratorSet)
