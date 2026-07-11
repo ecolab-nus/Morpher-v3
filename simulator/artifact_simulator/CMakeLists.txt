@@ -8,6 +8,7 @@ add_executable(artifact_simulator
   src/core/Fabric.cpp
   src/core/Engine.cpp
   src/morpher/ArchJson.cpp
+  src/morpher/BoundaryContract.cpp
   src/morpher/MappingCompiler.cpp
   src/morpher/NodeSemantics.cpp
   src/morpher/CycleSimulator.cpp

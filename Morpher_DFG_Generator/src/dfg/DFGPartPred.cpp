@@ -1634,6 +1634,15 @@ void DFGPartPred::printNewDFGXML() {
 		if(!node->getSimdAccumulatorOp().empty()){
 			xmlFile << " simd_accumulator_op=\"" << node->getSimdAccumulatorOp() << "\"";
 		}
+		if(!node->getSimdAccumulatorInitVar().empty()){
+			xmlFile << " simd_accumulator_init_var=\"" << node->getSimdAccumulatorInitVar() << "\"";
+		}
+		if(!node->getSimdAccumulatorExitVar().empty()){
+			xmlFile << " simd_accumulator_exit_var=\"" << node->getSimdAccumulatorExitVar() << "\"";
+		}
+		if(!node->getSimdAccumulatorSeedVar().empty()){
+			xmlFile << " simd_accumulator_seed_var=\"" << node->getSimdAccumulatorSeedVar() << "\"";
+		}
 		if(node->getSimdPacked()){
 			xmlFile << " simd_packed=\"true\"";
 			xmlFile << " simd_lane_sources=\"";

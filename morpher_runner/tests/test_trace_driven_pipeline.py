@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,12 +12,16 @@ from morpher_runner.dfg_generator import build_loop_interchange_command
 from morpher_runner.dfg_generator import build_unroll_command
 from morpher_runner.dfg_generator import validate_iter_manifest
 from morpher_runner.dfg_generator import validate_simd_manifest
+from morpher_runner.artifact_simulator import resolve_simd_manifest
 from morpher_runner.mapper import build_mapper_commands
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.simd_packer import SimdMapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ARTIFACT_SIMULATOR = (
+  REPO_ROOT / "simulator" / "artifact_simulator" / "build" / "artifact_simulator"
+)
 
 
 class ExternalizeAccessConfigTests(unittest.TestCase):
@@ -159,6 +164,26 @@ class TraceDrivenCommandTests(unittest.TestCase):
     command = build_unroll_command(context, 4)
     policy_index = command.argv.index("--morpher-reduction-policy")
     self.assertEqual(command.argv[policy_index + 1], "vector-psum")
+
+  def test_vred_rejects_partial_vector_chunk_unroll(self):
+    config = RunnerConfig.from_yaml(
+      str(REPO_ROOT / "config" / "simd4_verified_vred.yaml")
+    )
+    context = SimpleNamespace(
+      config=config,
+      kernel="probe",
+      dfg_gen_home=str(REPO_ROOT / "Morpher_DFG_Generator"),
+      dfg_gen_kernel="/tmp/probe",
+    )
+    with self.assertRaisesRegex(RuntimeError, "partial vector chunks"):
+      build_unroll_command(context, 6)
+
+  def test_artifact_simulator_resolves_loop_named_simd_manifest(self):
+    with tempfile.TemporaryDirectory() as directory:
+      manifest = Path(directory) / "probe_INNERMOST_LN7_SIMD_manifest.json"
+      manifest.write_text("{}\n", encoding="utf-8")
+      context = SimpleNamespace(mapper_kernel=directory)
+      self.assertEqual(resolve_simd_manifest(context), str(manifest))
 
   def test_manifest_style_simd_mapping_collapses_contiguous_trace_lanes(self):
     mapping = SimdMapping(
@@ -307,7 +332,10 @@ class TraceDrivenCommandTests(unittest.TestCase):
       root = Path(directory)
       (root / "probe_PartPredDFG.xml").write_text(
         "<DFG count=\"1\">"
-        "<Node idx=\"0\" simd_accumulator_op=\"ADD\"><OP>VADD</OP>"
+        "<Node idx=\"0\" simd_accumulator_op=\"ADD\" "
+        "simd_accumulator_init_var=\"morpher.vpsum.init.9\" "
+        "simd_accumulator_exit_var=\"morpher.vpsum.exit.9\" "
+        "simd_accumulator_seed_var=\"morpher.vpsum.seed.9.0\"><OP>VADD</OP>"
         "<Inputs><Input idx=\"0\"/></Inputs>"
         "<Outputs><Output idx=\"0\" nextiter=\"1\" type=\"I1\"/></Outputs>"
         "<RecParents></RecParents></Node></DFG>\n",
@@ -324,7 +352,7 @@ class TraceDrivenCommandTests(unittest.TestCase):
             "final_node_count": 1,
             "post_pack_iterator_externalized": True,
             "pruned_nodes": [],
-            "pruned_artifact_vars": [],
+            "pruned_artifact_vars": ["morpher.vpsum.lane0", "dead.tmp"],
             "synthesized_nodes": [],
             "exit_reductions": [
               {
@@ -334,10 +362,24 @@ class TraceDrivenCommandTests(unittest.TestCase):
                 "accumulator_identity": "zero",
                 "accumulator_init_execution": "loop_preheader",
                 "accumulator_init_scheduled": False,
+                "scalar_init_trace_var": "morpher.vpsum.init.9",
                 "execution": "loop_exit",
+                "scalar_exit_trace_var": "morpher.vpsum.exit.9",
                 "combines_scalar_initializer": True,
                 "stores_result": True,
                 "scheduled": False,
+                "lane_seed_trace_vars": [
+                  "morpher.vpsum.seed.9.0",
+                  "morpher.vpsum.seed.9.1",
+                  "morpher.vpsum.seed.9.2",
+                  "morpher.vpsum.seed.9.3",
+                ],
+                "lane_trace_vars": [
+                  "morpher.vpsum.lane0",
+                  "morpher.vpsum.lane1",
+                  "morpher.vpsum.lane2",
+                  "morpher.vpsum.lane3",
+                ],
               }
             ],
             "packed_groups": [
@@ -363,6 +405,119 @@ class TraceDrivenCommandTests(unittest.TestCase):
         )
       )
       self.assertTrue(mapping.post_pack_iterator_externalized)
+      self.assertEqual(mapping.artifact_vars_pruned, frozenset({"dead.tmp"}))
+      self.assertEqual(mapping.host_modeled_boundaries, 1)
+      self.assertEqual(
+        mapping.boundary_trace_vars,
+        frozenset(
+          {
+            "morpher.vpsum.init.9",
+            "morpher.vpsum.exit.9",
+            "morpher.vpsum.seed.9.0",
+            "morpher.vpsum.seed.9.1",
+            "morpher.vpsum.seed.9.2",
+            "morpher.vpsum.seed.9.3",
+            "morpher.vpsum.lane0",
+            "morpher.vpsum.lane1",
+            "morpher.vpsum.lane2",
+            "morpher.vpsum.lane3",
+          }
+        ),
+      )
+
+
+@unittest.skipUnless(ARTIFACT_SIMULATOR.is_file(), "artifact_simulator is not built")
+class BoundaryContractSimulatorTests(unittest.TestCase):
+
+  def run_fixture(self, lane2_expected=10, seed2=0):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "dfg.xml").write_text(
+        '<DFG count="1"><Node idx="0" ASAP="0" ALAP="0" CONST="5" '
+        'simd_packed="true" simd_lanes="4"><OP>VADD</OP>'
+        '<Inputs><Input idx="0"/></Inputs><Outputs>'
+        '<Output idx="0" nextiter="1" type="I1"/></Outputs>'
+        '<RecParents></RecParents></Node></DFG>\n',
+        encoding="utf-8",
+      )
+      (root / "mapping.txt").write_text("functional placeholder\n", encoding="utf-8")
+      (root / "mem_alloc.txt").write_text("var_name,address\n", encoding="utf-8")
+      values = {
+        "init": (7, 7),
+        "exit": (0, 47),
+        "seed0": (0, 0),
+        "seed1": (0, 0),
+        "seed2": (seed2, seed2),
+        "seed3": (0, 0),
+        "lane0": (0, 10),
+        "lane1": (0, 10),
+        "lane2": (0, lane2_expected),
+        "lane3": (0, 10),
+      }
+      trace_lines = ["var_name,offset,pre-run-data,post-run-data"]
+      for name, (pre, post) in values.items():
+        for offset in range(4):
+          trace_lines.append(
+            "%s,%d,%d,%d"
+            % (name, offset, (pre >> (8 * offset)) & 0xff,
+               (post >> (8 * offset)) & 0xff)
+          )
+      (root / "trace.txt").write_text(
+        "\n".join(trace_lines) + "\n", encoding="utf-8"
+      )
+      (root / "manifest.json").write_text(
+        json.dumps(
+          {
+            "lanes": 4,
+            "exit_reductions": [
+              {
+                "source_final_idx": 0,
+                "reduce_op": "ADD",
+                "accumulator_identity": "zero",
+                "accumulator_init_execution": "loop_preheader",
+                "accumulator_init_scheduled": False,
+                "scalar_init_trace_var": "init",
+                "execution": "loop_exit",
+                "scalar_exit_trace_var": "exit",
+                "scheduled": False,
+                "lane_seed_trace_vars": ["seed0", "seed1", "seed2", "seed3"],
+                "lane_trace_vars": ["lane0", "lane1", "lane2", "lane3"],
+              }
+            ],
+          }
+        ),
+        encoding="utf-8",
+      )
+      return subprocess.run(
+        [
+          str(ARTIFACT_SIMULATOR),
+          "--dfg", str(root / "dfg.xml"),
+          "--mapping", str(root / "mapping.txt"),
+          "--mem-alloc", str(root / "mem_alloc.txt"),
+          "--trace", str(root / "trace.txt"),
+          "--simd-manifest", str(root / "manifest.json"),
+          "--max-iters", "2",
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+      )
+
+  def test_trace_backed_boundary_contract_passes(self):
+    result = self.run_fixture()
+    self.assertEqual(result.returncode, 0, result.stdout)
+    self.assertIn("Boundary Validation: Matches::5, Mismatches::0", result.stdout)
+
+  def test_wrong_final_lane_cannot_pass_vacuously(self):
+    result = self.run_fixture(lane2_expected=11)
+    self.assertEqual(result.returncode, 2, result.stdout)
+    self.assertIn("Boundary Validation: Matches::4, Mismatches::1", result.stdout)
+
+  def test_traced_seed_must_match_recurrence_identity(self):
+    result = self.run_fixture(seed2=1)
+    self.assertEqual(result.returncode, 1, result.stdout)
+    self.assertIn("lane seed disagrees with manifest identity", result.stdout)
 
 
 if __name__ == "__main__":

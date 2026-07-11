@@ -71,6 +71,18 @@ def resolve_mem_alloc_file(context):
   raise RuntimeError("No mem_alloc artifact found in %s" % context.mapper_kernel)
 
 
+def resolve_simd_manifest(context):
+  matches = sorted(
+    glob.glob(os.path.join(context.mapper_kernel, "*_SIMD_manifest.json"))
+  )
+  if len(matches) > 1:
+    raise RuntimeError(
+      "Expected at most one SIMD manifest in %s, found %d."
+      % (context.mapper_kernel, len(matches))
+    )
+  return matches[0] if matches else None
+
+
 def build_artifact_sim_command(context, trace_file, validation_mode):
   kernel = context.kernel
   argv = [
@@ -88,6 +100,9 @@ def build_artifact_sim_command(context, trace_file, validation_mode):
   addr_trace_path = os.path.join(context.mem_trace, addr_trace)
   if os.path.isfile(addr_trace_path):
     argv.extend(["--addr-trace", addr_trace_path])
+  simd_manifest_path = resolve_simd_manifest(context)
+  if simd_manifest_path is not None:
+    argv.extend(["--simd-manifest", simd_manifest_path])
   if validation_mode == "event_driven":
     argv.extend([
       "--arch",

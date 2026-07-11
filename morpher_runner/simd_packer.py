@@ -70,6 +70,8 @@ class SimdMapping:
   simd_no_vector_word_groups: frozenset = frozenset()  # post_idx values that must stay per-lane in addr traces.
   artifact_vars_pruned: frozenset = frozenset()  # trace variables removed by the verified transform.
   post_pack_iterator_externalized: bool = False
+  boundary_trace_vars: frozenset = frozenset()  # trace values retained for omitted preheader/exit validation.
+  host_modeled_boundaries: int = 0
 
 
 def _read_wrapped_xml(path: Path) -> ET.Element:

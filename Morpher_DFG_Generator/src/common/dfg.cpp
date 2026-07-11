@@ -10692,7 +10692,11 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 	{
 		std::unordered_set<dfgNode*> scaffolding;
 		std::vector<dfgNode*> exitTransfers;
+		std::unordered_map<dfgNode*, std::string> laneTraceVars;
+		std::unordered_map<dfgNode*, std::string> seedTraceVars;
 		std::string op;
+		std::string initTraceVar;
+		std::string exitTraceVar;
 	};
 
 	std::unordered_map<int, ReductionRewrite> reductionRewrites;
@@ -10839,14 +10843,21 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 
 		AccumulatorRewrite rewrite;
 		rewrite.op = updates.front()->getSimdAccumulatorOp();
+		rewrite.initTraceVar = updates.front()->getSimdAccumulatorInitVar();
+		rewrite.exitTraceVar = updates.front()->getSimdAccumulatorExitVar();
 		if (rewrite.op != "ADD" && rewrite.op != "AND" &&
 			rewrite.op != "OR" && rewrite.op != "XOR")
+			continue;
+		if (rewrite.initTraceVar.empty() || rewrite.exitTraceVar.empty())
 			continue;
 
 		bool valid = true;
 		for (dfgNode* update : updates)
 		{
 			if (update->getSimdAccumulatorOp() != rewrite.op ||
+				update->getSimdAccumulatorInitVar() != rewrite.initTraceVar ||
+				update->getSimdAccumulatorExitVar() != rewrite.exitTraceVar ||
+				update->getSimdAccumulatorSeedVar().empty() ||
 				HyCUBEInsStrings[update->getFinalIns()] != rewrite.op)
 			{
 				valid = false;
@@ -10920,6 +10931,10 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 			rewrite.scaffolding.insert(backMerge);
 			rewrite.scaffolding.insert(initMerge);
 			rewrite.exitTransfers.push_back(exitTransfers.front());
+			rewrite.laneTraceVars[update] =
+				exitTransfers.front()->getArrBasePtr();
+			rewrite.seedTraceVars[update] =
+				update->getSimdAccumulatorSeedVar();
 		}
 		if (valid && rewrite.scaffolding.size() == (size_t)(3 * lanes) &&
 			rewrite.exitTransfers.size() == (size_t)lanes)
@@ -11365,10 +11380,30 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 					? "all_ones" : "zero")
 				 << ", \"accumulator_init_execution\": \"loop_preheader\""
 				 << ", \"accumulator_init_scheduled\": false"
+				 << ", \"scalar_init_trace_var\": "
+				 << jsonString(accumulatorRewrites.at(candidate->group).initTraceVar)
 				 << ", \"execution\": \"loop_exit\""
+				 << ", \"scalar_exit_trace_var\": "
+				 << jsonString(accumulatorRewrites.at(candidate->group).exitTraceVar)
 				 << ", \"combines_scalar_initializer\": true"
 				 << ", \"stores_result\": true"
-				 << ", \"scheduled\": false}";
+				 << ", \"scheduled\": false, \"lane_seed_trace_vars\": [";
+		for (size_t lane = 0; lane < candidate->laneNodes.size(); ++lane)
+		{
+			if (lane != 0) manifestFile << ", ";
+			manifestFile << jsonString(
+				accumulatorRewrites.at(candidate->group).seedTraceVars.at(
+					candidate->laneNodes[lane]));
+		}
+		manifestFile << "], \"lane_trace_vars\": [";
+		for (size_t lane = 0; lane < candidate->laneNodes.size(); ++lane)
+		{
+			if (lane != 0) manifestFile << ", ";
+			manifestFile << jsonString(
+				accumulatorRewrites.at(candidate->group).laneTraceVars.at(
+					candidate->laneNodes[lane]));
+		}
+		manifestFile << "]}";
 	}
 	manifestFile << "],\n";
 	manifestFile << "  \"packed_groups\": [\n";

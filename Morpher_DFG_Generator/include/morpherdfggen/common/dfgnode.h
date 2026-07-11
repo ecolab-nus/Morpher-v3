@@ -104,6 +104,9 @@ class dfgNode{
 			std::string simdReduceOp = "";
 			std::string simdReduceBase = "";
 			std::string simdAccumulatorOp = "";
+			std::string simdAccumulatorInitVar = "";
+			std::string simdAccumulatorExitVar = "";
+			std::string simdAccumulatorSeedVar = "";
 			bool simdPacked = false;
 			std::vector<int> simdLaneSources;
 
@@ -292,6 +295,9 @@ class dfgNode{
 			std::string getSimdReduceOp(){return simdReduceOp;}
 			std::string getSimdReduceBase(){return simdReduceBase;}
 			std::string getSimdAccumulatorOp(){return simdAccumulatorOp;}
+			std::string getSimdAccumulatorInitVar(){return simdAccumulatorInitVar;}
+			std::string getSimdAccumulatorExitVar(){return simdAccumulatorExitVar;}
+			std::string getSimdAccumulatorSeedVar(){return simdAccumulatorSeedVar;}
 			bool getSimdPacked() const {return simdPacked;}
 			const std::vector<int>& getSimdLaneSources() const {return simdLaneSources;}
 			void setSimdInfo(int group, int lanes){

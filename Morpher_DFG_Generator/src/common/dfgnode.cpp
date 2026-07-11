@@ -50,6 +50,12 @@ dfgNode::dfgNode(Instruction *ins, DFG* parent){
 	this->simdReduceOp = readStringMetadata(ins, "morpher.simd.reduce_op");
 	this->simdReduceBase = readStringMetadata(ins, "morpher.simd.reduce_base");
 	this->simdAccumulatorOp = readStringMetadata(ins, "morpher.simd.accumulator");
+	this->simdAccumulatorInitVar =
+		readStringMetadata(ins, "morpher.simd.accumulator_init_var");
+	this->simdAccumulatorExitVar =
+		readStringMetadata(ins, "morpher.simd.accumulator_exit_var");
+	this->simdAccumulatorSeedVar =
+		readStringMetadata(ins, "morpher.simd.accumulator_seed_var");
 
 	for (int i = 0; i < ins->getNumOperands(); ++i) {
 		if(ConstantInt *CI = dyn_cast<ConstantInt>(ins->getOperand(i))){

@@ -41,13 +41,16 @@ TraceImage parseTrace(const std::string &path, const MemAlloc &alloc) {
     uint32_t pre = 0;
     uint32_t post = 0;
     if (parts.size() >= 4) {
+      const uint32_t offset = static_cast<uint32_t>(std::stoul(parts[1]));
+      pre = static_cast<uint32_t>(std::stoul(parts[2]));
+      post = static_cast<uint32_t>(std::stoul(parts[3]));
+      trace.variables[parts[0]].pre[offset] = static_cast<uint8_t>(pre & 0xff);
+      trace.variables[parts[0]].post[offset] = static_cast<uint8_t>(post & 0xff);
       auto baseIt = alloc.base.find(parts[0]);
       if (baseIt == alloc.base.end()) {
         continue;
       }
-      address = baseIt->second + static_cast<uint32_t>(std::stoul(parts[1]));
-      pre = static_cast<uint32_t>(std::stoul(parts[2]));
-      post = static_cast<uint32_t>(std::stoul(parts[3]));
+      address = baseIt->second + offset;
     } else if (parts.size() >= 3) {
       address = static_cast<uint32_t>(std::stoul(parts[0]));
       pre = static_cast<uint32_t>(std::stoul(parts[1]));

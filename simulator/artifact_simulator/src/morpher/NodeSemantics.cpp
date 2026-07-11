@@ -173,11 +173,33 @@ bool usesImplicitLayout(const DFGNode &node) {
 } // namespace
 
 NodeExecutor::NodeExecutor(const DFGGraph &graph, MemAlloc alloc,
-                           TraceImage trace)
+                           TraceImage trace,
+                           std::map<int, Value> recurrenceSeeds)
     : graph_(graph),
       alloc_(std::move(alloc)),
       trace_(std::move(trace)),
-      initialSnapshot_(trace_.initial) {
+      initialSnapshot_(trace_.initial),
+      recurrenceSeeds_(std::move(recurrenceSeeds)) {
+  for (const auto &[idx, seed] : recurrenceSeeds_) {
+    auto nodeIt = graph_.nodes().find(idx);
+    if (nodeIt == graph_.nodes().end() || !seed.isValid()) {
+      throw std::runtime_error(
+          "recurrence seed refers to an invalid DFG node/value: " +
+          std::to_string(idx));
+    }
+    bool hasDirectI1Recurrence = false;
+    for (const EdgeRef &input : nodeIt->second.inputs) {
+      if (input.idx == idx && input.nextIter && input.type == "I1") {
+        hasDirectI1Recurrence = true;
+        break;
+      }
+    }
+    if (!hasDirectI1Recurrence) {
+      throw std::runtime_error(
+          "recurrence seed node lacks a direct next-iteration I1 edge: " +
+          std::to_string(idx));
+    }
+  }
   // Static implicit layout: canonical order fixes each node's slot within
   // its base's per-iteration round.
   for (int idx : canonicalOrder(graph_)) {
@@ -450,6 +472,15 @@ Value NodeExecutor::execute(const DFGNode &node, const OperandSource &operands,
   }
 
   Value a = inputByType(node, operands, "I1");
+  auto seedIt = recurrenceSeeds_.find(node.idx);
+  if (!a.isValid() && seedIt != recurrenceSeeds_.end() &&
+      !consumedRecurrenceSeeds_.count(node.idx)) {
+    // A mapped self edge has no producer value in the first iteration. Seed
+    // exactly that first issue; subsequent missing feedback remains invalid
+    // and therefore exposes a routing/schedule error instead of being hidden.
+    a = seedIt->second;
+    consumedRecurrenceSeeds_.insert(node.idx);
+  }
   if (!a.isValid()) {
     a = firstDataInput(node, operands);
   }

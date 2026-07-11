@@ -1,5 +1,6 @@
 #include "ArtifactSim/functional/Simulator.h"
 #include "ArtifactSim/morpher/ArchJson.h"
+#include "ArtifactSim/morpher/BoundaryContract.h"
 #include "ArtifactSim/morpher/CycleSimulator.h"
 #include "ArtifactSim/morpher/MappingCompiler.h"
 
@@ -29,6 +30,7 @@ struct Args {
     std::string mappingJson; // optional: explicit mapping.json (else located
                              // next to --mapping)
     std::string result;      // optional: mapper result.txt (for II)
+    std::string simdManifest; // optional: omitted-boundary simulation contract
     int maxIterations = 1024;
     std::vector<PhaseArg> extraPhases;
 };
@@ -39,7 +41,7 @@ static void usage() {
         << "--mem-alloc <mem_alloc.txt> --trace <trace.txt> "
         << "[--max-iters <n>] [--addr-trace <addr_trace.txt>] "
         << "[--arch <arch.json>] [--mapping-json <mapping.json>] "
-        << "[--result <result.txt>] "
+        << "[--result <result.txt>] [--simd-manifest <manifest.json>] "
         << "[--phase <dfg:mapping:mem_alloc>]...\n"
         << "Without --arch: functional golden checker (arch-unaware).\n"
         << "With --arch: cycle-accurate simulation on the elaborated fabric.\n";
@@ -77,6 +79,7 @@ static Args parseArgs(int argc, char **argv) {
         else if (opt == "--arch")       args.arch           = needValue(opt);
         else if (opt == "--mapping-json") args.mappingJson  = needValue(opt);
         else if (opt == "--result")     args.result         = needValue(opt);
+        else if (opt == "--simd-manifest") args.simdManifest = needValue(opt);
         else if (opt == "--phase")      args.extraPhases.push_back(parsePhaseSpec(needValue(opt)));
         else if (opt == "--max-iters")  args.maxIterations  = std::stoi(needValue(opt));
         else if (opt == "--help") {
@@ -139,6 +142,19 @@ int main(int argc, char **argv) {
         if (!args.addrTrace.empty()) {
             parseAddressTrace(args.addrTrace, trace);
         }
+        const BoundaryContract boundary =
+            parseBoundaryContract(args.simdManifest);
+        if (!boundary.empty()) {
+            std::cout
+                << "Simulation scope: CGRA schedules the steady-state loop DFG only.\n"
+                << "Omitted boundary work: vector-accumulator initialization in "
+                   "the loop preheader; VRED, scalar combine, and result store "
+                   "at loop exit.\n"
+                << "Boundary model: recurrence lanes are seeded from traced "
+                   "preheader values (checked against the manifest identity); "
+                   "final vector lanes and the scalar exit are validated against "
+                   "the source trace.\n";
+        }
 
         SimResult result;
 
@@ -166,10 +182,15 @@ int main(int argc, char **argv) {
                 }
 
                 ConfigMem config = compileMapping(fabric, graph, mappingJson, II);
+                BoundaryContract phaseBoundary =
+                    idx == 0 ? boundary : BoundaryContract{};
                 CycleSimulator sim(fabric, config, graph,
                                    std::move(phaseAlloc), trace,
-                                   args.maxIterations);
-                result = sim.run(macState, idx + 1 == phases.size());
+                                   args.maxIterations, std::move(phaseBoundary));
+                SimResult phaseResult =
+                    sim.run(macState, idx + 1 == phases.size());
+                result.matches += phaseResult.matches;
+                result.mismatches += phaseResult.mismatches;
                 trace = sim.traceImage();
             }
         } else {
@@ -179,7 +200,8 @@ int main(int argc, char **argv) {
             }
             DFGGraph graph = DFGGraph::parse(phases.front().dfg);
             FunctionalSimulator sim(std::move(graph), std::move(alloc),
-                                    std::move(trace), args.maxIterations);
+                                    std::move(trace), args.maxIterations,
+                                    boundary);
             result = sim.run();
         }
 

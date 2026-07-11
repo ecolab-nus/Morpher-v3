@@ -406,6 +406,21 @@ def _try_stage_source_template(
       os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel),
     )
   )
+  omitted_phases = []
+  if result.metadata.get("prologue_required"):
+    omitted_phases.append("prologue")
+  if result.metadata.get("epilogue_required"):
+    omitted_phases.append("epilogue")
+  if omitted_phases and not result.metadata.get(
+      "prologue_epilogue_functionally_chained", False
+  ):
+    print(
+      "Mapping scope: source-template steady-state main DFG only.\n"
+      "CGRA-unscheduled required boundary phase(s): %s.\n"
+      "These phases are not functionally chained into this mapping or its "
+      "simulation result.\n"
+      % ", ".join(omitted_phases)
+    )
   print("Source-template metadata: %s" % meta_path)
   return True
 

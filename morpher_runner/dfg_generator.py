@@ -166,6 +166,12 @@ def build_unroll_command(context, unroll_factor, input_ir=None):
       if "VRED" in context.config.arch_vector_ops
       else "packed-psum"
     )
+    if reduction_policy == "vector-psum" and unroll_factor % reduction_lanes != 0:
+      raise RuntimeError(
+        "Reduction-axis vector-psum requires unroll factor %d to be an integer "
+        "multiple of SIMD width %d; partial vector chunks are not implemented."
+        % (unroll_factor, reduction_lanes)
+      )
   elif context.config.auto_unroll_scalar_reduction_policy == "none":
     reduction_lanes = 1
     reduction_policy = "tree"
@@ -606,6 +612,7 @@ def validate_simd_manifest(context):
     covered_lanes.update(lane_indices)
 
   exit_reduction_sources = set()
+  boundary_trace_vars = set()
   expected_vector_updates = {
     "ADD": "VADD",
     "AND": "VAND",
@@ -620,6 +627,10 @@ def validate_simd_manifest(context):
     source_node = xml_nodes.get(source_idx) if isinstance(source_idx, int) else None
     source_op_elem = source_node.find("OP") if source_node is not None else None
     source_op = (source_op_elem.text or "").strip() if source_op_elem is not None else ""
+    scalar_init_trace_var = entry.get("scalar_init_trace_var")
+    scalar_exit_trace_var = entry.get("scalar_exit_trace_var")
+    lane_seed_trace_vars = entry.get("lane_seed_trace_vars")
+    lane_trace_vars = entry.get("lane_trace_vars")
     has_self_recurrence = source_node is not None and any(
       output.get("idx") == str(source_idx) and
       output.get("nextiter") == "1" and output.get("type") == "I1"
@@ -635,6 +646,18 @@ def validate_simd_manifest(context):
           "all_ones" if reduce_op == "AND" else "zero"
         ) or entry.get("accumulator_init_execution") != "loop_preheader" or
         entry.get("accumulator_init_scheduled") is not False or
+        not isinstance(scalar_init_trace_var, str) or not scalar_init_trace_var or
+        not isinstance(scalar_exit_trace_var, str) or not scalar_exit_trace_var or
+        not isinstance(lane_seed_trace_vars, list) or
+        len(lane_seed_trace_vars) != lanes or
+        any(not isinstance(name, str) or not name for name in lane_seed_trace_vars) or
+        len(set(lane_seed_trace_vars)) != lanes or
+        not isinstance(lane_trace_vars, list) or len(lane_trace_vars) != lanes or
+        any(not isinstance(name, str) or not name for name in lane_trace_vars) or
+        len(set(lane_trace_vars)) != lanes or
+        source_node.get("simd_accumulator_init_var") != scalar_init_trace_var or
+        source_node.get("simd_accumulator_exit_var") != scalar_exit_trace_var or
+        source_node.get("simd_accumulator_seed_var") != lane_seed_trace_vars[0] or
         entry.get("combines_scalar_initializer") is not True or
         entry.get("stores_result") is not True or
         entry.get("scheduled") is not False or not has_self_recurrence):
@@ -643,6 +666,10 @@ def validate_simd_manifest(context):
         % manifest_path
       )
     exit_reduction_sources.add(source_idx)
+    boundary_trace_vars.update(lane_seed_trace_vars)
+    boundary_trace_vars.update(lane_trace_vars)
+    boundary_trace_vars.add(scalar_init_trace_var)
+    boundary_trace_vars.add(scalar_exit_trace_var)
 
   print(
     "SIMD manifest verified: %s packed_groups=%d, exit_reductions=%d, "
@@ -655,14 +682,24 @@ def validate_simd_manifest(context):
       final_count,
     )
   )
+  if exit_reduction_sources:
+    print(
+      "Mapping scope: steady-state loop DFG only.\n"
+      "CGRA-unscheduled boundary work: vector-accumulator preheader initialization; "
+      "exit VRED, scalar combine, and result store.\n"
+      "Simulation contract: seed recurrence lanes and validate final lanes/exit "
+      "using retained source-trace values.\n"
+    )
   return SimdMapping(
     reindex=reindex,
     simd_groups=simd_groups,
     simd_splat_groups=frozenset(),
     simd_reduced_store_groups=frozenset(),
     simd_no_vector_word_groups=frozenset(),
-    artifact_vars_pruned=frozenset(artifact_vars_pruned),
+    artifact_vars_pruned=frozenset(set(artifact_vars_pruned) - boundary_trace_vars),
     post_pack_iterator_externalized=post_pack_iterator_externalized,
+    boundary_trace_vars=frozenset(boundary_trace_vars),
+    host_modeled_boundaries=len(exit_reduction_sources),
   )
 
 

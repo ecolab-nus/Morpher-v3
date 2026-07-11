@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ArtifactSim/morpher/BoundaryContract.h"
 #include "ArtifactSim/morpher/DFG.h"
 #include "ArtifactSim/morpher/Memory.h"
 #include "ArtifactSim/morpher/NodeSemantics.h"
@@ -17,12 +18,14 @@ namespace ArtifactSim {
 class FunctionalSimulator {
 public:
   FunctionalSimulator(DFGGraph graph, MemAlloc alloc, TraceImage trace,
-                      int maxIterations);
+                      int maxIterations,
+                      BoundaryContract boundary = BoundaryContract{});
 
   SimResult run();
 
 private:
   DFGGraph graph_;
+  BoundaryContract boundary_;
   NodeExecutor exec_;
   int maxIterations_;
   std::map<int, Value> values_;

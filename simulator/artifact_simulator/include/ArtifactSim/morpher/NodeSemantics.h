@@ -50,7 +50,8 @@ std::vector<int> canonicalOrder(const DFGGraph &graph);
 // compare(). One instance per phase; the TraceImage carries across phases.
 class NodeExecutor {
 public:
-  NodeExecutor(const DFGGraph &graph, MemAlloc alloc, TraceImage trace);
+  NodeExecutor(const DFGGraph &graph, MemAlloc alloc, TraceImage trace,
+               std::map<int, Value> recurrenceSeeds = {});
 
   // `physicalMacAccumulator`: per-PE TREG state for MAC/VMAC (cycle engine
   // and multi-phase runs); nullptr = use the node's own recurrence.
@@ -83,6 +84,8 @@ private:
   std::map<int, size_t> externalAddressOffsets_;
   std::map<int, size_t> externalValueOffsets_;
   std::set<uint32_t> writtenAddresses_;
+  std::map<int, Value> recurrenceSeeds_;
+  std::set<int> consumedRecurrenceSeeds_;
 };
 
 } // namespace ArtifactSim

@@ -824,4 +824,11 @@ void LiveOutReportIntermediateVar(const char* varname, uint32_t value){
 	}
 }
 
+void MorpherVectorAccumulatorInit(const char* varname, uint32_t value){
+	LiveInReportIntermediateVar(varname, value);
+}
+
+void MorpherVectorAccumulatorExit(const char* varname, uint32_t value){
+	LiveOutReportIntermediateVar(varname, value);
+}
 

@@ -117,7 +117,8 @@ def compile_optimized_ir(src, kernel, out_dir):
   return opt_ir
 
 
-def unroll_ir(kernel, opt_ir, factor, out_dir, fuse=True):
+def unroll_ir(kernel, opt_ir, factor, out_dir, reduction_lanes=1,
+              reduction_policy="tree", fuse=True):
   opt = resolve_llvm_tool("opt")
   out = out_dir / f"{kernel}_uf{factor}_opt.ll"
   cmd = [
@@ -130,9 +131,9 @@ def unroll_ir(kernel, opt_ir, factor, out_dir, fuse=True):
     "--morpher-unroll-factor",
     str(factor),
     "--morpher-reduction-lanes",
-    "1",
+    str(reduction_lanes),
     "--morpher-reduction-policy",
-    "tree",
+    reduction_policy,
     str(opt_ir),
     "-S",
     "-o",
@@ -144,6 +145,27 @@ def unroll_ir(kernel, opt_ir, factor, out_dir, fuse=True):
   return out
 
 
+def interchange_ir(kernel, opt_ir, out_dir):
+  opt = resolve_llvm_tool("opt")
+  out = out_dir / f"{kernel}_li_opt.ll"
+  run(
+    [
+      opt,
+      "-load-pass-plugin",
+      str(REPO / "Morpher_DFG_Generator/build/src/libdfggenPass.so"),
+      "-passes=morpher-loop-interchange",
+      "--morpher-unroll-fn",
+      kernel,
+      str(opt_ir),
+      "-S",
+      "-o",
+      str(out),
+    ],
+    REPO,
+  )
+  return out
+
+
 def execute_ir(ir, out_dir):
   clang = resolve_llvm_tool("clang")
   llvm_link = resolve_llvm_tool("llvm-link")
@@ -151,10 +173,16 @@ def execute_ir(ir, out_dir):
   stub_c = out_dir / "please_map_me_stub.c"
   stub = out_dir / "please_map_me_stub.ll"
   linked = out_dir / (ir.stem + "_linked.bc")
-  stub_c.write_text("void please_map_me(void) {}\n", encoding="utf-8")
+  stub_c.write_text(
+    "void please_map_me(void) {}\n"
+    "void MorpherVectorAccumulatorInit(const char *name, unsigned value) {}\n"
+    "void MorpherVectorAccumulatorExit(const char *name, unsigned value) {}\n",
+    encoding="utf-8",
+  )
   run([clang, "-c", "-emit-llvm", str(stub_c), "-S", "-o", str(stub)], REPO)
   run([llvm_link, str(ir), str(stub), "-o", str(linked)], REPO)
-  return run([lli, str(linked)], REPO, check=False).returncode
+  result = run([lli, str(linked)], REPO, check=False, capture=True)
+  return result.returncode, result.stdout
 
 
 def dfg_op_counts(tag, bench, unroll_factor):
@@ -207,32 +235,77 @@ def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--factor", type=int, default=4)
   parser.add_argument("--bench", action="append", choices=POLYBENCH)
+  parser.add_argument("--source", type=Path)
+  parser.add_argument("--function")
+  parser.add_argument("--reduction-lanes", type=int, default=1)
+  parser.add_argument(
+    "--reduction-policy",
+    choices=("tree", "packed-psum", "scalar-psum", "vector-psum"),
+    default="tree",
+  )
   parser.add_argument("--skip-dfg", action="store_true")
+  parser.add_argument("--interchange-loops", action="store_true")
   parser.add_argument("--keep-tmp", action="store_true")
   args = parser.parse_args()
 
-  benches = args.bench or POLYBENCH
+  if args.reduction_lanes < 1:
+    parser.error("--reduction-lanes must be >= 1")
+  if args.source is not None and not args.function:
+    parser.error("--source requires --function")
+  if args.source is not None and args.bench:
+    parser.error("--source cannot be combined with --bench")
+  if args.source is not None and not args.skip_dfg:
+    parser.error("--source currently requires --skip-dfg")
+
+  if args.source is not None:
+    cases = [(args.function, args.source)]
+  else:
+    benches = args.bench or POLYBENCH
+    cases = [
+      (
+        bench,
+        REPO / "Morpher_DFG_Generator" / "benchmarks" / "polybench" / bench / f"{bench}.c",
+      )
+      for bench in benches
+    ]
   tmp = Path(tempfile.mkdtemp(prefix="morpher_semantics_", dir="/tmp"))
   failed = False
   try:
-    for bench in benches:
-      src = REPO / "Morpher_DFG_Generator" / "benchmarks" / "polybench" / bench / f"{bench}.c"
-      opt_ir = compile_optimized_ir(src, bench, tmp)
-      uf_ir = unroll_ir(bench, opt_ir, args.factor, tmp)
-      base_rc = execute_ir(opt_ir, tmp)
-      uf_rc = execute_ir(uf_ir, tmp)
-      if base_rc != uf_rc:
+    for kernel, src in cases:
+      opt_ir = compile_optimized_ir(src, kernel, tmp)
+      transform_input = (
+        interchange_ir(kernel, opt_ir, tmp)
+        if args.interchange_loops else opt_ir
+      )
+      uf_ir = unroll_ir(
+        kernel,
+        transform_input,
+        args.factor,
+        tmp,
+        reduction_lanes=args.reduction_lanes,
+        reduction_policy=args.reduction_policy,
+      )
+      base_rc, base_stdout = execute_ir(opt_ir, tmp)
+      uf_rc, uf_stdout = execute_ir(uf_ir, tmp)
+      if base_rc != uf_rc or base_stdout != uf_stdout:
         failed = True
-        print(f"FAIL {bench}: baseline rc={base_rc}, uf{args.factor} rc={uf_rc}")
+        print(
+          f"FAIL {kernel}: baseline rc={base_rc}, uf{args.factor} rc={uf_rc}, "
+          f"stdout_match={base_stdout == uf_stdout}"
+        )
         continue
       if base_rc < 0:
         failed = True
-        print(f"FAIL {bench}: both executions crashed with signal {-base_rc}")
+        print(f"FAIL {kernel}: both executions crashed with signal {-base_rc}")
         continue
 
-      msg = f"OK {bench}: rc={base_rc}"
+      msg = (
+        f"OK {kernel}: rc={base_rc}, reduction_lanes={args.reduction_lanes}, "
+        f"reduction_policy={args.reduction_policy}, "
+        f"loop_order={'interchanged' if args.interchange_loops else 'original'}"
+      )
       if not args.skip_dfg:
-        base_arith, uf_arith = run_dfg_check(bench, args.factor)
+        base_arith, uf_arith = run_dfg_check(kernel, args.factor)
         msg += f", arith uf1={base_arith}, uf{args.factor}={uf_arith}"
       print(msg)
   finally:

@@ -124,6 +124,15 @@ void setIntMetadata(Instruction &I, StringRef Name, unsigned Value) {
   I.setMetadata(Name, MDNode::get(Ctx, MD));
 }
 
+int readIntMetadata(const Instruction &I, StringRef Name, int DefaultValue) {
+  MDNode *MD = I.getMetadata(Name);
+  if (!MD || MD->getNumOperands() == 0)
+    return DefaultValue;
+  auto *CAM = dyn_cast<ConstantAsMetadata>(MD->getOperand(0));
+  auto *CI = CAM ? dyn_cast<ConstantInt>(CAM->getValue()) : nullptr;
+  return CI ? static_cast<int>(CI->getSExtValue()) : DefaultValue;
+}
+
 void setStringMetadata(Instruction &I, StringRef Name, StringRef Value) {
   LLVMContext &Ctx = I.getContext();
   Metadata *MD = MDString::get(Ctx, Value);
@@ -186,6 +195,48 @@ void annotateLoopInstructionsForSIMD(Loop *TargetLoop, unsigned Lanes) {
       setSIMDMetadata(I, Group++, Lanes);
     }
   }
+}
+
+void splitUnrolledSIMDGroups(Loop *TargetLoop, unsigned Lanes) {
+  if (!TargetLoop || Lanes <= 1)
+    return;
+
+  std::map<unsigned, SmallVector<Instruction *, 16>> Groups;
+  unsigned NextGroup = 0;
+  for (BasicBlock *BB : TargetLoop->blocks()) {
+    for (Instruction &I : *BB) {
+      int Group = readIntMetadata(I, "morpher.simd.group", -1);
+      if (Group < 0)
+        continue;
+      Groups[static_cast<unsigned>(Group)].push_back(&I);
+      NextGroup = std::max(NextGroup, static_cast<unsigned>(Group) + 1);
+    }
+  }
+
+  unsigned SplitGroups = 0;
+  for (auto &Entry : Groups) {
+    SmallVector<Instruction *, 16> &Members = Entry.second;
+    if (Members.size() <= Lanes)
+      continue;
+    if (Members.size() % Lanes != 0) {
+      errs() << "Morpher SIMD group split skipped: group=" << Entry.first
+             << " members=" << Members.size()
+             << " lanes=" << Lanes << "\n";
+      continue;
+    }
+    for (unsigned Lane = 0; Lane < Lanes; ++Lane)
+      setSIMDMetadata(*Members[Lane], Entry.first, Lanes);
+    for (unsigned Start = Lanes; Start < Members.size(); Start += Lanes) {
+      unsigned ChunkGroup = NextGroup++;
+      for (unsigned Lane = 0; Lane < Lanes; ++Lane)
+        setSIMDMetadata(*Members[Start + Lane], ChunkGroup, Lanes);
+      ++SplitGroups;
+    }
+  }
+
+  if (SplitGroups != 0)
+    errs() << "Morpher SIMD group split: additional_vector_groups="
+           << SplitGroups << " lanes=" << Lanes << "\n";
 }
 
 CallBase *findAnnotatedLoopMarker(Function &F, LoopInfo &LI, Loop *&TargetLoop) {
@@ -868,7 +919,7 @@ bool expandIntegerReductionScalarPsum(PHINode *Phi, Loop *L, unsigned Lanes) {
 }
 
 bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
-                                      unsigned Lanes, unsigned UpdateGroup) {
+                                      unsigned Lanes, unsigned &NextGroup) {
   if (Lanes <= 1)
     return false;
 
@@ -882,7 +933,8 @@ bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
 
   int PreheaderIdx = Phi->getBasicBlockIndex(Preheader);
   int LatchIdx = Phi->getBasicBlockIndex(Latch);
-  if (PreheaderIdx < 0 || LatchIdx < 0 || !Phi->getType()->isIntegerTy())
+  if (PreheaderIdx < 0 || LatchIdx < 0 ||
+      !Phi->getType()->isIntegerTy(32))
     return false;
 
   Value *Init = Phi->getIncomingValue(PreheaderIdx);
@@ -911,10 +963,8 @@ bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
       HasNonConstantTerm = true;
       break;
     }
-  // One mapped iteration is one hardware vector update. Wider unroll factors
-  // would require either multiple scheduled vector updates or another level
-  // of partial accumulators, neither of which this contract represents.
-  if (!HasNonConstantTerm || Terms.size() != Lanes)
+  if (!HasNonConstantTerm || Terms.size() < Lanes ||
+      Terms.size() % Lanes != 0)
     return false;
 
   SmallVector<PHINode *, 8> ExternalLCSSAPhis;
@@ -953,14 +1003,43 @@ bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
 
   IRBuilder<> BodyBuilder(Chain.back());
   StringRef ReduceOpName = reductionOpcodeName(ReductionOpcode);
+  const unsigned VectorGroups = Terms.size() / Lanes;
+  SmallVector<Value *, 16> LaneTerms(Terms.begin(), Terms.begin() + Lanes);
+  for (unsigned Group = 1; Group < VectorGroups; ++Group) {
+    const unsigned LocalGroup = NextGroup++;
+    for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
+      Value *Combined = createReductionOp(
+          BodyBuilder, ReductionOpcode, LaneTerms[Lane],
+          Terms[Group * Lanes + Lane], "morpher.vpsum.local");
+      setSIMDMetadata(*cast<Instruction>(Combined), LocalGroup, Lanes);
+      LaneTerms[Lane] = Combined;
+    }
+  }
+
+  const unsigned UpdateGroup = NextGroup++;
+  const std::string InitTraceVar =
+      "morpher.vpsum.init." + std::to_string(UpdateGroup);
+  const std::string ExitTraceVar =
+      "morpher.vpsum.exit." + std::to_string(UpdateGroup);
+  SmallVector<std::string, 16> SeedTraceVars;
+  for (unsigned Lane = 0; Lane < Lanes; ++Lane)
+    SeedTraceVars.push_back(
+        "morpher.vpsum.seed." + std::to_string(UpdateGroup) + "." +
+        std::to_string(Lane));
   SmallVector<Value *, 16> Updates;
   for (unsigned Lane = 0; Lane < Lanes; ++Lane) {
     Value *Update = createReductionOp(
-        BodyBuilder, ReductionOpcode, LanePartials[Lane], Terms[Lane],
+        BodyBuilder, ReductionOpcode, LanePartials[Lane], LaneTerms[Lane],
         "morpher.vpsum.update");
     auto *UpdateI = cast<Instruction>(Update);
     setSIMDMetadata(*UpdateI, UpdateGroup, Lanes);
     setStringMetadata(*UpdateI, "morpher.simd.accumulator", ReduceOpName);
+    setStringMetadata(*UpdateI, "morpher.simd.accumulator_init_var",
+                      InitTraceVar);
+    setStringMetadata(*UpdateI, "morpher.simd.accumulator_exit_var",
+                      ExitTraceVar);
+    setStringMetadata(*UpdateI, "morpher.simd.accumulator_seed_var",
+                      SeedTraceVars[Lane]);
     LanePartials[Lane]->addIncoming(Update, Latch);
     Updates.push_back(Update);
   }
@@ -976,6 +1055,26 @@ bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
   Value *Final = createReductionOp(
       ExitBuilder, ReductionOpcode, Init, Horizontal,
       "morpher.vpsum.exit.init");
+
+  Module *M = Phi->getModule();
+  LLVMContext &Ctx = M->getContext();
+  Type *PtrTy = PointerType::getUnqual(Ctx);
+  FunctionType *TraceType = FunctionType::get(
+      Type::getVoidTy(Ctx), {PtrTy, Type::getInt32Ty(Ctx)}, false);
+  FunctionCallee TraceInit =
+      M->getOrInsertFunction("MorpherVectorAccumulatorInit", TraceType);
+  FunctionCallee TraceExit =
+      M->getOrInsertFunction("MorpherVectorAccumulatorExit", TraceType);
+  IRBuilder<> PreheaderTraceBuilder(Preheader->getTerminator());
+  PreheaderTraceBuilder.CreateCall(
+      TraceInit,
+      {PreheaderTraceBuilder.CreateGlobalStringPtr(InitTraceVar), Init});
+  for (const std::string &SeedTraceVar : SeedTraceVars)
+    PreheaderTraceBuilder.CreateCall(
+        TraceInit,
+        {PreheaderTraceBuilder.CreateGlobalStringPtr(SeedTraceVar), Identity});
+  ExitBuilder.CreateCall(
+      TraceExit, {ExitBuilder.CreateGlobalStringPtr(ExitTraceVar), Final});
 
   for (PHINode *LCSSAPhi : ExternalLCSSAPhis) {
     LCSSAPhi->replaceAllUsesWith(Final);
@@ -996,7 +1095,7 @@ bool expandIntegerReductionVectorPsum(PHINode *Phi, Loop *L,
   errs() << "Morpher reduction expansion (vector-psum): phi=" << PhiName
          << " lanes=" << Lanes
          << " terms=" << Terms.size()
-         << " vector_groups=1"
+         << " vector_groups=" << VectorGroups
          << " vector_recurrence=1 exit_horizontal=1\n";
   return true;
 }
@@ -1018,7 +1117,7 @@ bool expandReductionsForSIMD(Loop *L, unsigned Lanes, StringRef Policy) {
       Changed |= expandIntegerReductionScalarPsum(Phi, L, Lanes);
     else if (Policy == "vector-psum")
       Changed |= expandIntegerReductionVectorPsum(
-          Phi, L, Lanes, VectorAccumulatorGroup++);
+          Phi, L, Lanes, VectorAccumulatorGroup);
     else
       Changed |= expandIntegerAddReduction(Phi, L, Lanes);
   }
@@ -1772,6 +1871,7 @@ static bool runMorpherLoopUnroll(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 
     Changed |= expandReductionsForSIMD(TargetLoop, MorpherReductionLanes,
                                        MorpherReductionPolicy);
+    splitUnrolledSIMDGroups(TargetLoop, MorpherReductionLanes);
     normalizePleaseMapMeMarkers(F, LI, TargetLoop);
 
     errs() << "Morpher loop unroll: function=" << F.getName()

@@ -3,6 +3,7 @@
 #include "ArtifactSim/core/ConfigMem.h"
 #include "ArtifactSim/core/Engine.h"
 #include "ArtifactSim/core/Fabric.h"
+#include "ArtifactSim/morpher/BoundaryContract.h"
 #include "ArtifactSim/morpher/DFG.h"
 #include "ArtifactSim/morpher/Memory.h"
 #include "ArtifactSim/morpher/NodeSemantics.h"
@@ -24,7 +25,8 @@ class CycleSimulator {
 public:
   CycleSimulator(const Fabric &fabric, const ConfigMem &config,
                  const DFGGraph &graph, MemAlloc alloc, TraceImage trace,
-                 int maxIterations);
+                 int maxIterations,
+                 BoundaryContract boundary = BoundaryContract{});
 
   SimResult run(std::map<std::pair<int, int>, Value> &macState,
                 bool compareAfter);
@@ -35,8 +37,10 @@ private:
   const Fabric &fabric_;
   const ConfigMem &config_;
   const DFGGraph &graph_;
+  BoundaryContract boundary_;
   NodeExecutor exec_;
   int maxIterations_;
+  std::map<int, Value> finalValues_;
 };
 
 } // namespace ArtifactSim

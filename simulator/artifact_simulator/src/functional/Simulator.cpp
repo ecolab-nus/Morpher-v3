@@ -56,9 +56,12 @@ private:
 } // namespace
 
 FunctionalSimulator::FunctionalSimulator(DFGGraph graph, MemAlloc alloc,
-                                         TraceImage trace, int maxIterations)
+                                         TraceImage trace, int maxIterations,
+                                         BoundaryContract boundary)
     : graph_(std::move(graph)),
-      exec_(graph_, std::move(alloc), std::move(trace)),
+      boundary_(std::move(boundary)),
+      exec_(graph_, std::move(alloc), trace,
+            boundary_.recurrenceSeeds(trace)),
       maxIterations_(maxIterations) {}
 
 SimResult FunctionalSimulator::run() {
@@ -84,7 +87,16 @@ SimResult FunctionalSimulator::run() {
       break;
     }
   }
-  return exec_.compare();
+  SimResult result = exec_.compare();
+  if (!boundary_.empty()) {
+    BoundaryResult boundaryResult =
+        validateBoundaryContract(boundary_, values_, exec_.traceImage());
+    std::cout << "Boundary Validation: Matches::" << boundaryResult.matches
+              << ", Mismatches::" << boundaryResult.mismatches << "\n";
+    result.matches += boundaryResult.matches;
+    result.mismatches += boundaryResult.mismatches;
+  }
+  return result;
 }
 
 } // namespace ArtifactSim

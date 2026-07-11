@@ -1,5 +1,7 @@
 #include "ArtifactSim/morpher/CycleSimulator.h"
 
+#include <iostream>
+
 namespace ArtifactSim {
 
 namespace {
@@ -43,11 +45,14 @@ private:
 
 CycleSimulator::CycleSimulator(const Fabric &fabric, const ConfigMem &config,
                                const DFGGraph &graph, MemAlloc alloc,
-                               TraceImage trace, int maxIterations)
+                               TraceImage trace, int maxIterations,
+                               BoundaryContract boundary)
     : fabric_(fabric),
       config_(config),
       graph_(graph),
-      exec_(graph_, std::move(alloc), std::move(trace)),
+      boundary_(std::move(boundary)),
+      exec_(graph_, std::move(alloc), trace,
+            boundary_.recurrenceSeeds(trace)),
       maxIterations_(maxIterations) {}
 
 SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
@@ -65,6 +70,10 @@ SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
     if (isMac && out.isValid()) {
       macState[{pe.x, pe.y}] = out;
     }
+    // Keep the latest issue even when invalid. Retaining an older valid value
+    // would let a broken recurrence route in a later iteration pass boundary
+    // validation accidentally.
+    finalValues_[node.idx] = out;
     return out;
   };
   hooks.shouldStop = [&]() { return exec_.shouldStop(); };
@@ -72,7 +81,16 @@ SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
   Engine engine(fabric_, config_, hooks);
   engine.run(maxIterations_ * config_.II);
 
-  return compareAfter ? exec_.compare() : SimResult{};
+  SimResult result = compareAfter ? exec_.compare() : SimResult{};
+  if (!boundary_.empty()) {
+    BoundaryResult boundaryResult =
+        validateBoundaryContract(boundary_, finalValues_, exec_.traceImage());
+    std::cout << "Boundary Validation: Matches::" << boundaryResult.matches
+              << ", Mismatches::" << boundaryResult.mismatches << "\n";
+    result.matches += boundaryResult.matches;
+    result.mismatches += boundaryResult.mismatches;
+  }
+  return result;
 }
 
 } // namespace ArtifactSim
