@@ -10,7 +10,7 @@ Pipeline stages:
 
 1. DFG generation (`Morpher_DFG_Generator`)
 2. Mapping (`Morpher_CGRA_Mapper`)
-3. Simulation (`hycube_simulator`, optional)
+3. Validation (`simulator/artifact_simulator`, optional)
 
 The Python entrypoint `run_morpher.py` orchestrates these stages.
 
@@ -127,13 +127,13 @@ allocation, and recorded traces directly; no hardware binary is staged.
   - `src/arch/`, `src/dfg/`
 - `update_mem_alloc.py`: injects mem-allocation into architecture template for auto mode
 
-## `hycube_simulator/` (C++)
+## `simulator/artifact_simulator/` (C++)
 
-- Cycle-accurate simulator
+- Validation simulator: functional golden checker (no `--arch`) or cycle-accurate (`--arch`)
 - Key files:
-  - `src/hycube_sim.cpp`
-  - `src/CGRA.cpp`
-  - `src/CGRATile.cpp`
+  - `src/main.cpp`
+  - `src/functional/`
+  - `src/morpher/CycleSimulator.cpp`, `src/morpher/MappingCompiler.cpp`
 
 ## `dfgPartition/`
 

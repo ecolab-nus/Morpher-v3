@@ -351,16 +351,6 @@ public:
 		SourcePort["muxWO"]=muxWO;
 		SourcePort["muxSO"]=muxSO;
 		SourcePort["muxT"]=muxT;
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxI1", muxI1));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxI2", muxI2));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxP", muxP));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxWP0", muxWP0));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxWP1", muxWP1));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxNO", muxNO));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxEO", muxEO));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxWO", muxWO));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxSO", muxSO));
-		// SourcePort.insert(pair<string, std::map<string, int>>("muxT", muxT));
 	}
 
 private:

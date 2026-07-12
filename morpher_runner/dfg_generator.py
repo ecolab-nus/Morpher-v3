@@ -781,7 +781,6 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
   simd_active = simd_packing_active_for_factor(config, unroll_factor)
   verified_simd_active = simd_active and config.simd_pack == "verified"
   context.selected_simd_enabled = simd_active
-  context.selected_simd_width = config.arch_simd_width if simd_active else 1
   context.selected_simd_artifact_only = simd_active
 
   print("-----Running Morpher_DFG_Generator-----\n")

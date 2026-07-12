@@ -419,31 +419,6 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 				continue;
 			}
 
-			//				NodeLat nl = std::make_pair(node,nextLatPort.first);
-			//				if(conflictedPorts[nextPort].find(nl) != conflictedPorts[nextPort].end()){
-			//					continue;
-			//				}
-
-			//				bool isNextPortFree=false;
-			//				bool isNextPortMutex=false;
-			//				if(enableMutexPaths){
-			//					if(nextPort->getNode()==NULL){
-			//						isNextPortFree=true;
-			//					}
-			//					else if(dfg->mutexBBs[nextPort->getNode()->BB].find(node->BB)!=dfg->mutexBBs[nextPort->getNode()->BB].end()){
-			//						// next BB is mutually exclusive with current nodes BB, then this can be mapped.
-			//						isNextPortFree=true;
-			//						isNextPortMutex=true;
-			//						mutexPaths[nextPort].insert(nextPort->getNode());
-			//						mutexPaths[nextPort].insert(node);
-			//					}
-			//				}
-			//				else{
-			//					if(nextPort->getNode()==NULL){
-			//						isNextPortFree=true;
-			//					}
-			//				}
-
 			if (currPort.second->getMod()->regCons[std::make_pair(currPort.second, nextLatPort.second)])
 			{
 				assert(nextLatPort.first != currPort.first);
@@ -905,7 +880,6 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	//	assert(candidateDests.size()!=0);
 	//	node->blacklistDest.clear();
 
-	//	int minLat = getlatMinStarts(possibleStarts);
 	LOG(ROUTE)<< "getlatMinStartsPHI\n";
 	int minLat = getlatMinStartsPHI(node, possibleStarts);
 	LOG(ROUTE)<< "getLatCandDests\n";
@@ -1807,7 +1781,6 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		}
 	}
 	applyNodeOrderPolicy();
-	//	sortBackEdgePriorityALAP();
 
 	std::string mappingLogFileName = fNameLog1 + cgra->getCGRAName() + "_MTP=" + std::to_string(enableMutexPaths);  // + ".mapping.csv";
 	std::string mappingLog2FileName = fNameLog1 + cgra->getCGRAName() + "_MTP=" + std::to_string(enableMutexPaths); // + ".routeInfo.log";
@@ -2984,30 +2957,10 @@ void CGRAXMLCompile::PathFinderMapper::sortBackEdgePriorityASAP()
 			//			RecPHIs.insert(be.child);
 		}
 
-		//		bechildAncestors[be.child]=dfg->getAncestory(be.child);
 	}
-
-	//	{ //true backedges children are placed high priority :MERGED
-	//		std::vector<DFGNode*> mergedAncestoriesChild;
-	//		std::map<DFGNode*,DFGNode*> mergedKeysChild;
-	//
-	//		for(BEDist be : backedges){
-	//			if(trueBackedges[std::make_pair(be.parent,be.child)] == true){
-	//				mergedAncestoriesChild = dfg->mergeAncestoryASAP(mergedAncestoriesChild,bechildAncestors[be.child],RecCycles);
-	//			}
-	//		}
-	//
-	//		for(DFGNode* ancestorNode : mergedAncestoriesChild){
-	//			if(std::find(sortedNodeList.begin(),sortedNodeList.end(),ancestorNode) == sortedNodeList.end()){
-	//				sortedNodeList.push_back(ancestorNode);
-	//			}
-	//		}
-	//
-	//	}
 
 	std::map<DFGNode *, std::set<DFGNode *>> superiorChildren;
 
-	//	std::vector<DFGNode*> mergedAncestory;
 	std::map<DFGNode *, std::vector<DFGNode *>> mergedAncestories;
 	mergedAncestories.clear();
 	std::map<DFGNode *, DFGNode *> mergedKeys;
@@ -3015,17 +2968,6 @@ void CGRAXMLCompile::PathFinderMapper::sortBackEdgePriorityASAP()
 	{
 		//		write a logic to merge ancestories where if one be's child is present in some other be's parent's ancesotory'
 		bool merged = false;
-
-		//		if(trueBackedges[std::make_pair(be.parent,be.child)] == true){
-		//			// if true backede place the child first so that the parent's path will
-		//			// be adjusted accordingly
-		////			for(DFGNode* ancestorNode : bechildAncestors[be.child]){
-		////				if(std::find(sortedNodeList.begin(),sortedNodeList.end(),ancestorNode) == sortedNodeList.end()){
-		////					sortedNodeList.push_back(ancestorNode);
-		////				}
-		////			}
-		//			superiorChildren[be.parent].insert(be.child);
-		//		}
 
 		for (std::pair<DFGNode *, std::vector<DFGNode *>> pair : mergedAncestories)
 		{
@@ -3170,196 +3112,6 @@ void CGRAXMLCompile::PathFinderMapper::sortBackEdgePriorityASAP()
 	LOG(DFG)<<output_ss.str();
 }
 
-void CGRAXMLCompile::PathFinderMapper::sortBackEdgePriorityALAP()
-{
-
-	sortedNodeList.clear();
-
-	struct BEDist
-	{
-		DFGNode *parent;
-		DFGNode *child;
-		int dist;
-		BEDist(DFGNode *parent, DFGNode *child, int dist) : parent(parent), child(child), dist(dist) {}
-		bool operator<(const BEDist &other) const
-		{
-			if (dist != other.dist)
-				return dist > other.dist;
-			if (stableNodeIdx(parent) != stableNodeIdx(other.parent))
-				return stableNodeIdx(parent) < stableNodeIdx(other.parent);
-			return stableNodeIdx(child) < stableNodeIdx(other.child);
-		}
-		//		bool operator==(const BEDist& other) const{
-		//			return parent==other.parent & child==other.child;
-		//		}
-	};
-
-	std::set<BEDist> backedges;
-
-	for (DFGNode &node : dfg->nodeList)
-	{
-
-
-		for (DFGNode *child : node.children)
-		{
-
-			if (node.idx == 97)
-			{
-				LOG(ROUTE) << "child_idx:" << child->idx << "child_ALAP:" << child->ALAP << "\n";
-			}
-
-			if (child->ALAP <= node.ALAP)
-			{
-				LOG(ROUTE) << "inserting for : node=" << node.idx << ",child:" << child->idx << "\n";
-				backedges.insert(BEDist(&node, child, node.ALAP - child->ALAP));
-			}
-		}
-	}
-
-	for (DFGNode &node : dfg->nodeList)
-	{
-		for (DFGNode *recParent : node.recParents)
-		{
-			backedges.insert(BEDist(&node, recParent, node.ALAP - recParent->ALAP));
-		}
-	}
-
-	std::map<DFGNode *, std::vector<DFGNode *>> beparentAncestors;
-	//	std::map<DFGNode*,std::vector<DFGNode*>> bechildAncestors;
-
-	for (BEDist be : backedges)
-	{
-		LOG(ROUTE) << "BE PARENT = " << be.parent->idx << ",dist=" << be.dist << "\n";
-		LOG(ROUTE) << "BE CHILD = " << be.child->idx << "\n";
-
-		LOG(ROUTE) << "Ancestory : "
-				  << "\n";
-		beparentAncestors[be.parent] = dfg->getAncestoryALAP(be.parent);
-		LOG(ROUTE) << "\n";
-
-		if (std::find(beparentAncestors[be.parent].begin(),
-					  beparentAncestors[be.parent].end(),
-					  be.child) == beparentAncestors[be.parent].end())
-		{
-			LOG(ROUTE) << "BE CHILD does not belong BE Parent's Ancestory\n";
-		}
-		else
-		{
-			//change this be.parent if PHI nodes are not removed
-			//			RecPHIs.insert(be.parent);
-		}
-
-		//		bechildAncestors[be.child]=dfg->getAncestory(be.child);
-	}
-
-	//	std::vector<DFGNode*> mergedAncestory;
-	std::map<DFGNode *, std::vector<DFGNode *>> mergedAncestories;
-	mergedAncestories.clear();
-	std::map<DFGNode *, DFGNode *> mergedKeys;
-	for (BEDist be : backedges)
-	{
-		//		write a logic to merge ancestories where if one be's child is present in some other be's parent's ancesotory'
-		bool merged = false;
-		for (std::pair<DFGNode *, std::vector<DFGNode *>> pair : mergedAncestories)
-		{
-			DFGNode *key = pair.first;
-			if (std::find(mergedAncestories[key].begin(), mergedAncestories[key].end(), be.child) != mergedAncestories[key].end())
-			{
-				LOG(ROUTE) << "Merging :: " << key->idx << ", " << be.parent->idx << "\n";
-				mergedAncestories[key] = dfg->mergeAncestoryALAP(mergedAncestories[key], beparentAncestors[be.parent]);
-				merged = true;
-				mergedKeys[be.parent] = key;
-			}
-		}
-		if (!merged)
-		{
-			mergedAncestories[be.parent] = beparentAncestors[be.parent];
-			mergedKeys[be.parent] = be.parent;
-		}
-	}
-
-	for (BEDist be : backedges)
-	{
-		assert(mergedKeys.find(be.parent) != mergedKeys.end());
-		std::vector<DFGNode *> ancestoryNodes = mergedAncestories[mergedKeys[be.parent]];
-		for (DFGNode *ancestorNode : ancestoryNodes)
-		{
-			if (std::find(sortedNodeList.begin(), sortedNodeList.end(), ancestorNode) == sortedNodeList.end())
-			{
-				sortedNodeList.push_back(ancestorNode);
-			}
-		}
-		LOG(ROUTE) << "BE PARENT = " << be.parent->idx << ",dist=" << be.dist << "\n";
-		if (std::find(sortedNodeList.begin(), sortedNodeList.end(), be.parent) == sortedNodeList.end())
-		{
-			sortedNodeList.push_back(be.parent);
-		}
-
-		ancestoryNodes = dfg->getAncestoryALAP(be.child);
-		for (DFGNode *ancestorNode : ancestoryNodes)
-		{
-			if (std::find(sortedNodeList.begin(), sortedNodeList.end(), ancestorNode) == sortedNodeList.end())
-			{
-				sortedNodeList.push_back(ancestorNode);
-			}
-		}
-		LOG(ROUTE) << "BE CHILD = " << be.child->idx << "\n";
-		if (std::find(sortedNodeList.begin(), sortedNodeList.end(), be.child) == sortedNodeList.end())
-		{
-			sortedNodeList.push_back(be.child);
-		}
-	}
-
-	std::map<int, std::vector<DFGNode *>> alapLevelNodeList;
-	for (DFGNode &node : dfg->nodeList)
-	{
-		alapLevelNodeList[node.ALAP].push_back(&node);
-	}
-
-	int maxALAPlevel = 0;
-	for (std::pair<int, std::vector<DFGNode *>> pair : alapLevelNodeList)
-	{
-		if (pair.first > maxALAPlevel)
-		{
-			maxALAPlevel = pair.first;
-		}
-	}
-
-	for (int i = 0; i <= maxALAPlevel; ++i)
-	{
-		for (DFGNode *node : alapLevelNodeList[i])
-		{
-			if (std::find(sortedNodeList.begin(), sortedNodeList.end(), node) == sortedNodeList.end())
-			{
-				sortedNodeList.push_back(node);
-			}
-		}
-	}
-
-	LOG(ROUTE) << "***********SORTED LIST*******************\n";
-	for (DFGNode *node : sortedNodeList)
-	{
-		LOG(ROUTE) << "Node=" << node->idx << ",ALAP=" << node->ALAP ;
-	}
-	//	assert(false);
-
-	std::reverse(sortedNodeList.begin(), sortedNodeList.end());
-
-	int unmappedMemNodeCount = 0;
-	for (DFGNode *node : this->sortedNodeList)
-	{
-		if (node->isMemOp())
-		{
-			if (node->rootDP == NULL)
-			{
-				unmappedMemNodeCount++;
-				dfg->unmappedMemOpSet.insert(node);
-			}
-		}
-	}
-	dfg->unmappedMemOps = unmappedMemNodeCount;
-}
-
 int CGRAXMLCompile::PathFinderMapper::getlatMinStartsPHI(const DFGNode *currNode,
 														 const std::map<DFGNode *, std::vector<Port *>> &possibleStarts)
 {
@@ -3433,46 +3185,6 @@ int CGRAXMLCompile::PathFinderMapper::getlatMinStartsPHI(const DFGNode *currNode
 
 	//	assert(max!=-1);
 	return max;
-}
-
-std::set<CGRAXMLCompile::DFGNode *> CGRAXMLCompile::PathFinderMapper::getElders(DFGNode *node)
-{
-	//	std::set<DFGNode*> res;
-	//
-	//	std::map<int,DFGNode*> descendents;
-	//	std::queue<std::set<DFGNode*>> q;
-	//	std::set<DFGNode*> initLevel; initLevel.insert(node);
-	//	q.push(initLevel);
-	//	int level_ctr=0;
-	//
-	//	while(!q.empty()){
-	//		std::set<DFGNode*> level = q.front(); q.pop();
-	//		level_ctr++;
-	//		for(DFGNode* levelnode : level){
-	//			for(DFGNode* child : levelnode->children){
-	//				if(levelnode->childNextIter[child] == 1) continue; //ignore backedges;
-	//				if(descendents.find(child) == descendents.end()){
-	//					descendents.insert(child);
-	//					q.push(child);
-	//				}
-	//			}
-	//
-	//
-	//		}
-	//
-	//
-	//		for(DFGNode* child : top->children){
-	//			if(top->childNextIter[child] == 1) continue; //ignore backedges
-	//			if(descendents.find(child) == descendents.end()){
-	//				descendents.insert(child);
-	//				q.push(child);
-	//			}
-	//		}
-	//	}
-	//
-	//
-	//
-	//	return res;
 }
 
 // I guess this is to satisfy recurrent data dependency.
@@ -3713,17 +3425,6 @@ std::vector<CGRAXMLCompile::DFGNode *> CGRAXMLCompile::PathFinderMapper::getLong
 	std::reverse(result.begin(), result.end());
 	LOG(ROUTE)<<output_ss.str();
 	return result;
-}
-
-int CGRAXMLCompile::PathFinderMapper::getFreeMEMPeDist(PE *currPE)
-{
-	int currT = currPE->T;
-
-	// for (int y = 0; y < this->cgra->get_y_max(); ++y)
-	// {
-	// 	//		int tdiff = std::abs()
-	// 	//		PE* destPE = this->cgra->PEArr
-	// }
 }
 
 std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::PathFinderMapper::modifyMaxLatCandDest(
@@ -4008,21 +3709,6 @@ void CGRAXMLCompile::PathFinderMapper::printHyCUBEBinary(CGRA* cgra) {
 	for(int i = 0; i < max_index; i++){
 		InsFArr.push_back(InsFormat{});
 	}
-	//  (cgra->get_t_max()+1,
-	// 		std::vector<std::vector<InsFormat>>(cgra->get_y_max(),
-	// 				std::vector<InsFormat>(cgra->get_x_max())
-	// 		)
-	// );
-	// for(int t = 0; t < cgra->get_t_max(); t++){
-	// 	std::vector<std::vector<InsFormat>> temp_y(cgra->get_y_max());
-	// 	for(int y = 0; y < cgra->get_y_max(); y++){
-	// 		std::vector<InsFormat> temp_x(cgra->get_x_max());
-	// 		temp_y[y] = temp_x;
-	// 	}
-		
-	// 	InsFArr[t] = temp_y;
-	// }
-	// InsFArr.resize(cgra->get_t_max());
 	for (int t = 0; t < cgra->get_t_max(); ++t) {
 		vector<PE *> peList = this->cgra->getSpatialPEList(t);
 		//	for (int y = 0; y < cgra->get_y_max(); ++y) {

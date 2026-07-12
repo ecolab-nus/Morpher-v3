@@ -70,11 +70,11 @@ This folder is the control plane for the full flow.
 - Artifact simulation reads the mapped DFG and latency artifact directly;
   hardware binaries are not emitted or staged.
 
-### `simulator.py`
+### `artifact_simulator.py`
 
 - Collects trace files from DFG-generator trace folder.
 - Samples traces (`max_test_samples`).
-- Runs `hycube_simulator` per sample.
+- Runs `artifact_simulator` per sample.
 - Aggregates match/mismatch counts.
 
 ### `utils.py`
@@ -154,30 +154,30 @@ Key output artifacts:
 - `*.mapping.csv`, route/congestion logs
 - `result.txt` mapper summary
 
-## `hycube_simulator/` (Cycle-Accurate Simulation)
+## `simulator/artifact_simulator/` (Validation Simulation)
 
 Purpose:
 
-- Execute mapped configuration and compare observed memory outputs to expected values.
+- Validate the mapped DFG artifact against instrumented memory traces, in
+  functional (arch-unaware golden checker) or event-driven (cycle-accurate on
+  the elaborated fabric) mode per `validation_mode`.
 
 Core logic areas:
 
-- `src/hycube_sim.cpp`
-  - executable entrypoint and argument parsing.
-  - loads CMEM + DMEM/mem-alloc.
-  - executes cycles until completion condition, then epilogue cycles.
-  - writes final simulation summary.
-- `src/CGRA.cpp`
-  - full-array orchestration.
-  - parses CMEM/DMEM formats.
-  - executes per-cycle tile updates.
-  - computes match/mismatch and writes `sim_result.txt`.
-- `src/CGRATile.cpp`
-  - per-tile instruction semantics (ALU ops, load/store, predicate behavior, routing signals).
+- `src/main.cpp`
+  - executable entrypoint and argument parsing; dispatches on `--arch`.
+- `src/functional/`
+  - pure dataflow replay of the DFG against the trace.
+- `src/morpher/`
+  - `CycleSimulator.cpp` cycle-accurate execution, `MappingCompiler.cpp`
+    mapping.json + II → per-PE config, `NodeSemantics.cpp` shared op semantics,
+    `BoundaryContract.cpp` SIMD-manifest contracts.
 
 Primary output:
 
-- `sim_result.txt` as `matches,mismatches`
+- `Simulation Result: Matches::N, Mismatches::M` on stdout (exit 0 clean, 2 on mismatch)
+
+See `docs/components/SIMULATOR.md` for details.
 
 ## `scripts/` (Automation + Repo Hygiene)
 
@@ -236,5 +236,5 @@ Main entry files:
 - Change config schema/default behavior: `morpher_runner/context.py` + `config/*.yaml`
 - Improve DFG generation diagnostics: `morpher_runner/utils.py` + generator pass code
 - Improve mapping algorithm behavior: `Morpher_CGRA_Mapper/src/mapper/*`
-- Change simulation semantics or stopping behavior: `hycube_simulator/src/*`
+- Change simulation semantics or stopping behavior: `simulator/artifact_simulator/src/*`
 - Change benchmark automation/reporting: `scripts/run_all_benchmarks.py`

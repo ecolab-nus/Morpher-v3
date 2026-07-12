@@ -343,7 +343,6 @@ public:
 	// smallest one keeping every op-class below that utilization fraction.
 	int getMinimumII(CGRA *cgra, DFG *dfg, double utilCap = 1.0);
 	int getRecMinimumII(DFG *dfg);
-	void setRecMinPolicy(const std::string &policy) { recMinPolicy = policy; }
 	bool sanityCheck();
 	bool checkRecParentViolation(DFGNode *node, LatPort nextPort);
 	void printMappingLog();
@@ -359,7 +358,6 @@ public:
 	int pfCandidateTopK = 0;
 	int pfAstarExpansionBudget = 200000;
 	FanoutRoutePolicy fanoutRoutePolicy = FanoutRoutePolicy::ADAPTIVE;
-	std::string recMinPolicy = "path";
 
 	int upperboundII = 1000000;
 	int upperboundIter = -1;
@@ -395,11 +393,9 @@ public:
 	int getTimeStepConflicts(int timeStep);
 
 	void sortBackEdgePriorityASAP();
-	void sortBackEdgePriorityALAP();
 	std::ofstream congestionInfoFile;
 
 	std::vector<DFGNode *> getLongestDFGPath(DFGNode *src, DFGNode *dest);
-	int getFreeMEMPeDist(PE *currPE);
 
 	bool canExitCurrPE(LatPort p);
 	static bool checkMEMOp(string op);
@@ -496,7 +492,6 @@ protected:
 	void removeFailedNode(std::stack<DFGNode *> &mappedNodes, std::stack<DFGNode *> &unmappedNodes, DFGNode *failedNode);
 	void clearMappedNode(DFGNode *node);
 	void pruneInvalidRoutingPorts(DFGNode *node);
-	int getlatMinStarts(const std::map<DFGNode *, std::vector<Port *>> &possibleStarts);
 	std::map<DataPath *, int> getLatCandDests(const std::vector<DataPath *> &candidateDests, int minlat);
 	bool check_parent_violation = true;
 
@@ -540,8 +535,6 @@ protected:
 	std::map<int, int> conflictedTimeStepMap;
 
 	std::set<DFGNode *> RecPHIs;
-
-	std::set<DFGNode *> getElders(DFGNode *node);
 
 	std::map<BackEdge, std::set<DFGNode *>> RecCycles;
 	std::map<BackEdge, std::set<DFGNode *>> RecCyclesLS;

@@ -33,7 +33,7 @@ from morpher_runner.utils import build_llvm_tool_env
 from morpher_runner.utils import resolve_llvm_tool
 
 DEFAULT_CONFIG_PATH = "config/default.yaml"
-RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"}
+RUNMODES = {"runall", "dfg_gen_only", "mapper_only", "sim_only"}
 _RESULT_LINE_II_RE = re.compile(r"method:\S+\s+(\d+)\s+status:(success|failed)\s+\d+\s*$")
 
 
@@ -67,7 +67,7 @@ def _usage():
     "                         Report record index to try first (default: first record for the function, else 0).\n"
     "  --source-template-active-cell-limit <n>\n"
     "                         Optional active-cell cap for source-bound template lowering.\n\n"
-    "Run modes: runall, dfg_gen_only, mapper_only, sim_only, artifact_sim_only, runall_artifact_sim\n"
+    "Run modes: runall, dfg_gen_only, mapper_only, sim_only\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
   )
@@ -153,9 +153,9 @@ def _parse_cli(argv):
     config = positional[2] if len(positional) >= 3 else DEFAULT_CONFIG_PATH
     runmode = positional[3] if len(positional) >= 4 else "mapper_only"
 
-    if runmode not in ("mapper_only", "runall", "artifact_sim_only"):
+    if runmode not in ("mapper_only", "runall", "sim_only"):
       raise RuntimeError(
-        "XML mode supports runmode 'mapper_only', 'runall', or 'artifact_sim_only' (got: %s)." % runmode
+        "XML mode supports runmode 'mapper_only', 'runall', or 'sim_only' (got: %s)." % runmode
       )
 
     csource = "xml_inputs/%s/%s.c" % (function, function)
@@ -686,273 +686,6 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
       writer.writerow(out_row)
 
 
-def _run_auto_unroll_sequential(context):
-  config = context.config
-  factors = sorted(config.auto_unroll_factors, reverse=True)
-  best = None
-  rows = []
-  golden_dirs = _auto_unroll_dirs(context)
-  configured_reduction_policy = config.auto_unroll_scalar_reduction_policy
-  configured_reduction_terms = config.auto_unroll_scalar_reduction_terms
-  seen_dfg_fingerprints = {}
-
-  print("\n-----Running Morpher auto-unroll search-----\n")
-  print("Factors, high to low: %s" % ", ".join(str(f) for f in factors))
-  if config.auto_unroll_fuse_innermost_loops:
-    print("Innermost loop fusion: enabled where LLVM can prove legality")
-  if config.auto_unroll_try_loop_interchange:
-    print(
-      "Loop-order search: original plus LLVM-interchanged perfect-nest candidate"
-    )
-  if config.arch_simd_enabled:
-    print(
-      "Architecture-driven SIMD packing activates only for candidates with unroll_factor >= SIMD_WIDTH=%d."
-      % config.arch_simd_width
-    )
-  if config.auto_unroll_scalar_reduction_policy != "none":
-    print(
-      "Scalar reduction lowering: policy=%s, terms=%d (opt-in)"
-      % (
-        config.auto_unroll_scalar_reduction_policy,
-        config.auto_unroll_scalar_reduction_terms,
-      )
-    )
-  print("Remainder policy: preserve (fixed)")
-  print(
-    "Score: II / unroll_factor. Lower is better; this approximates normalized mapped work.\n"
-  )
-
-  with tempfile.TemporaryDirectory(prefix="morpher_auto_unroll_") as temp_root:
-    source_template = os.path.join(temp_root, "source_template")
-    shutil.copytree(golden_dirs["dfg"], source_template)
-
-    loop_orders = []
-    if config.auto_unroll_try_loop_interchange:
-      # For affine nests this often exposes the data-parallel dimension and
-      # establishes a useful incumbent before recurrence-heavy originals.
-      loop_orders.append(("interchanged", True))
-    loop_orders.append(("original", False))
-
-    for factor in factors:
-      best_before_factor = best
-      factor_improved = False
-      factor_succeeded = False
-      if config.arch_simd_enabled and not simd_packing_active_for_factor(config, factor):
-        print(
-          "Candidate factor %d will map as scalar on the SIMD-capable architecture.\n"
-          % factor
-        )
-      candidate_modes = []
-      for loop_order, interchange_loops in loop_orders:
-        if configured_reduction_policy != "none":
-          candidate_modes.append(
-            (loop_order, interchange_loops, configured_reduction_policy)
-          )
-        else:
-          if factor > 1 and not simd_packing_active_for_factor(config, factor):
-            candidate_modes.append((loop_order, interchange_loops, "tree"))
-          candidate_modes.append((loop_order, interchange_loops, "linear"))
-
-      for loop_order, interchange_loops, reduction_form in candidate_modes:
-        config.auto_unroll_scalar_reduction_policy = (
-          "none" if reduction_form == "linear" else reduction_form
-        )
-        config.auto_unroll_scalar_reduction_terms = (
-          factor if reduction_form == "tree" else configured_reduction_terms
-        )
-        print(
-          "== Auto-unroll candidate factor %d, loop_order=%s, reduction=%s ==\n"
-          % (factor, loop_order, reduction_form)
-        )
-        candidate_dirs = _candidate_auto_unroll_dirs(
-          golden_dirs, factor, loop_order, reduction_form
-        )
-        _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs)
-        _set_auto_unroll_dirs(context, candidate_dirs)
-        start_time = time.time()
-        try:
-          run_dfg_generator(
-            context,
-            unroll_factor=factor,
-            interchange_loops=interchange_loops,
-          )
-          dfg_xml = os.path.join(
-            candidate_dirs["mapper"], "%s_PartPredDFG.xml" % context.kernel
-          )
-          fingerprint = hashlib.sha256(Path(dfg_xml).read_bytes()).hexdigest()
-          duplicate_of = seen_dfg_fingerprints.get(fingerprint)
-          if duplicate_of is not None:
-            print(
-              "Candidate skipped before PathFinder: final DFG duplicates %s.\n"
-              % duplicate_of
-            )
-            rows.append({
-              "factor": factor,
-              "loop_order": loop_order,
-              "reduction_form": reduction_form,
-              "recurrence_lower_bound": "",
-              "status": "skipped_duplicate_dfg",
-              "ii": "",
-              "score": "",
-              "promoted": "0",
-              "candidate_mapper_dir": candidate_dirs["mapper"],
-            })
-            _set_auto_unroll_dirs(context, golden_dirs)
-            _write_auto_unroll_results(golden_dirs, rows, best)
-            continue
-          seen_dfg_fingerprints[fingerprint] = (
-            "factor=%d,loop_order=%s,reduction=%s"
-            % (factor, loop_order, reduction_form)
-          )
-          recurrence_lower_bound = _final_graph_recurrence_lower_bound(dfg_xml)
-          resource_lower_bound = _resource_lower_bound_ii(
-            dfg_xml, context.config.arch_op_classes
-          )
-          lower_score = _auto_unroll_score(
-            max(recurrence_lower_bound, resource_lower_bound), factor
-          )
-          if best is not None and lower_score > best["score"]:
-            print(
-              "Candidate pruned before PathFinder: recurrence lower score "
-              "%.4f is worse than incumbent %.4f.\n"
-              % (lower_score, best["score"])
-            )
-            rows.append({
-              "factor": factor,
-              "loop_order": loop_order,
-              "reduction_form": reduction_form,
-              "recurrence_lower_bound": recurrence_lower_bound,
-              "status": "pruned_recurrence_bound",
-              "ii": "",
-              "score": "",
-              "promoted": "0",
-              "candidate_mapper_dir": candidate_dirs["mapper"],
-            })
-            _set_auto_unroll_dirs(context, golden_dirs)
-            _write_auto_unroll_results(golden_dirs, rows, best)
-            continue
-          run_mapper(context)
-        except subprocess.CalledProcessError as exc:
-          print(
-            "Candidate factor %d, loop_order=%s failed with exit code %d.\n"
-            % (factor, loop_order, exc.returncode)
-          )
-          rows.append({
-            "factor": factor,
-            "loop_order": loop_order,
-            "reduction_form": reduction_form,
-            "recurrence_lower_bound": "",
-            "status": "failed_exit_%d" % exc.returncode,
-            "ii": "",
-            "score": "",
-            "promoted": "0",
-            "candidate_mapper_dir": candidate_dirs["mapper"],
-          })
-          _set_auto_unroll_dirs(context, golden_dirs)
-          _write_auto_unroll_results(golden_dirs, rows, best)
-          continue
-
-        ii, status = _latest_mapper_result(context, start_time)
-        if status != "success" or ii is None:
-          print(
-            "Candidate factor %d, loop_order=%s did not map successfully.\n"
-            % (factor, loop_order)
-          )
-          rows.append({
-            "factor": factor,
-            "loop_order": loop_order,
-            "reduction_form": reduction_form,
-            "recurrence_lower_bound": recurrence_lower_bound,
-            "status": status or "no_result",
-            "ii": ii if ii is not None else "",
-            "score": "",
-            "promoted": "0",
-            "candidate_mapper_dir": candidate_dirs["mapper"],
-          })
-          _set_auto_unroll_dirs(context, golden_dirs)
-          _write_auto_unroll_results(golden_dirs, rows, best)
-          continue
-
-        factor_succeeded = True
-        score = _auto_unroll_score(ii, factor)
-        print(
-          "Candidate factor %d, loop_order=%s: II=%d, score=%.4f\n"
-          % (factor, loop_order, ii, score)
-        )
-
-        candidate = {
-          "factor": factor,
-          "loop_order": loop_order,
-          "reduction_form": reduction_form,
-          "recurrence_lower_bound": recurrence_lower_bound,
-          "ii": ii,
-          "score": score,
-        }
-        better = best is None or score < best["score"] or (
-          score == best["score"] and factor > best["factor"]
-        )
-        if better:
-          best = candidate
-          factor_improved = True
-          _promote_auto_unroll_candidate(candidate_dirs, golden_dirs)
-          row_status = "success"
-          promoted = "1"
-          print(
-            "Candidate factor %d, loop_order=%s is the new best; "
-            "promoted to golden artifacts.\n"
-            % (factor, loop_order)
-          )
-        else:
-          row_status = "success_degraded"
-          promoted = "0"
-
-        rows.append({
-          "factor": factor,
-          "loop_order": loop_order,
-          "reduction_form": reduction_form,
-          "recurrence_lower_bound": recurrence_lower_bound,
-          "status": row_status,
-          "ii": ii,
-          "score": "%.8f" % score,
-          "promoted": promoted,
-          "candidate_mapper_dir": candidate_dirs["mapper"],
-        })
-        _set_auto_unroll_dirs(context, golden_dirs)
-        _write_auto_unroll_results(golden_dirs, rows, best)
-
-      if (
-          config.auto_unroll_stop_on_degradation and
-          best_before_factor is not None and factor_succeeded and
-          not factor_improved):
-        print(
-          "Factor %d did not improve on best factor %d in either loop order; "
-          "stopping lower-factor search.\n"
-          % (factor, best_before_factor["factor"])
-        )
-        break
-
-    _set_auto_unroll_dirs(context, golden_dirs)
-    config.auto_unroll_scalar_reduction_policy = configured_reduction_policy
-    config.auto_unroll_scalar_reduction_terms = configured_reduction_terms
-
-  if best is None:
-    raise RuntimeError("auto_unroll failed: no candidate factor mapped successfully.")
-
-  print(
-    "Selected auto-unroll factor %d, loop_order=%s, reduction=%s "
-    "(II=%d, score=%.4f).\n"
-    % (
-      best["factor"], best["loop_order"], best["reduction_form"],
-      best["ii"], best["score"],
-    )
-  )
-
-  if context.config.enable_simulation:
-    run_artifact_simulator(context, context.config.validation_mode)
-  else:
-    print("\nSimulation disabled by config (enable_simulation=false); skipping validation stage.\n")
-
-
 def _run_auto_unroll(context):
   """Generate all candidates, rank cheaply, then map an adaptive beam."""
   config = context.config
@@ -1134,7 +867,7 @@ def main(
   csource,
   function,
   config=DEFAULT_CONFIG_PATH,
-  runmode="runall_artifact_sim",
+  runmode="runall",
   dfg_xml_path=None,
   mem_alloc_path=None,
   run_tag="",
@@ -1214,18 +947,6 @@ def main(
     _run_auto_unroll(context)
     return
 
-  if runmode == "runall_artifact_sim":
-    original_enable_sim = context.config.enable_simulation
-    try:
-      context.config.enable_simulation = True
-      run_dfg_generator(context)
-      context.config.enable_simulation = False
-      run_mapper(context)
-    finally:
-      context.config.enable_simulation = original_enable_sim
-    run_artifact_simulator(context, context.config.validation_mode)
-    return
-
   if (
     (runmode == "runall" or runmode == "dfg_gen_only")
     and not dfg_xml_path
@@ -1236,10 +957,10 @@ def main(
   if runmode == "runall" or runmode == "mapper_only":
     run_mapper(context)
 
-  if runmode == "artifact_sim_only":
+  if runmode == "sim_only":
     run_artifact_simulator(context, context.config.validation_mode)
 
-  if runmode == "runall" or runmode == "sim_only":
+  if runmode == "runall":
     if context.config.enable_simulation:
       run_artifact_simulator(context, context.config.validation_mode)
     else:

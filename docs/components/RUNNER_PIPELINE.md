@@ -95,18 +95,18 @@ Stage logic:
    hardware binary emission is disabled. The empty mapper latency-named file
    remains only as a locator for its sibling mapping JSON.
 
-## `simulator.py`
+## `artifact_simulator.py`
 
 Stage logic:
 
 1. Collect per-kernel trace files.
 2. Select up to `max_test_samples`.
-3. Run `hycube_simulator` for each selected trace.
-4. Read and aggregate `sim_result.txt`.
+3. Run `artifact_simulator` for each selected trace (functional or event-driven per `validation_mode`).
+4. Aggregate match/mismatch counts.
 
 Current behavior expectation:
 
-- Simulation requires traces to exist; missing traces are treated as an error.
+- Missing traces skip the stage with a warning (traces exist only when `enable_simulation: true` during DFG generation).
 
 ## Shared Helpers
 

@@ -204,13 +204,6 @@ def parse_optional_float(value: Any) -> float | None:
         return None
 
 
-def parse_optional_int(value: Any) -> int | None:
-    parsed = parse_optional_float(value)
-    if parsed is None:
-        return None
-    return int(parsed)
-
-
 def discover_experiments(sweep_dir: Path) -> list[Experiment]:
     configs_dir = sweep_dir / "configs"
     experiments = []

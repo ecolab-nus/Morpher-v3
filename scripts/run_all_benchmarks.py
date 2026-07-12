@@ -607,7 +607,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--runmode",
         default="runall",
-        choices=["runall", "dfg_gen_only", "mapper_only", "sim_only", "artifact_sim_only", "runall_artifact_sim"],
+        choices=["runall", "dfg_gen_only", "mapper_only", "sim_only"],
         help="Run mode passed to run_morpher.py.",
     )
     parser.add_argument(
@@ -676,15 +676,6 @@ def parse_args() -> argparse.Namespace:
 
 def sanitize_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "__", text)
-
-
-def tagged_appfolder(appfolder: str, run_tag: str) -> str:
-    # Legacy helper retained for older reports; new tagged runs live under
-    # workspace/morpher_runs/<tag>/ instead of source benchmark trees.
-    if not run_tag:
-        return appfolder
-    path = Path(appfolder)
-    return (path.parent / f"{path.name}__run_{run_tag}").as_posix()
 
 
 def workspace_run_dirs(repo_root: Path, run_tag: str, appfolder: str, mapper_subfolder: str) -> tuple[Path, Path, Path]:

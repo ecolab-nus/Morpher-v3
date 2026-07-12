@@ -14,11 +14,3 @@ def remove_glob(cwd, pattern):
 def copy_file(src, dst_dir):
   shutil.copy2(src, dst_dir)
 
-
-def copy_glob(cwd, pattern, dst_dir, required=False):
-  matches = glob.glob(os.path.join(cwd, pattern))
-  if required and not matches:
-    raise RuntimeError("No files matched pattern: %s" % pattern)
-  for src in matches:
-    shutil.copy2(src, dst_dir)
-

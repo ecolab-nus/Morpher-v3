@@ -1,61 +1,43 @@
-# Simulator Logic (`hycube_simulator`)
+# Simulator Logic (`simulator/artifact_simulator`)
 
-This document explains the cycle-accurate simulator stage and how results are validated.
+This document explains the validation simulator stage and how results are checked.
 
 ## Goal
 
-Execute mapped CGRA configuration and compare produced memory values against expected values from traces.
+Validate a mapped DFG artifact against memory traces recorded from an instrumented
+native run of the source kernel. One binary supports two validation modes,
+selected by the `validation_mode` config key:
+
+- `functional`: arch-unaware golden checker. Parses the DFG XML, `mem_alloc`,
+  and trace, and executes pure dataflow semantics (`FunctionalSimulator`),
+  comparing stored values against the trace.
+- `event-driven`: cycle-accurate. Elaborates the fabric from
+  `<kernel>_arch_runtime.json`, compiles `mapping.json` + II into per-PE
+  configuration memory, and runs `CycleSimulator` on the mapped schedule,
+  including multi-phase runs and PE-local state.
 
 ## Key Files
 
-- `src/hycube_sim.cpp`: simulator executable entrypoint
-- `src/CGRA.cpp`: global simulator model and memory parsing/comparison logic
-- `src/CGRATile.cpp`: per-tile instruction execution semantics
-- `src/data_structures.h`: opcodes/data definitions
+- `src/main.cpp`: entrypoint; dispatches functional vs cycle-accurate on `--arch`
+- `src/functional/`: arch-unaware dataflow replay
+- `src/morpher/CycleSimulator.cpp`: cycle-accurate fabric execution
+- `src/morpher/MappingCompiler.cpp`: mapping.json + II → per-PE configuration memory
+- `src/morpher/NodeSemantics.cpp`: op semantics shared by both modes
+- `src/morpher/BoundaryContract.cpp`: SIMD-manifest boundary contract handling
 
 ## Stage Inputs
 
-- `-c <cmem_bin>`: mapped configuration binary file
-- `-d <trace_file>`: trace/data input
-- `-a <mem_alloc_file>`: memory base-address map
-- `-m <total_mem_size>`: memory size setting
-- `-x/-y`: CGRA dimensions
-
-## High-Level Runtime Flow
-
-1. Parse CLI arguments.
-2. Build tile grid and neighbor connectivity.
-3. Parse CMEM into per-tile config memories.
-4. Parse DMEM + mem-alloc and initialize memory contents.
-5. Execute cycle by cycle:
-   - each tile executes current instruction
-   - then registers/PC are updated
-6. Stop based on memory sentinel condition + epilogue cycles.
-7. Compare final memory values against expected post values.
-8. Write result summary:
-   - stdout line with matches/mismatches
-   - `sim_result.txt` containing `matches,mismatches`
-
-## Per-Tile Execution (`CGRATile.cpp`)
-
-Each cycle a tile:
-
-- reads predicate and operands from incoming channels/registers
-- executes opcode (`ADD`, `MUL`, `SELECT`, `LOAD`, `STORE`, etc.)
-- handles predicate-sensitive behavior for control/store ops
-- writes outputs/routed values/register updates
-
-This is the core behavioral model for instruction correctness.
-
-## Memory Comparison Logic (`CGRA.cpp`)
-
-- `parseDMEM(...)` loads expected data model.
-- `printInterestedAddrOutcome()` compares observed vs expected values.
-- mismatch addresses are logged.
-- summary counts are emitted for automation scripts.
+- `--dfg <xml>`: mapped DFG (`<kernel>_PartPredDFG.xml`)
+- `--mapping <mappingwithlatency.txt>`: mapper latency artifact (locator for its sibling `mapping.json`)
+- `--mem-alloc <mem_alloc.txt>`: memory base-address map
+- `--trace <trace.txt>` (+ optional `--addr-trace`): instrumented memory trace
+- `--simd-manifest <json>` (optional): omitted-boundary simulation contract
+- `--arch <arch.json>` + `--result <result.txt>` (event-driven mode only)
 
 ## Integration with Python Runner
 
-Python wrapper (`morpher_runner/simulator.py`) runs simulator multiple times over sampled trace files and aggregates mismatch totals.
-
-If simulator is enabled but traces are missing, runner now fails explicitly so false-pass runs are avoided.
+`morpher_runner/artifact_simulator.py` collects `<kernel>_trace_N.txt` files,
+samples up to `max_test_samples`, runs the binary per sample, and aggregates
+`Matches/Mismatches` from stdout. Missing traces skip the stage with a warning
+(traces are only produced when `enable_simulation: true` during DFG generation).
+Exit code 0 means all sampled traces matched; 2 means mismatches.

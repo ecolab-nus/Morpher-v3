@@ -28,10 +28,5 @@ build_cmake_target() {
 build_cmake_target "Morpher_DFG_Generator" "Morpher_DFG_Generator/build"
 build_cmake_target "Morpher_CGRA_Mapper" "Morpher_CGRA_Mapper/build"
 build_cmake_target "simulator/artifact_simulator" "simulator/artifact_simulator/build"
-if [[ -d "simulator/hycube_simulator/src" ]]; then
-  build_cmake_target "simulator/hycube_simulator/src" "simulator/hycube_simulator/src/build"
-else
-  echo "Skipping optional simulator/hycube_simulator/src target; directory not present."
-fi
 
 echo "build success!!!"

@@ -562,26 +562,6 @@ def _resolve_off_spm_mem_candidate_topk(value, _mem_pe_count):
   return topk
 
 
-def _resolve_nonnegative_int(value, key):
-  try:
-    parsed = int(value)
-  except (TypeError, ValueError):
-    raise RuntimeError("%s must be an integer." % key)
-  if parsed < 0:
-    raise RuntimeError("%s must be >= 0." % key)
-  return parsed
-
-
-def _resolve_positive_int(value, key):
-  try:
-    parsed = int(value)
-  except (TypeError, ValueError):
-    raise RuntimeError("%s must be an integer." % key)
-  if parsed < 1:
-    raise RuntimeError("%s must be >= 1." % key)
-  return parsed
-
-
 def _resolve_pf_candidate_topk(value):
   if isinstance(value, str):
     policy = value.strip().lower().replace("-", "_")
@@ -1158,12 +1138,7 @@ class RunnerContext:
   simulator_kernel: str
   mem_trace: str
   selected_simd_enabled: bool = False
-  selected_simd_width: int = 1
   selected_simd_artifact_only: bool = False
-
-  @property
-  def totalsize(self):
-    return self.config.numberofbanks * self.config.banksize
 
 
 def build_context(csource, function, config_path, runmode, run_tag=""):
@@ -1184,7 +1159,7 @@ def build_context(csource, function, config_path, runmode, run_tag=""):
   simulator_kernel = os.path.join(run_root, "simulator", appfolder) + "/"
   mem_trace = dfg_gen_kernel + "memtraces"
 
-  if runmode in ("runall", "dfg_gen_only", "runall_artifact_sim"):
+  if runmode in ("runall", "dfg_gen_only"):
     source_dir = dfg_gen_home + "/benchmarks/" + appfolder
     if os.path.isdir(source_dir):
       _prepare_tagged_dfg_kernel(source_dir, dfg_gen_kernel.rstrip("/"))

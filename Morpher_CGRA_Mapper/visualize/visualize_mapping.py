@@ -36,10 +36,9 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 # Morpher Home:
 #     -Morpher_DFG_Generator
 #     -Morpher_CGRA_Mapper
-#     -hycube_simulator
-#     -Morpher_Scripts
+#     -simulator/artifact_simulator
 
-# Build all three tools before running this script
+# Build the tools before running this script
 from mpl_toolkits.mplot3d.proj3d import proj_transform
 from matplotlib.text import Annotation
 

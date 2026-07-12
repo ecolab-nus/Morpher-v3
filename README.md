@@ -16,8 +16,7 @@ Linux
 - Trace-driven access externalization: removes AGI before instrumentation and, for verified data-parallel loops, removes the disconnected iterator component (`dfg_pipeline.externalize_access: agi_iter`)
 - Conservative C++ iterator/control externalization (`dfg_pipeline.externalize_access: agi_iter`)
 - Optional post-mapping data-layout solver with read-only data replication (`layout_solver`, `replicate_data`)
-- Functional and event-driven simulation validation (`validation_mode`)
-- Artifact simulator: validates SIMD-packed mappings against instrumented memory traces (`runall_artifact_sim`)
+- Artifact simulator with functional and event-driven validation of mappings (including SIMD-packed) against instrumented memory traces (`validation_mode`)
 - Parallel benchmark automation with auto-discovery (`scripts/run_all_benchmarks.py`)
 - Mapper regression suite runner with per-benchmark II bounds (`scripts/run_regression_benchmarks.py`)
 - Architecture/config sweep runner (`scripts/run_arch_sweeps.py`)
@@ -33,7 +32,7 @@ Morpher_DFG_Generator/            # LLVM-based DFG generator
   benchmarks/                     # benchmark source tree (auto-discovered)
     <suite>/<kernel>/<kernel>.c
 Morpher_CGRA_Mapper/              # CGRA mapper (PathFinder + SA)
-simulator/hycube_simulator/       # cycle-accurate simulator
+simulator/artifact_simulator/     # functional / cycle-accurate validation simulator
 dfgPartition/                     # experimental DFG partitioning (optional)
 ```
 
@@ -87,7 +86,7 @@ Sanity check:
 ```bash
 ls Morpher_DFG_Generator/build/src/libdfggenPass.so
 ls Morpher_CGRA_Mapper/build/src/cgra_xml_mapper
-ls simulator/hycube_simulator/src/build/hycube_simulator
+ls simulator/artifact_simulator/build/src/artifact_simulator
 ```
 
 ## Quick Start
@@ -118,9 +117,7 @@ Options:
 | `runall` | DFG generation → mapper → simulator (if enabled) |
 | `dfg_gen_only` | DFG generation only |
 | `mapper_only` | Mapper only (requires existing DFG) |
-| `sim_only` | Simulator only (requires existing mapping) |
-| `artifact_sim_only` | Artifact simulator only (requires existing mapping + traces) |
-| `runall_artifact_sim` | DFG generation → mapper → artifact simulator |
+| `sim_only` | Artifact simulator only, regardless of `enable_simulation` (requires existing mapping + traces) |
 
 ## XML Input Mode
 
@@ -133,7 +130,7 @@ python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-al
 Defaults in XML mode: function derived from filename, config `config/default.yaml`, runmode `mapper_only`.
 
 Notes:
-- XML mode supports `mapper_only`, `runall`, and `artifact_sim_only`.
+- XML mode supports `mapper_only`, `runall`, and `sim_only`.
 - In `memory_mode: auto`, a mem-alloc file is required: place `<kernel>_mem_alloc.txt` or `<xml-stem>_mem_alloc.txt` beside the XML, or pass `--mem-alloc <path>`.
 - Without a mem-alloc file, use a static config such as `config/xml_arch.yaml`.
 
@@ -391,7 +388,7 @@ Batch runner options:
 |--------|-----------------|---------|
 | `--repo-root` | Repository directory path | Parent of `scripts/run_all_benchmarks.py` |
 | `--config` | YAML config path relative to `--repo-root` | `config/default.yaml` |
-| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`, `artifact_sim_only`, `runall_artifact_sim` | `runall` |
+| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` | `runall` |
 | `--jobs` | Integer `>= 1` | `min(8, CPU count)` |
 | `--timeout-sec` | Integer seconds; `0` means no timeout | `0` |
 | `--output-root` | Directory path relative to `--repo-root`, unless absolute | `generated` |
@@ -458,14 +455,8 @@ Run the focused 4×4 configuration suites:
 
 ```bash
 python3 scripts/run_regression_benchmarks.py --suite ci_4x4_scalar_agi
-python3 scripts/run_regression_benchmarks.py --suite ci_4x4_simd4_noiter
+python3 scripts/run_regression_benchmarks.py --suite ci_4x4_scalar_agi_pruned
 python3 scripts/run_regression_benchmarks.py --suite ci_4x4_gemm_simd4_unroll
-```
-
-Run the 8×8 suite (slower; not part of default CI):
-
-```bash
-python3 scripts/run_regression_benchmarks.py --suite ci_8x8
 ```
 
 Suite definitions, per-suite configs, and per-benchmark maximum II bounds live in `scripts/regression_benchmarks.yaml`. Regression outputs are written under `generated/morpher_runs/regression/<suite>/`. The runner fails if any benchmark exceeds its `max_ii` bound.
@@ -485,9 +476,8 @@ Available regression suites from `scripts/regression_benchmarks.yaml`:
 ```text
 ci_4x4
 ci_4x4_scalar_agi
-ci_4x4_simd4_noiter
+ci_4x4_scalar_agi_pruned
 ci_4x4_gemm_simd4_unroll
-ci_8x8
 ```
 
 Regression runner options:
@@ -498,7 +488,7 @@ Regression runner options:
 | `--manifest` | Regression manifest YAML path | `scripts/regression_benchmarks.yaml` |
 | `--suite` | Suite name from the manifest | `ci_4x4` |
 | `--config` | YAML config path | Suite `config` |
-| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`, `artifact_sim_only`, `runall_artifact_sim` | Suite `runmode`, usually `runall` |
+| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` | Suite `runmode`, usually `runall` |
 | `--jobs` | Integer `>= 1` | Suite `jobs` |
 | `--timeout-sec` | Integer seconds; `0` means no timeout | Suite `timeout_sec` |
 | `--output-dir` | Directory path relative to `--repo-root`, unless absolute | `generated/morpher_runs/regression/<suite>` |
@@ -545,7 +535,7 @@ Sweep runner options:
 | `--jobs` | Integer `>= 1`; benchmark workers per experiment | Suite `jobs` |
 | `--experiment-jobs` | Integer `>= 1`; concurrent experiments | `1` |
 | `--timeout-sec` | Integer seconds; overrides suite `timeout_sec` | Suite `timeout_sec`, or `0` |
-| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`, `artifact_sim_only`, `runall_artifact_sim` | Suite `runmode`, or `mapper_only` |
+| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` | Suite `runmode`, or `mapper_only` |
 | `--dry-run` | Flag | off |
 
 Sweep manifest fields:
@@ -553,7 +543,7 @@ Sweep manifest fields:
 | Field | Accepted values |
 |-------|-----------------|
 | `suites.<name>.base_config` | YAML config path |
-| `suites.<name>.runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only`, `artifact_sim_only`, `runall_artifact_sim` |
+| `suites.<name>.runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` |
 | `suites.<name>.jobs` | Integer `>= 1` |
 | `suites.<name>.timeout_sec` | Integer seconds; `0` means no timeout |
 | `suites.<name>.filters` | List of Python regex strings |

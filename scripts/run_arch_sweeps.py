@@ -246,8 +246,6 @@ def parse_args() -> argparse.Namespace:
             "dfg_gen_only",
             "mapper_only",
             "sim_only",
-            "artifact_sim_only",
-            "runall_artifact_sim",
         ],
         help="Override runmode for every expanded experiment.",
     )

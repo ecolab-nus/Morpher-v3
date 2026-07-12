@@ -569,40 +569,6 @@ bool CGRAXMLCompile::PathFinderMapper::checkRecParentViolation(DFGNode *node,
 	return false;
 }
 
-int CGRAXMLCompile::PathFinderMapper::getlatMinStarts(
-	const std::map<DFGNode *, std::vector<Port *>> &possibleStarts)
-{
-
-	int min;
-	std::map<DFGNode *, int> minLat;
-
-	for (std::pair<DFGNode *, std::vector<Port *>> pair : possibleStarts)
-	{
-		int latm = 100000000;
-
-		for (Port *p : pair.second)
-		{
-			if (p->getLat() < latm)
-			{
-				latm = p->getLat();
-			}
-		}
-		assert(latm != 100000000);
-		minLat[pair.first] = latm;
-	}
-
-	int max = 0;
-	for (std::pair<DFGNode *, int> pair : minLat)
-	{
-		if (max < pair.second)
-		{
-			max = pair.second;
-		}
-	}
-
-	return max;
-}
-
 //Previously, calculate the minial latency of its parent.
 // Now calculate the minimal latency whose remainder should be equal to II of the candidate PE.
 std::map<CGRAXMLCompile::DataPath *, int> CGRAXMLCompile::PathFinderMapper::getLatCandDests(

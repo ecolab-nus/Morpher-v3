@@ -526,10 +526,6 @@ def parse_csv_list(raw: str) -> list[str]:
     return values
 
 
-def sanitize_token(text: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_")
-
-
 def addrgen_flags(mode: str) -> tuple[bool, bool]:
     mode = mode.strip().lower()
     if mode in ("keep", "with", "with_agi_iter", "full"):

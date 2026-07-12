@@ -395,18 +395,6 @@ def find_mapping_file(kernel: str) -> Path | None:
   return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def find_arch_runtime(kernel: str) -> Path | None:
-  if not WORKSPACE_ROOT.exists():
-    return None
-  candidates = []
-  for path in WORKSPACE_ROOT.glob("**/*_arch_runtime.json"):
-    if _kernel_dir_matches(path, kernel):
-      candidates.append(path)
-  if not candidates:
-    return None
-  return max(candidates, key=lambda p: p.stat().st_mtime)
-
-
 def find_staged_dfg(kernel: str) -> Path | None:
   if not WORKSPACE_ROOT.exists():
     return None

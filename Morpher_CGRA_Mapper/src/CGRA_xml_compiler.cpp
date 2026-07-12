@@ -298,8 +298,6 @@ int main(int argn, char *argc[])
 	sa_mapper->setRutRecoverySeed(args.rut_recovery_seed);
 	pf_mapper->setNodeOrderPolicy(args.pf_node_order);
 	sa_mapper->setNodeOrderPolicy(args.pf_node_order);
-	pf_mapper->setRecMinPolicy(args.recmin_policy);
-	sa_mapper->setRecMinPolicy(args.recmin_policy);
 
 	// Fail an II attempt early when PF mapping depth stagnates far from
 	// complete; exhaust mode keeps grinding.
