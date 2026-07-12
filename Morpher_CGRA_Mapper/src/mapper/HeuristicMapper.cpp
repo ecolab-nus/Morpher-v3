@@ -80,8 +80,9 @@ std::set<T> getUnion(const std::set<T> &a, const std::set<T> &b)
 	return result;
 }
 
-int CGRAXMLCompile::PathFinderMapper::getMinimumII(CGRA *cgra, DFG *dfg)
+int CGRAXMLCompile::PathFinderMapper::getMinimumII(CGRA *cgra, DFG *dfg, double utilCap)
 {
+	assert(utilCap > 0.0 && utilCap <= 1.0);
 
 	std::map<std::string, int> opHist;
 
@@ -145,7 +146,7 @@ int CGRAXMLCompile::PathFinderMapper::getMinimumII(CGRA *cgra, DFG *dfg)
 	for (opFUstr a : opFUstr_vec)
 	{
 		LOG(MAPPING) << "op=" << a.op << ",opcount=" << opHist[a.op] << ",dpcount=" << a.count;
-		int new_ratio = (opHist[a.op] + a.count - 1) / a.count; // int ceil
+		int new_ratio = (int)std::ceil((double)opHist[a.op] / ((double)a.count * utilCap));
 		LOG(MAPPING) << ",ratio=" << new_ratio;
 		ii = std::max(ii, new_ratio);
 
@@ -155,7 +156,7 @@ int CGRAXMLCompile::PathFinderMapper::getMinimumII(CGRA *cgra, DFG *dfg)
 			cummDP.insert(dp);
 		}
 		LOG(MAPPING) << ",cummOp=" << cummOp << ",cummDP=" << cummDP.size();
-		int cumm_ratio = (cummOp + cummDP.size() - 1) / cummDP.size();
+		int cumm_ratio = (int)std::ceil((double)cummOp / ((double)cummDP.size() * utilCap));
 		LOG(MAPPING) << ",ratio=" << cumm_ratio << "\n";
 		ii = std::max(ii, cumm_ratio);
 	}

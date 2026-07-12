@@ -516,7 +516,41 @@ def _final_graph_recurrence_lower_bound(dfg_xml):
   return bound
 
 
-def _candidate_graph_metrics(candidate_dirs, kernel, factor, loop_order):
+def _resource_lower_bound_ii(dfg_xml, arch_op_classes):
+  """Class-based resource lower bound on II: ops per PE class vs class size.
+
+  Ops supported by both PE classes (or by neither, e.g. unknown names) count
+  only toward the total-capacity term, so every term stays a true lower bound
+  and pruning on it remains sound.
+  """
+  if arch_op_classes is None:
+    return 1
+  text = Path(dfg_xml).read_text(encoding="utf-8")
+  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  dfg = root.find("DFG")
+  if dfg is None:
+    return 1
+  mem_class_ops = arch_op_classes.mem_pe_ops
+  compute_class_ops = arch_op_classes.compute_pe_ops
+  mem_only = compute_only = total = 0
+  for node in dfg.findall("Node"):
+    op = node.findtext("OP") or ""
+    total += 1
+    if op in mem_class_ops and op not in compute_class_ops:
+      mem_only += 1
+    elif op in compute_class_ops and op not in mem_class_ops:
+      compute_only += 1
+  bound = 1
+  if arch_op_classes.mem_pe_count:
+    bound = max(bound, -(-mem_only // arch_op_classes.mem_pe_count))
+  if arch_op_classes.compute_pe_count:
+    bound = max(bound, -(-compute_only // arch_op_classes.compute_pe_count))
+  total_pes = arch_op_classes.mem_pe_count + arch_op_classes.compute_pe_count
+  bound = max(bound, -(-total // total_pes))
+  return bound
+
+
+def _candidate_graph_metrics(candidate_dirs, kernel, factor, loop_order, arch_op_classes=None):
   dfg_xml = Path(candidate_dirs["mapper"]) / ("%s_PartPredDFG.xml" % kernel)
   text = dfg_xml.read_text(encoding="utf-8")
   root = ET.fromstring("<Root>\n%s\n</Root>" % text)
@@ -533,16 +567,19 @@ def _candidate_graph_metrics(candidate_dirs, kernel, factor, loop_order):
       iter_manifests[0].read_text(encoding="utf-8")
     ).get("status") == "applied"
   recurrence_bound = _final_graph_recurrence_lower_bound(dfg_xml)
+  resource_bound = _resource_lower_bound_ii(dfg_xml, arch_op_classes)
+  lower_bound = max(recurrence_bound, resource_bound)
   return {
     "dfg_xml": str(dfg_xml),
     "fingerprint": hashlib.sha256(dfg_xml.read_bytes()).hexdigest(),
     "recurrence_lower_bound": recurrence_bound,
-    "lower_score": _auto_unroll_score(recurrence_bound, factor),
+    "resource_lower_bound": resource_bound,
+    "lower_score": _auto_unroll_score(lower_bound, factor),
     "iterator_applied": iterator_applied,
     "memory_nodes": memory_nodes,
     "total_nodes": len(nodes),
     "rank_key": (
-      _auto_unroll_score(recurrence_bound, factor),
+      _auto_unroll_score(lower_bound, factor),
       0 if iterator_applied else 1,
       memory_nodes,
       len(nodes),
@@ -768,7 +805,12 @@ def _run_auto_unroll_sequential(context):
             % (factor, loop_order, reduction_form)
           )
           recurrence_lower_bound = _final_graph_recurrence_lower_bound(dfg_xml)
-          lower_score = _auto_unroll_score(recurrence_lower_bound, factor)
+          resource_lower_bound = _resource_lower_bound_ii(
+            dfg_xml, context.config.arch_op_classes
+          )
+          lower_score = _auto_unroll_score(
+            max(recurrence_lower_bound, resource_lower_bound), factor
+          )
           if best is not None and lower_score > best["score"]:
             print(
               "Candidate pruned before PathFinder: recurrence lower score "
@@ -966,7 +1008,8 @@ def _run_auto_unroll(context):
                 interchange_loops=interchange_loops,
               )
               metrics = _candidate_graph_metrics(
-                candidate_dirs, context.kernel, factor, loop_order
+                candidate_dirs, context.kernel, factor, loop_order,
+                arch_op_classes=context.config.arch_op_classes,
               )
             except (subprocess.CalledProcessError, RuntimeError) as exc:
               rows.append({
@@ -1012,10 +1055,11 @@ def _run_auto_unroll(context):
     candidate["rank"] = rank
     print(
       "Rank %d: factor=%d order=%s reduction=%s lower_score=%.4f "
-      "iter=%s memory=%d nodes=%d"
+      "(rec=%d res=%d) iter=%s memory=%d nodes=%d"
       % (
         rank, candidate["factor"], candidate["loop_order"],
         candidate["reduction_form"], candidate["lower_score"],
+        candidate["recurrence_lower_bound"], candidate["resource_lower_bound"],
         "applied" if candidate["iterator_applied"] else "retained",
         candidate["memory_nodes"], candidate["total_nodes"],
       )
@@ -1357,6 +1401,12 @@ if __name__ == "__main__":
     _status = "failed"
     _rc = 1
     _inner_exc = e
+  except KeyboardInterrupt:
+    # Without this, the finally block below records the untouched defaults
+    # (status=ok, rc=0) for a run the user killed mid-mapping.
+    _status = "interrupted"
+    _rc = 130
+    raise
   finally:
     if _kernel_run_dir is not None and _csource is not None:
       _elapsed = (time.time() - _start) if _start else 0.0

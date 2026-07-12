@@ -54,6 +54,10 @@ struct arguments
 	int pf_guard_max_consecutive = 0; // 0=mode default
 	int pf_frontier_stall_repeats = 0; // 0=disabled; fail PF iteration after repeated same-frontier failures
 	int pf_frontier_stall_min_mapped = 0;
+	int pf_util_headroom = 0; // starting-II utilization cap in percent; 0=mode default (85, exhaust=100=off)
+	int pf_stagnation_iters = 0; // 0=mode default; abort an II when unmapped stays high after this many PF iterations
+	int pf_stagnation_percent = 0; // 0=mode default; the "stays high" threshold as percent of DFG nodes
+	int pf_debug_dumps = 0; // 1: write per-iteration mapping.csv/routeInfo.log/congestion.info debug dumps
 	int rut_recovery_seed = 1; // deterministic seed for PF same-II rut recovery perturbations
 	std::string pf_node_order = "default"; // default | mem_first
 	std::string recmin_policy = "path"; // retained for CLI compatibility; final-graph path analysis is mandatory
@@ -108,6 +112,10 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<int>("", "--pf_guard_max_consecutive", "consecutive guarded PF iterations before failing PF phase (0=mode default)", 0)
 					.add_option<int>("", "--pf_frontier_stall_repeats", "fail PF iteration after repeated same-frontier route failures (0=disabled)", 0)
 					.add_option<int>("", "--pf_frontier_stall_min_mapped", "only apply PF frontier stall detector after this many mapped nodes", 0)
+					.add_option<int>("", "--pf_util_headroom", "starting-II utilization cap in percent (0=mode default: 85, exhaust off; 100=off)", 0)
+					.add_option<int>("", "--pf_stagnation_iters", "abort an II when unmapped stays above threshold after this many PF iterations (0=mode default)", 0)
+					.add_option<int>("", "--pf_stagnation_percent", "PF stagnation threshold as percent of DFG nodes (0=mode default)", 0)
+					.add_option<int>("", "--pf_debug_dumps", "write per-iteration mapping.csv/routeInfo.log/congestion.info dumps (1=on, 0=off)", 0)
 					.add_option<int>("", "--rut_recovery_seed", "deterministic seed for same-II rut recovery perturbations", 1)
 					.add_option<std::string>("", "--pf_node_order", "PathFinder node ordering policy: default|mem_first", "default")
 					.add_option<std::string>("", "--recmin_policy", "Deprecated compatibility option; final-graph path RecMin is always used", "path")
@@ -230,6 +238,20 @@ inline arguments parse_arguments(int argn, char *argc[]){
 		std::cerr << "Error: --pf_frontier_stall_repeats and --pf_frontier_stall_min_mapped must be >= 0.\n";
 		exit(EXIT_FAILURE);
 	}
+	ret.pf_util_headroom = args.get_option<int>("--pf_util_headroom");
+	if (ret.pf_util_headroom < 0 || ret.pf_util_headroom > 100)
+	{
+		std::cerr << "Error: --pf_util_headroom must be in [0, 100].\n";
+		exit(EXIT_FAILURE);
+	}
+	ret.pf_stagnation_iters = args.get_option<int>("--pf_stagnation_iters");
+	ret.pf_stagnation_percent = args.get_option<int>("--pf_stagnation_percent");
+	if (ret.pf_stagnation_iters < 0 || ret.pf_stagnation_percent < 0 || ret.pf_stagnation_percent > 100)
+	{
+		std::cerr << "Error: --pf_stagnation_iters must be >= 0 and --pf_stagnation_percent in [0, 100].\n";
+		exit(EXIT_FAILURE);
+	}
+	ret.pf_debug_dumps = args.get_option<int>("--pf_debug_dumps");
 	ret.pf_node_order = args.get_option<std::string>("--pf_node_order");
 	if (ret.pf_node_order != "default" && ret.pf_node_order != "mem_first")
 	{

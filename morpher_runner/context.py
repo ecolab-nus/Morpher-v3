@@ -425,6 +425,122 @@ def infer_arch_mem_pe_count(morpher_home, mapper_home, arch_template_json):
   return count if count > 0 else None
 
 
+# Plain load/store only: outer-loop OLOAD/OSTORE support appears on compute FUs
+# in arch templates, so it must not make a PE "memory-class" (matches the
+# startswith("LOAD") convention of _module_supports_memory_ops).
+_MEM_OP_PREFIXES = ("LOAD", "STORE", "VLOAD", "VSTORE")
+
+
+def _module_op_names(arch_root, module_name, seen=None):
+  """All op names supported anywhere inside a module definition (recursive)."""
+  if seen is None:
+    seen = set()
+  if module_name in seen:
+    return set()
+  seen.add(module_name)
+
+  module = arch_root.get(module_name)
+  if not isinstance(module, dict):
+    return set()
+
+  names = set()
+  ops = module.get("OPS")
+  if isinstance(ops, (dict, list)):
+    names.update(str(op) for op in ops)
+
+  submods = module.get("SUBMODS")
+  if isinstance(submods, dict):
+    for submod_name in submods.keys():
+      names.update(_module_op_names(arch_root, submod_name, seen))
+  if isinstance(submods, list):
+    for entry in submods:
+      if not isinstance(entry, dict):
+        continue
+      mod_name = entry.get("MOD")
+      if isinstance(mod_name, str):
+        names.update(_module_op_names(arch_root, mod_name, seen))
+      for key in entry.keys():
+        if key not in ("MOD", "name", "X", "Y", "DIMS", "PATTERN", "CONNECTIONS", "MODS"):
+          names.update(_module_op_names(arch_root, key, seen))
+      mods = entry.get("MODS")
+      if isinstance(mods, list):
+        for mod_entry in mods:
+          if isinstance(mod_entry, dict):
+            mod_name = mod_entry.get("MOD")
+            if isinstance(mod_name, str):
+              names.update(_module_op_names(arch_root, mod_name, seen))
+  return names
+
+
+@dataclass(frozen=True)
+class ArchOpClasses:
+  mem_pe_count: int
+  compute_pe_count: int
+  mem_pe_ops: frozenset
+  compute_pe_ops: frozenset
+
+
+def infer_arch_op_classes(morpher_home, mapper_home, arch_template_json):
+  """Per-PE-class counts and supported-op sets, for resource lower bounds.
+
+  A PE instance is mem-class when it supports any load/store op, compute-class
+  otherwise; NOP-only instances (dummies) are ignored.
+  """
+  arch_path = resolve_arch_template_path(morpher_home, mapper_home, arch_template_json)
+  with open(arch_path, "r", encoding="utf-8") as stream:
+    arch_data = json.load(stream)
+
+  arch_root = arch_data.get("ARCH")
+  if not isinstance(arch_root, dict):
+    return None
+  cgra_root = arch_root.get("CGRA")
+  if not isinstance(cgra_root, dict):
+    return None
+  cgra_submods = cgra_root.get("SUBMODS")
+  if not isinstance(cgra_submods, list):
+    return None
+
+  def instance_mod_names():
+    for entry in cgra_submods:
+      if not isinstance(entry, dict):
+        continue
+      mods = entry.get("MODS")
+      if isinstance(mods, list):
+        for mod_entry in mods:
+          if isinstance(mod_entry, dict) and isinstance(mod_entry.get("MOD"), str):
+            yield mod_entry["MOD"]
+        continue
+      if isinstance(entry.get("MOD"), str):
+        yield entry["MOD"]
+
+  op_cache = {}
+  mem_count = compute_count = 0
+  mem_ops = set()
+  compute_ops = set()
+  for mod_name in instance_mod_names():
+    if mod_name not in op_cache:
+      op_cache[mod_name] = _module_op_names(arch_root, mod_name)
+    ops = op_cache[mod_name]
+    real_ops = {op for op in ops if op != "NOP"}
+    if not real_ops:
+      continue
+    if any(op.startswith(_MEM_OP_PREFIXES) for op in real_ops):
+      mem_count += 1
+      mem_ops.update(real_ops)
+    else:
+      compute_count += 1
+      compute_ops.update(real_ops)
+
+  if mem_count + compute_count == 0:
+    return None
+  return ArchOpClasses(
+    mem_pe_count=mem_count,
+    compute_pe_count=compute_count,
+    mem_pe_ops=frozenset(mem_ops),
+    compute_pe_ops=frozenset(compute_ops),
+  )
+
+
 def _resolve_off_spm_mem_candidate_topk(value, _mem_pe_count):
   if isinstance(value, str):
     policy = value.strip().lower().replace("-", "_")
@@ -668,6 +784,7 @@ class RunnerConfig:
   rut_recovery_seed: int
   membound_mapping: str
   arch_mem_pe_count: int
+  arch_op_classes: object
   enable_simulation: bool
   generate_dfg_pdf: bool
   suppress_dfg_dot: bool
@@ -913,6 +1030,7 @@ class RunnerConfig:
       if "numberofbanks" not in config_dict or "banksize" not in config_dict:
         raise
     inferred_mem_pes = infer_arch_mem_pe_count(morpher_home, mapper_home, arch_template_json)
+    inferred_op_classes = infer_arch_op_classes(morpher_home, mapper_home, arch_template_json)
     arch_simd = infer_arch_simd_config(morpher_home, mapper_home, arch_template_json)
 
     xdim = config_dict.get("xdim", inferred_xdim)
@@ -996,6 +1114,7 @@ class RunnerConfig:
         mapper_tuning.get("membound_mapping", False),
       ),
       arch_mem_pe_count=int(inferred_mem_pes or 0),
+      arch_op_classes=inferred_op_classes,
       enable_simulation=config_dict.get("enable_simulation", True),
       generate_dfg_pdf=bool(config_dict.get("generate_dfg_pdf", True)),
       suppress_dfg_dot=bool(config_dict.get("suppress_dfg_dot", False)),

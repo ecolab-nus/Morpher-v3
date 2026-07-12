@@ -103,6 +103,10 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "pf_guard_max_consecutive=" << args.pf_guard_max_consecutive << " (0=mode default)\n";
 	std::cout << "pf_frontier_stall_repeats=" << args.pf_frontier_stall_repeats << " (0=disabled)\n";
 	std::cout << "pf_frontier_stall_min_mapped=" << args.pf_frontier_stall_min_mapped << "\n";
+	std::cout << "pf_util_headroom=" << args.pf_util_headroom << " (0=mode default)\n";
+	std::cout << "pf_stagnation_iters=" << args.pf_stagnation_iters << " (0=mode default)\n";
+	std::cout << "pf_stagnation_percent=" << args.pf_stagnation_percent << " (0=mode default)\n";
+	std::cout << "pf_debug_dumps=" << args.pf_debug_dumps << "\n";
 	std::cout << "rut_recovery_seed=" << args.rut_recovery_seed << "\n";
 	std::cout << "pf_node_order=" << args.pf_node_order << "\n";
 	std::cout << "recmin_policy=" << args.recmin_policy << "\n";
@@ -296,22 +300,62 @@ int main(int argn, char *argc[])
 	sa_mapper->setNodeOrderPolicy(args.pf_node_order);
 	pf_mapper->setRecMinPolicy(args.recmin_policy);
 	sa_mapper->setRecMinPolicy(args.recmin_policy);
+
+	// Fail an II attempt early when PF mapping depth stagnates far from
+	// complete; exhaust mode keeps grinding.
+	int stagnationIters = 2;
+	int stagnationPercent = 40;
+	if (args.pf_guard_mode == "quality")
+	{
+		stagnationIters = 3;
+		stagnationPercent = 60;
+	}
+	else if (args.pf_guard_mode == "exhaust")
+	{
+		stagnationIters = 0;
+	}
+	if (args.pf_stagnation_iters > 0)
+	{
+		stagnationIters = args.pf_stagnation_iters;
+	}
+	if (args.pf_stagnation_percent > 0)
+	{
+		stagnationPercent = args.pf_stagnation_percent;
+	}
+	pf_mapper->setStagnationPolicy(stagnationIters, stagnationPercent);
+	sa_mapper->setStagnationPolicy(stagnationIters, stagnationPercent);
+	pf_mapper->setDebugDumps(args.pf_debug_dumps != 0);
+	sa_mapper->setDebugDumps(args.pf_debug_dumps != 0);
+
+	// Starting-II utilization headroom: at 100% FU occupancy there is no slack
+	// for routing through PEs, so PF cannot realistically converge.
+	double utilCap = 1.0;
+	if (args.pf_util_headroom > 0)
+	{
+		utilCap = args.pf_util_headroom / 100.0;
+	}
+	else if (args.pf_guard_mode != "exhaust")
+	{
+		utilCap = 0.85;
+	}
+
 	std::cout << "PF guard policy: mode=" << args.pf_guard_mode
 	          << ", idle_seconds=" << pfGuardSeconds
 	          << ", absolute_seconds=" << pfGuardAbsoluteSeconds
-	          << ", max_consecutive=" << pfGuardMaxConsecutive << "\n";
+	          << ", max_consecutive=" << pfGuardMaxConsecutive
+	          << ", stagnation_iters=" << stagnationIters
+	          << ", stagnation_percent=" << stagnationPercent
+	          << ", util_headroom=" << (int)(utilCap * 100) << "%\n";
 	std::cout << "MAP begin... \n";
 	int resII = 0;
 	int recII = 0;
+	int resIIHeadroom = 0;
 	if (!skip_ii_estimation)
 	{
 		resII = mapper->getMinimumII(testCGRA, &currDFG);
+		resIIHeadroom = (utilCap < 1.0) ? mapper->getMinimumII(testCGRA, &currDFG, utilCap) : resII;
 		recII = mapper->getRecMinimumII(&currDFG);
 	}
-	// int recII = 0; // for SA initial mapping test.
-//	std::cout << "Res Minimum II = " << resII << ", ";
-//	std::cout << "Rec Minimum II = " << recII << ", ";
-//	std::cout << "Init User II = " << initUserII << "\n";
 	int II;
 	if (skip_ii_estimation)
 	{
@@ -319,11 +363,14 @@ int main(int argn, char *argc[])
 	}
 	else
 	{
-		II = std::max(recII, resII);
+		II = std::max(recII, resIIHeadroom);
 		II = std::max(initUserII, II);
 	}
 
-	std::cout << "Initial target II = " << II << " (ResMin II = "<<resII<<" , RecMin II = "<<recII<<", UserGiven II = "<<initUserII<<" )\n";
+	std::cout << "Initial target II = " << II << " (ResMin II = " << resII
+	          << ", headroom-adjusted ResMin II = " << resIIHeadroom
+	          << ", RecMin II = " << recII
+	          << ", UserGiven II = " << initUserII << ")\n";
 
 	pf_mapper->enableMutexPaths = !args.noMutexPaths;
 	sa_mapper->enableMutexPaths = !args.noMutexPaths;

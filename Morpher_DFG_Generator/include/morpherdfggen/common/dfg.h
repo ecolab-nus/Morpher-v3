@@ -509,11 +509,19 @@ class DFG{
 
 			void removeDisconnectedNodes();
 			void removeAGINodes();
-			void removeIteratorOnlyControl();
+			// cmergeCtrlInputs (from DFGPartPred) enables rewiring reduction
+			// carry CMERGEs' predicates from the loop-latch CMP to LOOPSTART,
+			// which makes iterator control removable for unrolled reductions.
+			// Without it only fully data-disconnected control is removed.
+			void removeIteratorOnlyControl(std::map<dfgNode*, dfgNode*>* cmergeCtrlInputs = NULL);
 			void packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 						  bool scalarBroadcast);
 			bool removeAGI = false;
 			bool iteratorExternalized = false;
+			// Post-externalization: which boundary artifact vars survive and
+			// therefore still need mem_alloc entries.
+			bool loopstartEventKept = false;
+			bool loopexitKept = false;
 			std::unordered_set<dfgNode*> getLineage(dfgNode* n);
 
 

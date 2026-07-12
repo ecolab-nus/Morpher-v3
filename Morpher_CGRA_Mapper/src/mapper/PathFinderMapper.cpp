@@ -83,6 +83,10 @@ void CGRAXMLCompile::PathFinderMapper::updateAttemptProgress(const char *phase, 
 		progressBestUnmappedCount = unmappedCount;
 		progressLastImprovement = std::chrono::steady_clock::now();
 	}
+	if (unmappedCount < attemptBestUnmappedCount)
+	{
+		attemptBestUnmappedCount = unmappedCount;
+	}
 }
 
 bool CGRAXMLCompile::PathFinderMapper::iterationGuardHit(const char *phase)
@@ -1812,10 +1816,31 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 	bool mapSuccess = false;
 
-	std::string congestionInfoFileName = mappingLogFileName + ".congestion.info";
-	LOG(MAPPING) << "Opening congestion file : " << congestionInfoFileName << "!\n";
-	congestionInfoFile.open(congestionInfoFileName.c_str());
-	assert(congestionInfoFile.is_open());
+	if (dumpDebugFiles)
+	{
+		std::string congestionInfoFileName = mappingLogFileName + ".congestion.info";
+		LOG(MAPPING) << "Opening congestion file : " << congestionInfoFileName << "!\n";
+		congestionInfoFile.open(congestionInfoFileName.c_str());
+		assert(congestionInfoFile.is_open());
+	}
+
+	attemptBestUnmappedCount = static_cast<size_t>(-1);
+	auto stagnationHit = [&](int iterationsDone) -> bool
+	{
+		if (stagnationIters <= 0 || iterationsDone < stagnationIters)
+			return false;
+		const size_t nodeCount = sortedNodeList.size();
+		if (attemptBestUnmappedCount == static_cast<size_t>(-1) || nodeCount == 0)
+			return false;
+		if (attemptBestUnmappedCount * 100 <= nodeCount * static_cast<size_t>(stagnationPercent))
+			return false;
+		std::cout << "PF stagnation at II = " << cgra->get_t_max()
+		          << ": best_unmapped = " << attemptBestUnmappedCount << "/" << nodeCount
+		          << " after " << iterationsDone << " iterations (> "
+		          << stagnationPercent << "%). Failing this attempt.\n";
+		setAttemptOutcome(AttemptOutcome::FAIL_ITERATION_GUARD);
+		return true;
+	};
 
 	int consecutiveGuardedIterations = 0;
 	for (int i = 0; i < this->maxIter; ++i)
@@ -1837,15 +1862,18 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		std::string mappingLog2FileName_withIter = mappingLog2FileName + "_Iter=" + std::to_string(i) + ".routeInfo.log";
 		std::string mappingLog4FileName_withIter = mappingLogFileName + "_II=" + std::to_string(cgra->get_t_max())+ "_Iter=" + std::to_string(i) + ".mappingwithlatency.txt";
 
-		mappingLog.open(mappingLogFileName_withIter.c_str());
-		mappingLog2.open(mappingLog2FileName_withIter.c_str());
+		if (dumpDebugFiles)
+		{
+			mappingLog.open(mappingLogFileName_withIter.c_str());
+			mappingLog2.open(mappingLog2FileName_withIter.c_str());
+
+			LOG(MAPPING) << "Opening mapping csv file : " << mappingLogFileName_withIter << "\n";
+			LOG(MAPPING) << "Opening routeInfo log file : " << mappingLog2FileName_withIter << "\n";
+
+			assert(mappingLog.is_open());
+			assert(mappingLog2.is_open());
+		}
 		mappingLog4.open(mappingLog4FileName_withIter.c_str());
-
-		LOG(MAPPING) << "Opening mapping csv file : " << mappingLogFileName_withIter << "\n";
-		LOG(MAPPING) << "Opening routeInfo log file : " << mappingLog2FileName_withIter << "\n";
-
-		assert(mappingLog.is_open());
-		assert(mappingLog2.is_open());
 		assert(mappingLog4.is_open());
 
 		while (!mappedNodes.empty())
@@ -2018,8 +2046,11 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 						iterationGuarded = true;
 						break;
 					}
-					printMappingLog();
-					printMappingLog2();
+					if (dumpDebugFiles)
+					{
+						printMappingLog();
+						printMappingLog2();
+					}
 					if (enableBackTracking)
 					{
 						if (backTrackCredits == 0 || failedNode == NULL)
@@ -2129,8 +2160,11 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 
 			if (!isRouteSucc)
 			{
-				this->printMappingLog();
-				this->printMappingLog2();
+				if (dumpDebugFiles)
+				{
+					this->printMappingLog();
+					this->printMappingLog2();
+				}
 				if (mappedNodes.empty())
 				{
 					mappingLog << "Map Failed!.\n";
@@ -2227,6 +2261,10 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 				return false;
 			}
 
+			if (stagnationHit(i + 1))
+			{
+				return false;
+			}
 			perturbNodeOrderAfterGuard(progressNode, consecutiveGuardedIterations);
 			this->setAttemptOutcome(AttemptOutcome::FAIL_NORMAL);
 			continue;
@@ -2242,6 +2280,10 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 		mappingLog.close();
 		mappingLog2.close();
 		mappingLog4.close();
+		if (stagnationHit(i + 1))
+		{
+			return false;
+		}
 	}
 
 	//	congestionInfoFile.close();
@@ -2250,8 +2292,11 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 	{
 		mappingLog << "Map Success!.\n";
 		mappingLog2 << "Map Success!.\n";
-		this->printMappingLog();
-		this->printMappingLog2();
+		if (dumpDebugFiles)
+		{
+			this->printMappingLog();
+			this->printMappingLog2();
+		}
 
 		// by Yujie
 		// cgra->PrintMappedJSON(fNameLog1 + cgra->getCGRAName() + "mapping.json");

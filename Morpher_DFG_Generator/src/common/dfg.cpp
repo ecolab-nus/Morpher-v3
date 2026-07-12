@@ -10427,11 +10427,18 @@ void DFG::removeAGINodes()
 	llvm::outs() << "[removeAGINodes] Remaining nodes after AGI removal: " << NodeList.size() << "\n";
 }
 
-void DFG::removeIteratorOnlyControl()
+void DFG::removeIteratorOnlyControl(std::map<dfgNode*, dfgNode*>* cmergeCtrlInputs)
 {
-	// This is intentionally narrower than general iterator removal. The trace
-	// supplies memory addresses but not predicate events, so only a control
-	// component completely disconnected from remaining mapped work is safe.
+	// The trace supplies memory addresses but not predicate events, so only
+	// control that is data-disconnected from remaining mapped work can be
+	// removed. One predicate crossing is additionally supported: a reduction
+	// carry CMERGE consumes the loop-latch CMP purely as "loop continues".
+	// Its output feeds the phi SELECT of the *next* iteration, so within the
+	// executed iterations the carry must fire on every iteration (the final
+	// unconsumed token is harmless once the iterator is externalized) — the
+	// predicate edge is simply dropped, and the counter/CMP component becomes
+	// removable even for register-carried (unrolled) reductions. The kept
+	// LOOPSTART event still sequences the init CMERGE.
 	auto isBoundaryNode = [](dfgNode* node) {
 		const std::string type = node->getNameType();
 		return type == "LOOPSTART" || type == "STORESTART" || type == "LOOPEXIT";
@@ -10490,54 +10497,241 @@ void DFG::removeIteratorOnlyControl()
 		             << reason << "\n";
 	};
 
-	std::unordered_set<dfgNode*> iteratorSet;
-	std::queue<dfgNode*> pending;
+	bool hasBoundary = false;
 	for (dfgNode* node : NodeList)
-	{
 		if (isBoundaryNode(node))
-		{
-			iteratorSet.insert(node);
-			pending.push(node);
-		}
-	}
-	if (pending.empty())
+			hasBoundary = true;
+	if (!hasBoundary)
 		report_fatal_error(
 			"agi_iter requires canonical loop boundary nodes after AGI externalization");
 
-	std::string skipReason;
-	while (!pending.empty() && skipReason.empty())
-	{
-		dfgNode* node = pending.front();
-		pending.pop();
-		for (dfgNode* neighbor : node->getAncestors())
+	std::unordered_set<dfgNode*> inGraph(NodeList.begin(), NodeList.end());
+
+	auto isPredEdge = [&](dfgNode* parent, dfgNode* child) {
+		if (parent->getNameType() == "LOOPSTART")
+			return true;
+		if (cmergeCtrlInputs && child->getNameType() == "CMERGE")
 		{
-			if (!isControlCandidate(neighbor))
-			{
-				skipReason = "iterator control " + describeNode(node) +
-					" has a live data parent " + describeNode(neighbor);
-				break;
-			}
-			if (iteratorSet.insert(neighbor).second)
-				pending.push(neighbor);
+			auto found = cmergeCtrlInputs->find(child);
+			if (found != cmergeCtrlInputs->end() && found->second == parent)
+				return true;
 		}
-		if (!skipReason.empty()) break;
-		for (dfgNode* neighbor : node->getChildren())
+		auto slot0 = child->parentClassification.find(0);
+		return slot0 != child->parentClassification.end() && slot0->second == parent;
+	};
+
+	// Partition the graph into components connected by data edges; predicate
+	// edges do not merge components, so control that only *predicates* work
+	// stays separable while control that *feeds* work merges into it.
+	std::unordered_map<dfgNode*, dfgNode*> ufParent;
+	for (dfgNode* node : NodeList)
+		ufParent[node] = node;
+	auto findRoot = [&ufParent](dfgNode* node) {
+		while (ufParent[node] != node)
 		{
-			if (!isControlCandidate(neighbor))
+			ufParent[node] = ufParent[ufParent[node]];
+			node = ufParent[node];
+		}
+		return node;
+	};
+	auto unite = [&](dfgNode* a, dfgNode* b) { ufParent[findRoot(a)] = findRoot(b); };
+	for (dfgNode* node : NodeList)
+		for (dfgNode* parent : node->getAncestors())
+			if (inGraph.count(parent) && !isPredEdge(parent, node))
+				unite(parent, node);
+
+	struct ComponentInfo
+	{
+		bool allCandidates = true;
+		bool special = false; // holds the first-iteration event (LOOPSTART/STORESTART)
+	};
+	std::unordered_map<dfgNode*, ComponentInfo> comps;
+	for (dfgNode* node : NodeList)
+	{
+		ComponentInfo& info = comps[findRoot(node)];
+		if (!isControlCandidate(node))
+			info.allCandidates = false;
+		const std::string type = node->getNameType();
+		if (type == "LOOPSTART" || type == "STORESTART")
+			info.special = true;
+	}
+	auto isRemovalCandidate = [&](dfgNode* node) {
+		const ComponentInfo& info = comps[findRoot(node)];
+		return info.allCandidates && !info.special;
+	};
+
+	dfgNode* loopstart = NULL;
+	bool multipleLoopstarts = false;
+	for (dfgNode* node : NodeList)
+		if (node->getNameType() == "LOOPSTART")
+		{
+			if (loopstart)
+				multipleLoopstarts = true;
+			loopstart = node;
+		}
+
+	// Removal-candidate components exchanging predicates (the latch CMP
+	// predicates the other counters' CMERGEs and the LOOPEXIT store) must be
+	// decided together: cluster them. Uniting only same-flag components keeps
+	// the comps flags valid.
+	for (dfgNode* node : NodeList)
+		if (isRemovalCandidate(node))
+			for (dfgNode* parent : node->getAncestors())
+				if (inGraph.count(parent) && isRemovalCandidate(parent))
+					unite(parent, node);
+
+	struct Rewire
+	{
+		dfgNode* cmerge;
+		dfgNode* oldCtrl;
+	};
+	std::unordered_map<dfgNode*, std::vector<Rewire>> clusterRewires;
+	std::unordered_map<dfgNode*, std::string> clusterBlockReason;
+
+	for (dfgNode* node : NodeList)
+	{
+		if (!isRemovalCandidate(node))
+			continue;
+		dfgNode* cluster = findRoot(node);
+		if (clusterBlockReason.count(cluster))
+			continue;
+
+		for (dfgNode* parent : node->getAncestors())
+		{
+			if (!inGraph.count(parent) || isRemovalCandidate(parent))
+				continue;
+			if (parent->getNameType() == "LOOPSTART")
+				continue; // trigger edges from the kept event die with the removal
+			clusterBlockReason[cluster] = "iterator control " + describeNode(node) +
+				" consumes " + describeNode(parent);
+			break;
+		}
+		if (clusterBlockReason.count(cluster))
+			continue;
+
+		for (dfgNode* child : node->getChildren())
+		{
+			if (!inGraph.count(child) || isRemovalCandidate(child))
+				continue;
+			// Every crossing edge is a predicate by construction: a data edge
+			// would have merged the two components.
+			std::string blocked;
+			if (!isPredEdge(node, child))
+				blocked = "has unexpected data edge to " + describeNode(child);
+			else if (comps[findRoot(child)].special)
+				blocked = "predicates kept boundary node " + describeNode(child);
+			else if (child->getNameType() != "CMERGE" || !cmergeCtrlInputs ||
+			         !cmergeCtrlInputs->count(child) ||
+			         (*cmergeCtrlInputs)[child] != node)
+				blocked = "predicates non-rewireable work " + describeNode(child);
+			else if (node->getFinalIns() != CMP)
+				blocked = "predicates work CMERGE but is not the latch CMP";
+			else if (!loopstart || multipleLoopstarts)
+				blocked = "predicates work CMERGE without a unique LOOPSTART event";
+			else
 			{
-				skipReason = "iterator control " + describeNode(node) +
-					" has a live work child " + describeNode(neighbor);
+				// The CMERGE must fire on loop-continue: the opposite polarity
+				// of every LOOPEXIT this CMP drives.
+				bool sawExit = false;
+				bool polarityOk = true;
+				for (dfgNode* exitChild : node->getChildren())
+					if (exitChild->getNameType() == "LOOPEXIT")
+					{
+						sawExit = true;
+						if (exitChild->getNPB() == child->getNPB())
+							polarityOk = false;
+					}
+				if (!sawExit)
+					blocked = "predicates work CMERGE but drives no LOOPEXIT";
+				else if (!polarityOk)
+					blocked = "predicates work CMERGE " + describeNode(child) +
+						" that does not fire on loop-continue";
+			}
+			if (!blocked.empty())
+			{
+				clusterBlockReason[cluster] =
+					"iterator control " + describeNode(node) + " " + blocked;
 				break;
 			}
-			if (iteratorSet.insert(neighbor).second)
-				pending.push(neighbor);
+			clusterRewires[cluster].push_back({child, node});
 		}
 	}
-	if (!skipReason.empty())
+
+	std::unordered_set<dfgNode*> iteratorSet;
+	std::vector<Rewire> rewires;
+	std::string firstBlockReason;
+	for (dfgNode* node : NodeList)
 	{
-		writeSkippedManifest(skipReason);
+		if (!isRemovalCandidate(node))
+			continue;
+		dfgNode* cluster = findRoot(node);
+		if (clusterBlockReason.count(cluster))
+		{
+			if (firstBlockReason.empty())
+				firstBlockReason = clusterBlockReason[cluster];
+			continue;
+		}
+		iteratorSet.insert(node);
+	}
+	for (auto& pair : clusterRewires)
+		if (!clusterBlockReason.count(pair.first))
+			rewires.insert(rewires.end(), pair.second.begin(), pair.second.end());
+
+	if (iteratorSet.empty())
+	{
+		writeSkippedManifest(firstBlockReason.empty()
+			? "no separable iterator-only control component"
+			: firstBlockReason);
 		return;
 	}
+
+	// When nothing surviving consumes the LOOPSTART event, fold the event
+	// machinery (LOOPSTART/STORESTART and their constants) into the removal —
+	// the memory-carried-reduction case (unroll factor 1).
+	std::unordered_set<dfgNode*> specials;
+	for (dfgNode* node : NodeList)
+	{
+		const ComponentInfo& info = comps[findRoot(node)];
+		if (info.special && info.allCandidates)
+			specials.insert(node);
+	}
+	bool loopstartConsumed = !rewires.empty();
+	if (!loopstartConsumed)
+		for (dfgNode* node : specials)
+			for (dfgNode* child : node->getChildren())
+				if (inGraph.count(child) && !iteratorSet.count(child) && !specials.count(child))
+					loopstartConsumed = true;
+	if (!loopstartConsumed)
+	{
+		bool foldable = true;
+		for (dfgNode* node : specials)
+			for (dfgNode* parent : node->getAncestors())
+				if (inGraph.count(parent) && !iteratorSet.count(parent) && !specials.count(parent))
+					foldable = false;
+		if (foldable)
+			iteratorSet.insert(specials.begin(), specials.end());
+	}
+
+	std::vector<std::pair<int, int>> rewireRecords; // {cmerge idx, old ctrl idx} pre-reindex
+	for (const Rewire& rw : rewires)
+	{
+		rewireRecords.push_back({rw.cmerge->getIdx(), rw.oldCtrl->getIdx()});
+		rw.cmerge->removeAncestor(rw.oldCtrl);
+		rw.oldCtrl->removeChild(rw.cmerge);
+		cmergeCtrlInputs->erase(rw.cmerge);
+		llvm::outs() << "[agi_iter] Unpredicated reduction carry " << describeNode(rw.cmerge)
+		             << " (was gated by " << describeNode(rw.oldCtrl) << ")\n";
+	}
+
+	// Drop trigger links from kept nodes (the LOOPSTART event) into the
+	// removed component; the closure checks below verify nothing else crosses.
+	for (dfgNode* node : iteratorSet)
+		for (dfgNode* parent : node->getAncestors())
+			if (inGraph.count(parent) && !iteratorSet.count(parent))
+			{
+				parent->removeChild(node);
+				node->removeAncestor(parent);
+			}
 
 	for (dfgNode* node : iteratorSet)
 	{
@@ -10613,7 +10807,58 @@ void DFG::removeIteratorOnlyControl()
 		manifestFile << index;
 	}
 	manifestFile << "],\n";
-	manifestFile << "  \"artifact_vars_pruned\": [\"loopstart\", \"loopend\"],\n";
+	bool keptLoopstartEvent = false;
+	bool keptLoopexit = false;
+	for (dfgNode* node : NodeList)
+	{
+		const std::string type = node->getNameType();
+		if (type == "LOOPSTART" || type == "STORESTART")
+			keptLoopstartEvent = true;
+		if (type == "LOOPEXIT")
+			keptLoopexit = true;
+	}
+	loopstartEventKept = keptLoopstartEvent;
+	loopexitKept = keptLoopexit;
+	// UpdateSPMAllocation wrote mem_alloc before this transform ran and omits
+	// the boundary entries for agi_iter; surviving boundary nodes still need
+	// their addresses, so append them here.
+	if (keptLoopstartEvent || keptLoopexit)
+	{
+		std::ofstream memAllocAppend(kernelname + "_mem_alloc.txt", std::ios::app);
+		if (!memAllocAppend.is_open())
+			report_fatal_error("Could not append boundary entries to mem_alloc");
+		if (keptLoopexit)
+			memAllocAppend << "loopend" << "," << (MEM_SIZE / 2 - 1) << "\n";
+		if (keptLoopstartEvent)
+			memAllocAppend << "loopstart" << "," << (MEM_SIZE - 2) << "\n";
+	}
+	manifestFile << "  \"artifact_vars_pruned\": [";
+	{
+		bool firstVar = true;
+		if (!keptLoopstartEvent)
+		{
+			manifestFile << "\"loopstart\"";
+			firstVar = false;
+		}
+		if (!keptLoopexit)
+		{
+			if (!firstVar) manifestFile << ", ";
+			manifestFile << "\"loopend\"";
+		}
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"unpredicated_carries\": [";
+	{
+		bool firstRewire = true;
+		for (const std::pair<int, int>& record : rewireRecords)
+		{
+			if (!firstRewire) manifestFile << ", ";
+			firstRewire = false;
+			manifestFile << "{\"cmerge_original_idx\": " << record.first
+			             << ", \"old_ctrl_original_idx\": " << record.second << "}";
+		}
+	}
+	manifestFile << "],\n";
 	manifestFile << "  \"index_map\": [";
 	bool firstMap = true;
 	for (dfgNode* node : NodeList)
@@ -12740,10 +12985,12 @@ void DFG::UpdateSPMAllocation(std::unordered_map<Value *, int> &spm_base_address
 		LLVM_DEBUG(dbgs() << "\t pointer " << i->first<<","<< i->second<<"\n");
 		mem_alloc_txt << i->first<<","<< i->second<<"\n";
 	}
-	if (!iteratorExternalized)
+	if (!iteratorExternalized || loopexitKept)
 	{
 		mem_alloc_txt << "loopend" <<","<<(MEM_SIZE/2 - 1)<<"\n";
-//		mem_alloc_txt << "storestart" <<","<<(MEM_SIZE/2 - 1)<<"\n";
+	}
+	if (!iteratorExternalized || loopstartEventKept)
+	{
 		mem_alloc_txt << "loopstart" <<","<<(MEM_SIZE - 2)<<"\n";
 	}
 	mem_alloc_txt.close();

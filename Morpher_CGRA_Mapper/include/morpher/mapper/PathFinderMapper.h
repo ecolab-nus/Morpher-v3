@@ -339,7 +339,9 @@ public:
 	DFG *dfg;
 
 	// From HeuristicMapper
-	int getMinimumII(CGRA *cgra, DFG *dfg);
+	// utilCap < 1.0 reserves FU slack for routing: the returned II is the
+	// smallest one keeping every op-class below that utilization fraction.
+	int getMinimumII(CGRA *cgra, DFG *dfg, double utilCap = 1.0);
 	int getRecMinimumII(DFG *dfg);
 	void setRecMinPolicy(const std::string &policy) { recMinPolicy = policy; }
 	bool sanityCheck();
@@ -412,6 +414,18 @@ public:
 	{
 		frontierStallRepeats = std::max(0, repeats);
 		frontierStallMinMapped = std::max(0, minMapped);
+	}
+	// Abort an II attempt when, after `iters` PF iterations, the best mapping
+	// depth reached so far still leaves more than `percent` of the DFG
+	// unmapped. iters <= 0 disables the check.
+	void setStagnationPolicy(int iters, int percent)
+	{
+		stagnationIters = iters;
+		stagnationPercent = std::min(100, std::max(0, percent));
+	}
+	void setDebugDumps(bool enabled)
+	{
+		dumpDebugFiles = enabled;
 	}
 	void setRutRecoverySeed(int seed)
 	{
@@ -513,6 +527,10 @@ protected:
 	int maxConsecutiveIterationGuards = 5;
 	int frontierStallRepeats = 0;
 	int frontierStallMinMapped = 0;
+	int stagnationIters = 0;
+	int stagnationPercent = 50;
+	size_t attemptBestUnmappedCount = static_cast<size_t>(-1);
+	bool dumpDebugFiles = false;
 	int rutRecoverySeed = 1;
 	std::chrono::steady_clock::time_point progressIterationStart;
 	std::chrono::steady_clock::time_point progressLastImprovement;

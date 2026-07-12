@@ -21,6 +21,10 @@ public :
 	virtual void generateTrigDFGDOT(Function &F);
 
 
+	// Iterator externalization with access to the CMERGE control-input map,
+	// enabling predicate rewires for register-carried (unrolled) reductions.
+	void externalizeIteratorControl() { removeIteratorOnlyControl(&cmergeCtrlInputs); }
+
 	dfgNode* combineConditionAND(dfgNode* brcond, dfgNode* selcond, dfgNode* child);
 	bool checkBackEdge(dfgNode* src, dfgNode* dest);
 	bool checkPHILoop(dfgNode* node1, dfgNode* node2);
