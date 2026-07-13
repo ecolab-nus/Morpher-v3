@@ -872,7 +872,12 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 				[&](DataPath *a, DataPath *b) {
 					int da = std::abs(a->getPE()->X - cx) + std::abs(a->getPE()->Y - cy);
 					int db = std::abs(b->getPE()->X - cx) + std::abs(b->getPE()->Y - cy);
-					return da < db;
+					if (da != db)
+						return da < db;
+					// Total-order tiebreak: std::sort is unstable, so without this
+					// equal-distance candidates land in arbitrary order and the
+					// mapping becomes non-reproducible across runs/builds.
+					return a->getFullName() < b->getFullName();
 				});
 		}
 	}

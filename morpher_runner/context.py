@@ -63,7 +63,12 @@ MAPPER_PRESETS = {
     "backtrack_limit": 4,
     "max_mapper_iter": 50,
     "max_II": 32,
-    "ii_restarts": 0,
+    # One same-II restart with a perturbed node order before escalating II.
+    # PF outcomes are order-dependent, and the stagnation abort can fail a
+    # mappable-but-hard II early (see REFERENCE.md); a single reordered retry is
+    # far cheaper than paying +1 II permanently. The restart machinery already
+    # exists (setRestartOffset -> Map() rotates/reverses sortedNodeList).
+    "ii_restarts": 1,
     "skip_ii_estimation": False,
     "print_dfg": True,
     "sa_seed": 1,

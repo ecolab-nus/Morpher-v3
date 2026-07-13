@@ -1,0 +1,34 @@
+# Expected known-good results for the regression gate (scripts/regression_gate.py).
+#
+# Captured 2026-07-13 with config/regression.yaml (auto-unroll off, single uf1
+# run, memory_mode: auto -> arch_runtime.json). These are the fast kernels; the
+# gate re-runs them after a mapper change and asserts nothing regressed.
+#
+# Fields per entry:
+#   source        <suite>/<kernel>/<kernel>.c under Morpher_DFG_Generator/benchmarks
+#   function      kernel function name (== kernel stem here)
+#   expected_ii   achieved II must not exceed this (lower is a pass + a note)
+#   expected_matches   total simulator matches; must equal this and mismatches must be 0
+#   baseline_sec  mapper hot-loop seconds; >3x (min 5s floor) warns, fails only with --strict-timing
+config: config/regression.yaml
+benchmarks:
+  - source: cgrame_microbench/conv2/conv2.c
+    function: conv2
+    expected_ii: 1
+    expected_matches: 256
+    baseline_sec: 2
+  - source: morpher_benchmarks/fir/fir.c
+    function: fir
+    expected_ii: 1
+    expected_matches: 8
+    baseline_sec: 12
+  - source: polybench/bicg/bicg.c
+    function: bicg
+    expected_ii: 1
+    expected_matches: 520
+    baseline_sec: 15
+  - source: polybench/doitgen/doitgen.c
+    function: doitgen
+    expected_ii: 1
+    expected_matches: 8
+    baseline_sec: 12
