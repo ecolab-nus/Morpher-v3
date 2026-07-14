@@ -12736,9 +12736,10 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 				LLVM_DEBUG(dbgs() << "type = "); LLVM_DEBUG(ptr->getType()->dump());
 
 				if(outVals_inorout.find(ptr)!=outVals_inorout.end()){
-						if(outVals_inorout[ptr]==0){//outLoopStore
-							LLVM_DEBUG(dbgs() << "Adding live_out_report_intermediatevariable() call for OutloopStore\n");
-							for (auto &I : *exitBB){
+					if(outVals_inorout[ptr]==0){//outLoopStore
+						LLVM_DEBUG(dbgs() << "Adding live_out_report_intermediatevariable() call for OutloopStore\n");
+						bool reportedLiveOut = false;
+						for (auto &I : *exitBB){
 
 							LLVM_DEBUG(I.dump());
 							Value *val = dyn_cast<Value>(&I);
@@ -12755,8 +12756,12 @@ void DFG::InstrumentInOutVars(Function &F, std::unordered_map<Value *, int> mem_
 									}
 									Value* bitcastedptr = scalarTraceValue(builder, val);
 									builder.CreateCall(live_out_report_intvar_FN,{ptr_name_val,bitcastedptr});
+									reportedLiveOut = true;
+									break;
 								}
 							}
+						if (!reportedLiveOut)
+							LLVM_DEBUG(dbgs() << "No scalar LCSSA live-out found for " << arr_name << "\n");
 
 
 						for (User *u : ptr->users()){

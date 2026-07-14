@@ -198,7 +198,6 @@ class TraceDrivenCommandTests(unittest.TestCase):
       morpher_home=str(REPO_ROOT),
       mapper_home=str(REPO_ROOT / "Morpher_CGRA_Mapper"),
       mapper_kernel="/tmp",
-      selected_simd_artifact_only=False,
     )
     commands, _ = build_mapper_commands(context)
     mapper_command = commands[-1].argv
@@ -217,7 +216,6 @@ class TraceDrivenCommandTests(unittest.TestCase):
       morpher_home=str(REPO_ROOT),
       mapper_home=str(REPO_ROOT / "Morpher_CGRA_Mapper"),
       mapper_kernel="/tmp",
-      selected_simd_artifact_only=False,
     )
     commands, _ = build_mapper_commands(context)
     mapper_command = commands[-1].argv

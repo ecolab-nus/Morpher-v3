@@ -781,6 +781,7 @@ class RunnerConfig:
   simd_pack: str
   layout_solver: bool
   replicate_data: bool
+  bank_affinity_cost: int
   auto_unroll_enabled: bool
   auto_unroll_factors: list
   auto_unroll_fuse_innermost_loops: bool
@@ -973,6 +974,12 @@ class RunnerConfig:
     source_template_mode = cls._parse_source_template(config_dict)
     externalize_access = cls._parse_externalize_access(config_dict)
     simd_pack = cls._parse_simd_pack(config_dict, externalize_access)
+    try:
+      bank_affinity_cost = int(config_dict.get("bank_affinity_cost", 0) or 0)
+    except (TypeError, ValueError):
+      raise RuntimeError("bank_affinity_cost must be a non-negative integer.")
+    if bank_affinity_cost < 0:
+      raise RuntimeError("bank_affinity_cost must be a non-negative integer.")
     if "experimental_python_semantic_transforms" in config_dict:
       raise RuntimeError(
         "experimental_python_semantic_transforms was removed; source templates "
@@ -1110,6 +1117,7 @@ class RunnerConfig:
       node_pin=str(config_dict.get("node_pin", "") or ""),
       layout_solver=bool(config_dict.get("layout_solver", False)),
       replicate_data=bool(config_dict.get("replicate_data", False)),
+      bank_affinity_cost=bank_affinity_cost,
       auto_unroll_enabled=auto_unroll_enabled,
       auto_unroll_factors=auto_unroll_factors,
       auto_unroll_fuse_innermost_loops=auto_unroll_fuse_innermost_loops,
@@ -1143,7 +1151,6 @@ class RunnerContext:
   simulator_kernel: str
   mem_trace: str
   selected_simd_enabled: bool = False
-  selected_simd_artifact_only: bool = False
 
 
 def build_context(csource, function, config_path, runmode, run_tag=""):

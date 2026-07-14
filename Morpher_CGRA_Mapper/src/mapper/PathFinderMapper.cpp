@@ -19,6 +19,7 @@
  */
 
 #include <morpher/mapper/PathFinderMapper.h>
+#include <morpher/mapper/BankAffinity.h>
 #include <queue>
 #include <assert.h>
 #include <math.h>
@@ -855,6 +856,8 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	if (candidateDests.empty())
 		return false;
 
+	addBankAffinityPenalty(node, candidateDests, dpPenaltyMap);
+
 	// Sort candidates by Manhattan distance to centroid of already-placed parents
 	if (proximitySort) {
 		int cx = 0, cy = 0, n = 0;
@@ -1057,7 +1060,6 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 						LOG(ROUTE)<< "par Estimate Path Failed :: " << startCand->getFullName() << "--->" << destPort->getFullName() << "\n";
 						continue;
 					}
-					cost += dpPenaltyMap[dest];
 					res.push(cand_src_with_cost(startCandLat, destPortLat, cost));
 				}
 				if (res.empty())
@@ -1141,7 +1143,9 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 
 			assert(pathFromParentExist);
 			assert(pathExistMappedChild);
-			dest_with_cost dest_with_cost_ins(parentStartLocs, alreadyMappedChilds, dest, minLatDestVal_prime, node, 0, this->dfg->unmappedMemOps, this);
+			dest_with_cost dest_with_cost_ins(parentStartLocs, alreadyMappedChilds, dest,
+				minLatDestVal_prime, node, dpPenaltyMap[dest],
+				this->dfg->unmappedMemOps, this);
 
 			if (minLatDestVal_prime < minLatSucc)
 			{
@@ -2687,6 +2691,49 @@ bool CGRAXMLCompile::PathFinderMapper::checkRegALUConflicts()
 		}
 		LOG(ROUTE) << "t=" << t << ","
 			  << "timeslice=" << timeslice_count << "\n";
+	}
+}
+
+void CGRAXMLCompile::PathFinderMapper::addBankAffinityPenalty(DFGNode *node,
+	const std::vector<DataPath *> &candidateDests,
+	std::map<DataPath *, int> &dpPenaltyMap)
+{
+	if (bankAffinityCost <= 0 || cgra->memPE2Bank.empty())
+		return;
+	auto isMemAccess = [](const std::string &op) {
+		return op.find("LOAD") != std::string::npos || op.find("STORE") != std::string::npos;
+	};
+	if (!isMemAccess(node->op) || node->base_pointer_name.empty() ||
+	    node->base_pointer_name == "NOT_A_MEM_OP")
+		return;
+
+	// Placed same-array accesses, counted per canonical (time-independent) bank.
+	std::map<std::string, int> homeBankCounts;
+	for (DFGNode &other : dfg->nodeList)
+	{
+		if (&other == node || other.rootDP == NULL)
+			continue;
+		if (other.base_pointer_name != node->base_pointer_name || !isMemAccess(other.op))
+			continue;
+		auto bit = cgra->memPE2Bank.find(other.rootDP->getPE());
+		if (bit == cgra->memPE2Bank.end())
+			continue;
+		homeBankCounts[CGRA::canonicalBankKey(bit->second)]++;
+	}
+	if (homeBankCounts.empty())
+		return;
+
+	// Use one stable, normalized preference rather than charging once per
+	// already-placed access. The latter made the meaning of the knob grow with
+	// unroll factor and node order. Lexicographic tie-breaking keeps mapping
+	// deterministic when two banks have the same count.
+	for (DataPath *dp : candidateDests)
+	{
+		auto bit = cgra->memPE2Bank.find(dp->getPE());
+		if (bit == cgra->memPE2Bank.end())
+			continue;
+		dpPenaltyMap[dp] += bankAffinityPenalty(
+			homeBankCounts, CGRA::canonicalBankKey(bit->second), bankAffinityCost);
 	}
 }
 

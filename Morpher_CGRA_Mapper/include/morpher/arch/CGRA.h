@@ -199,6 +199,10 @@ public:
 	// arrays.
 	unordered_map<int,int> perNodeAddrOverride;
 	void buildMemPE2Bank();
+	// Canonical (time-step-independent) bank identity: wrapper name minus the
+	// "-T<n>" suffix. CGRA modules are replicated per time step, so the bank
+	// Module* differs across t even for one physical bank.
+	static string canonicalBankKey(Module *bank);
 	bool SolveLayout(class DFG *dfg, const LayoutSolverOpts &opts,
 					 const string &agiSubgraphPath, const string &decisionPath);
 	void WriteMemAllocTxt(const string &fileName);

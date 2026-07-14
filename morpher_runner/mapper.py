@@ -29,18 +29,6 @@ def mem_alloc_path(context):
   return os.path.join(context.mapper_kernel, "%s_mem_alloc.txt" % context.kernel)
 
 
-def _staged_dfg_contains_vector_ops(context):
-  dfg_path = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel)
-  if not os.path.isfile(dfg_path):
-    return False
-  root = ET.fromstring("<Root>\n%s\n</Root>" % Path(dfg_path).read_text(encoding="utf-8"))
-  for op_elem in root.findall(".//OP"):
-    op_text = (op_elem.text or "").strip()
-    if op_text.startswith("V"):
-      return True
-  return False
-
-
 def _is_mapper_memory_op(op_text):
   op = (op_text or "").strip()
   if "OLOAD" in op or "OSTORE" in op:
@@ -159,10 +147,6 @@ def build_mapper_commands(context):
 
   template_arch = resolve_arch_template_path(context)
   mem_alloc = mem_alloc_path(context)
-  context.selected_simd_artifact_only = (
-    getattr(context, "selected_simd_artifact_only", False)
-    or _staged_dfg_contains_vector_ops(context)
-  )
   emit_binary = False
   pf_node_order = resolve_pf_node_order(context)
   mapper_common_args = [
@@ -240,6 +224,9 @@ def build_mapper_commands(context):
     mapper_common_args += ["--layout_solver", "1"]
   if getattr(config, "replicate_data", False):
     mapper_common_args += ["--replicate_data", "1"]
+  bank_affinity_cost = int(getattr(config, "bank_affinity_cost", 0) or 0)
+  if bank_affinity_cost:
+    mapper_common_args += ["--bank_affinity_cost", str(bank_affinity_cost)]
 
   commands = []
   mapper_arch = template_arch

@@ -817,11 +817,13 @@ void LiveOutReportIntermediateVar(const char* varname, uint32_t value){
 	std::string varname_str(varname);
 	//cout << "Call LiveOutReportIntermediateVar var name:" << varname_str << "Value:" <<value << "\n";
 	uint8_t* value_ptr = (uint8_t*)&value;
-	for(int i=0; i<4; i++){
-		data_morpher[varname_str].pre_data.push_back(0);
-		data_morpher[varname_str].post_data.push_back(value_ptr[i]);
-//		data_morpher[varname_str].post_data[i] = value_ptr[i];
-	}
+	// Intermediate live-outs are scalar values, not an append-only sequence.
+	// A value can have more than one LCSSA user at a loop exit; repeated reports
+	// for that logical value must therefore replace the same four-byte slot.
+	// Appending here used to manufacture extra expected-memory slots that had no
+	// corresponding OSTORE in the DFG.
+	data_morpher[varname_str].pre_data.assign(sizeof(value), 0);
+	data_morpher[varname_str].post_data.assign(value_ptr, value_ptr + sizeof(value));
 }
 
 void MorpherVectorAccumulatorInit(const char* varname, uint32_t value){
@@ -831,4 +833,3 @@ void MorpherVectorAccumulatorInit(const char* varname, uint32_t value){
 void MorpherVectorAccumulatorExit(const char* varname, uint32_t value){
 	LiveOutReportIntermediateVar(varname, value);
 }
-

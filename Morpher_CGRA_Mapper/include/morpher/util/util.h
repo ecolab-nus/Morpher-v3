@@ -60,7 +60,6 @@ struct arguments
 	int pf_debug_dumps = 0; // 1: write per-iteration mapping.csv/routeInfo.log/congestion.info debug dumps
 	int rut_recovery_seed = 1; // deterministic seed for PF same-II rut recovery perturbations
 	std::string pf_node_order = "default"; // default | mem_first
-	std::string recmin_policy = "path"; // retained for CLI compatibility; final-graph path analysis is mandatory
 	std::string spm_mode = "on"; // on | off | auto
 	std::string arch_name = "";
 	bool proximity_sort = true; // sort candidate DPs by Manhattan dist to parent centroid before A* estimation
@@ -69,6 +68,7 @@ struct arguments
 	int layout_solver = 0; // 1: enable post-mapping data layout solver
 	int replicate_data = 0; // 1: allow replicating read-only arrays across banks
 	std::string agi_subgraph = ""; // path to *_AGI_subgraph.xml (auto-discovered if empty)
+	int bank_affinity_cost = 0; // >0: soft penalty for placing a LD/ST away from the dominant bank of already-placed same-array accesses (0=off)
 };
 
 inline arguments parse_arguments(int argn, char *argc[]){
@@ -118,7 +118,6 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<int>("", "--pf_debug_dumps", "write per-iteration mapping.csv/routeInfo.log/congestion.info dumps (1=on, 0=off)", 0)
 					.add_option<int>("", "--rut_recovery_seed", "deterministic seed for same-II rut recovery perturbations", 1)
 					.add_option<std::string>("", "--pf_node_order", "PathFinder node ordering policy: default|mem_first", "default")
-					.add_option<std::string>("", "--recmin_policy", "Deprecated compatibility option; final-graph path RecMin is always used", "path")
 					.add_option<std::string>("", "--spm_mode", "SPM modeling mode: on|off|auto", "on")
 					.add_option<std::string>("", "--arch_name", "architecture name", "")
 				.add_option<int>("", "--proximity_sort", "sort candidate DPs by proximity to parent centroid (1=on, 0=off)", 1)
@@ -127,6 +126,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 				.add_option<int>("", "--layout_solver", "enable post-mapping layout solver (1=on, 0=off)", 0)
 				.add_option<int>("", "--replicate_data", "allow replicating read-only arrays across banks (1=on, 0=off)", 0)
 				.add_option<std::string>("", "--agi_subgraph", "path to the AGI sub-graph XML (auto-discovered when empty)", "")
+				.add_option<int>("", "--bank_affinity_cost", "soft cost for placing a LD/ST away from its array's dominant placed bank (0=off)", 0)
 			        .parse(argn, argc);
 
 	ret.dfg_filename = args.get_option<std::string>("--dfg");
@@ -258,12 +258,6 @@ inline arguments parse_arguments(int argn, char *argc[]){
 		std::cerr << "Error: --pf_node_order must be one of: default, mem_first.\n";
 		exit(EXIT_FAILURE);
 	}
-	ret.recmin_policy = args.get_option<std::string>("--recmin_policy");
-	if (ret.recmin_policy != "asap" && ret.recmin_policy != "path")
-	{
-		std::cerr << "Error: --recmin_policy must be one of: asap, path.\n";
-		exit(EXIT_FAILURE);
-	}
 	ret.spm_mode = args.get_option<std::string>("--spm_mode");
 	ret.use_json = true;
 	ret.arch_name = args.get_option<std::string>("--arch_name");
@@ -280,6 +274,11 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.layout_solver = args.get_option<int>("--layout_solver");
 	ret.replicate_data = args.get_option<int>("--replicate_data");
 	ret.agi_subgraph = args.get_option<std::string>("--agi_subgraph");
+	ret.bank_affinity_cost = args.get_option<int>("--bank_affinity_cost");
+	if (ret.bank_affinity_cost < 0)
+	{
+		throw std::invalid_argument("--bank_affinity_cost must be non-negative");
+	}
 	assert(ret.dfg_filename!= "");
 	assert(ret.json_file_name!= "");
 

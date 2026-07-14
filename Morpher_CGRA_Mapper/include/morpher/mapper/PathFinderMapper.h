@@ -145,7 +145,10 @@ struct dest_with_cost
 				   DataPath *dest, int destLat, DFGNode *node, int cost,
 				   int unmappedMemNodeCount, PathFinderMapper *hm) : parentStartLocs(parentStartLocs), alreadyMappedChilds(alreadyMappedChilds), dest(dest), destLat(destLat), node(node)
 	{
-		bestCost = sumBestCosts(unmappedMemNodeCount, hm);
+		// `cost` is a destination-level cost. Keep it outside the per-edge
+		// routing queues so it is charged exactly once, including for source
+		// nodes with no already-mapped parents.
+		bestCost = cost + sumBestCosts(unmappedMemNodeCount, hm);
 	}
 
 	int sumBestCosts(int unmappedMemNodeCount, PathFinderMapper *hm)
@@ -354,6 +357,10 @@ public:
 	bool enableMutexPaths = false;
 	int backTrackLimit = 4;
 	bool proximitySort = true;
+	// >0: soft destination-cost penalty for placing a LD/ST away from the
+	// dominant bank among already-placed same-array accesses (0=off). Prices
+	// bank incoherence like congestion instead of forbidding it.
+	int bankAffinityCost = 0;
 	int offSpmMemCandidateTopK = 0;
 	int pfCandidateTopK = 0;
 	int pfAstarExpansionBudget = 200000;
@@ -369,6 +376,7 @@ public:
 	bool LeastCostPathAstar(LatPort start, LatPort end, DataPath *endDP, std::vector<LatPort> &path, int &cost, DFGNode *node, std::map<Port *, std::set<DFGNode *>> &mutexPaths, DFGNode *currNode);
 
 	bool estimateRouting(DFGNode *node, std::priority_queue<dest_with_cost> &estimatedRoutes, DFGNode **failedNode);
+	void addBankAffinityPenalty(DFGNode *node, const std::vector<DataPath *> &candidateDests, std::map<DataPath *, int> &dpPenaltyMap);
 	int predictiveRoute(DFGNode *node,
 						DataPath *dest,
 						const std::map<DFGNode *, Port *> routingSourcesIn,

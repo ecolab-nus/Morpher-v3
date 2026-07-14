@@ -1081,6 +1081,8 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::SAMapper::getRandomDPCan
 		return candidateDests;
 	}
 
+	addBankAffinityPenalty(node, candidateDests, dpPenaltyMap);
+
 	// Compute parent centroid for proximity sort
 	int prox_cx = 0, prox_cy = 0, prox_n = 0;
 	if (proximitySort) {

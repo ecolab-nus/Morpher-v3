@@ -109,8 +109,8 @@ void print_mapper_arguments(const arguments &args)
 	std::cout << "pf_debug_dumps=" << args.pf_debug_dumps << "\n";
 	std::cout << "rut_recovery_seed=" << args.rut_recovery_seed << "\n";
 	std::cout << "pf_node_order=" << args.pf_node_order << "\n";
-	std::cout << "recmin_policy=" << args.recmin_policy << "\n";
 	std::cout << "proximity_sort=" << args.proximity_sort << "\n";
+	std::cout << "bank_affinity_cost=" << args.bank_affinity_cost << "\n";
 	std::cout << "fanout_route_policy=" << args.fanout_route_policy << "\n\n";
 
 	std::cout << "[SA mapper]\n";
@@ -378,6 +378,8 @@ int main(int argn, char *argc[])
 	sa_mapper->backTrackLimit = args.backtracklimit;
 	pf_mapper->proximitySort = args.proximity_sort;
 	sa_mapper->proximitySort = args.proximity_sort;
+	pf_mapper->bankAffinityCost = args.bank_affinity_cost;
+	sa_mapper->bankAffinityCost = args.bank_affinity_cost;
 	pf_mapper->setFanoutRoutePolicy(args.fanout_route_policy);
 	sa_mapper->setFanoutRoutePolicy(args.fanout_route_policy);
 	pf_mapper->offSpmMemCandidateTopK = args.off_spm_mem_candidate_topk;

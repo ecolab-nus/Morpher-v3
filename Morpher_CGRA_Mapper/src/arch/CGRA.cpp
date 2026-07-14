@@ -776,6 +776,27 @@ void CGRAXMLCompile::CGRA::buildMemPE2Bank()
 	}
 }
 
+// Canonical bank identity. CGRA modules are time-replicated by ParseCGRA
+// (II copies, each with its own wrapper instance named "<base>-T<n>"), so
+// the inner-SPM Module* pointer differs across time steps even though all
+// instances represent the same physical bank. Canonicalize by walking to
+// the wrapper parent and stripping the "-T<digits>" suffix.
+std::string CGRAXMLCompile::CGRA::canonicalBankKey(Module *bank)
+{
+	if (!bank) return std::string();
+	Module *wrapper = (Module *)bank->getParent();
+	std::string n = wrapper ? wrapper->getName() : bank->getName();
+	size_t pos = n.rfind("-T");
+	if (pos != std::string::npos && pos + 2 < n.size()) {
+		bool all_digits = true;
+		for (size_t i = pos + 2; i < n.size(); ++i) {
+			if (!isdigit((unsigned char)n[i])) { all_digits = false; break; }
+		}
+		if (all_digits) n.resize(pos);
+	}
+	return n;
+}
+
 void ExpandPattern(json &input, json &connections, json &submods)
 {
 
@@ -1515,7 +1536,14 @@ void CGRAXMLCompile::CGRA::EmitLayoutObservation(DFG *dfg, string fileName)
 				arr["ld_st_node_idxs"] = json::array();
 			}
 			if (!mapped_pe.is_null() && mapped_pe["is_memPE"])
-				arr["memPEs_touched"].push_back(mapped_pe);
+			{
+				json touched = mapped_pe;
+				auto bit = memPE2Bank.find(node.rootDP->getPE());
+				touched["bank"] = (bit != memPE2Bank.end())
+									  ? canonicalBankKey(bit->second)
+									  : std::string();
+				arr["memPEs_touched"].push_back(touched);
+			}
 			if (node.gep_offset >= 0)
 				arr["access_offsets"].push_back(node.gep_offset);
 			arr["ld_st_node_idxs"].push_back(node.idx);
@@ -1980,25 +2008,7 @@ bool CGRAXMLCompile::CGRA::SolveLayout(DFG *dfg, const LayoutSolverOpts &opts,
 			if (op.rfind(p, 0) == 0) return true;
 		return false;
 	};
-	// Canonical bank identity. CGRA modules are time-replicated by ParseCGRA
-	// (II copies, each with its own wrapper instance named "<base>-T<n>"), so
-	// the inner-SPM Module* pointer differs across time steps even though all
-	// instances represent the same physical bank. Canonicalize by walking to
-	// the wrapper parent and stripping the "-T<digits>" suffix.
-	auto bankKey = [](Module *bank) -> std::string {
-		if (!bank) return std::string();
-		Module *wrapper = (Module *)bank->getParent();
-		std::string n = wrapper ? wrapper->getName() : bank->getName();
-		size_t pos = n.rfind("-T");
-		if (pos != std::string::npos && pos + 2 < n.size()) {
-			bool all_digits = true;
-			for (size_t i = pos + 2; i < n.size(); ++i) {
-				if (!isdigit((unsigned char)n[i])) { all_digits = false; break; }
-			}
-			if (all_digits) n.resize(pos);
-		}
-		return n;
-	};
+	auto bankKey = [](Module *bank) { return canonicalBankKey(bank); };
 	std::map<std::string, std::vector<LdStInfo>> perArray;
 	for (DFGNode &n : dfg->nodeList) {
 		if (!isMemOpInclusive(n.op)) continue;
