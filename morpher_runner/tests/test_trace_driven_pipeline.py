@@ -12,6 +12,7 @@ from morpher_runner.dfg_generator import build_loop_interchange_command
 from morpher_runner.dfg_generator import build_unroll_command
 from morpher_runner.dfg_generator import validate_iter_manifest
 from morpher_runner.dfg_generator import validate_simd_manifest
+from morpher_runner.dfg_generator import validate_boundary_manifest
 from morpher_runner.artifact_simulator import resolve_simd_manifest
 from morpher_runner.mapper import build_mapper_commands
 from morpher_runner.simd_packer import remap_addr_trace
@@ -74,6 +75,23 @@ class ExternalizeAccessConfigTests(unittest.TestCase):
       "verified",
     )
 
+  def test_scalar_boundary_mode_requires_a_boolean_reset_contract(self):
+    self.assertEqual(
+      RunnerConfig._parse_boundary_canonicalization(
+        {
+          "dfg_pipeline": {
+            "boundary_canonicalization": "verified",
+            "treg_reset_on_launch": True,
+          }
+        }
+      ),
+      ("verified", True),
+    )
+    with self.assertRaisesRegex(RuntimeError, "must be boolean"):
+      RunnerConfig._parse_boundary_canonicalization(
+        {"dfg_pipeline": {"treg_reset_on_launch": "power_on"}}
+      )
+
 
 class TraceDrivenCommandTests(unittest.TestCase):
 
@@ -104,6 +122,35 @@ class TraceDrivenCommandTests(unittest.TestCase):
     )
     command = build_dfg_pass_command(context)
     self.assertIn("--externalize-access=agi_iter", command)
+
+  def test_scalar_boundary_config_passes_mac_and_launch_reset_contract(self):
+    config = RunnerConfig.from_yaml(
+      str(REPO_ROOT / "config" / "scalar_boundary_verified.yaml")
+    )
+    context = SimpleNamespace(
+      config=config,
+      kernel="probe",
+      dfg_gen_home=str(REPO_ROOT / "Morpher_DFG_Generator"),
+    )
+    command = build_dfg_pass_command(context)
+    self.assertIn("--canonicalize-loop-boundaries", command)
+    self.assertIn("--native-stateful-mac", command)
+    self.assertIn("--treg-reset-on-launch", command)
+    self.assertTrue(config.arch_treg_reset_on_launch)
+
+  def test_yaml_cannot_assert_reset_for_an_architecture_without_the_capability(self):
+    source = (REPO_ROOT / "config" / "scalar_boundary_verified.yaml").read_text(
+      encoding="utf-8"
+    )
+    source = source.replace(
+      "edge_mem_4x4/scalar_3side.json",
+      "edge_mem_4x4/scalar_4side.json",
+    )
+    with tempfile.TemporaryDirectory() as directory:
+      config_path = Path(directory) / "unsupported_reset.yaml"
+      config_path.write_text(source, encoding="utf-8")
+      with self.assertRaisesRegex(RuntimeError, "does not declare"):
+        RunnerConfig.from_yaml(str(config_path))
 
   def test_loop_interchange_command_uses_target_scoped_marker_pipeline(self):
     context = SimpleNamespace(
@@ -558,9 +605,157 @@ class TraceDrivenCommandTests(unittest.TestCase):
         ),
       )
 
+  def test_scalar_boundary_manifest_requires_reset_backed_treg_state(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "probe_PartPredDFG.xml").write_text(
+        '<DFG count="1"><Node idx="0" loop_carried_state="true" '
+        'state_storage="treg"><OP>MAC</OP><Outputs></Outputs></Node></DFG>\n',
+        encoding="utf-8",
+      )
+      manifest = {
+        "schema_version": 2,
+        "transform": "loop_boundary_canonicalization",
+        "status": "applied",
+        "launch": {
+          "execution": "before_each_loop_invocation",
+          "actions": [
+            {
+              "operation": "reset",
+              "storage": "treg",
+              "scope": "all_pes",
+              "value": 0,
+            }
+          ],
+        },
+        "original_node_count": 4,
+        "final_node_count": 1,
+        "index_map": [{"original_idx": 2, "final_idx": 0}],
+        "pruned_nodes": [0, 1, 3],
+        "pruned_artifact_vars": ["dead"],
+        "states": [
+          {
+            "mapped_node": 0,
+            "lanes": 1,
+            "value_bits": 32,
+            "storage": "treg",
+            "seed": {
+              "kind": "register_reset",
+              "value": 0,
+              "execution": "loop_launch",
+              "scheduled": False,
+            },
+            "drain": {
+              "execution": "loop_exit",
+              "scheduled": False,
+              "trace_vars": ["final"],
+            },
+          }
+        ],
+      }
+      (root / "probe_BOUNDARY_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+      )
+      mapping = validate_boundary_manifest(
+        SimpleNamespace(dfg_gen_kernel=str(root), kernel="probe")
+      )
+      self.assertEqual(mapping.reindex, {2: 0})
+      self.assertEqual(mapping.state_count, 1)
+      self.assertEqual(mapping.artifact_vars_pruned, frozenset({"dead"}))
+
+      manifest["states"][0]["seed"]["value"] = 1
+      (root / "probe_BOUNDARY_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+      )
+      with self.assertRaisesRegex(RuntimeError, "invalid TREG state"):
+        validate_boundary_manifest(
+          SimpleNamespace(dfg_gen_kernel=str(root), kernel="probe")
+        )
+
 
 @unittest.skipUnless(ARTIFACT_SIMULATOR.is_file(), "artifact_simulator is not built")
 class BoundaryContractSimulatorTests(unittest.TestCase):
+
+  def test_scalar_treg_boundary_contract_uses_reset_and_checks_liveout(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      (root / "dfg.xml").write_text(
+        '<DFG count="3">'
+        '<Node idx="0" ASAP="0" ALAP="0" CONST="2"><OP>ADD</OP>'
+        '<Inputs></Inputs><Outputs><Output idx="2" nextiter="0" type="I1"/>'
+        '</Outputs><RecParents></RecParents></Node>'
+        '<Node idx="1" ASAP="0" ALAP="0" CONST="3"><OP>ADD</OP>'
+        '<Inputs></Inputs><Outputs><Output idx="2" nextiter="0" type="I2"/>'
+        '</Outputs><RecParents></RecParents></Node>'
+        '<Node idx="2" ASAP="1" ALAP="1" loop_carried_state="true" '
+        'state_storage="treg"><OP>MAC</OP><Inputs><Input idx="0"/>'
+        '<Input idx="1"/></Inputs><Outputs></Outputs>'
+        '<RecParents></RecParents></Node></DFG>\n',
+        encoding="utf-8",
+      )
+      (root / "mapping.txt").write_text("functional placeholder\n", encoding="utf-8")
+      (root / "mem_alloc.txt").write_text("var_name,address\n", encoding="utf-8")
+      trace_lines = ["var_name,offset,pre-run-data,post-run-data"]
+      for offset in range(4):
+        trace_lines.append("out,%d,0,%d" % (offset, (12 >> (8 * offset)) & 0xff))
+      (root / "trace.txt").write_text("\n".join(trace_lines) + "\n", encoding="utf-8")
+      (root / "manifest.json").write_text(
+        json.dumps(
+          {
+            "schema_version": 2,
+            "transform": "loop_boundary_canonicalization",
+            "status": "applied",
+            "launch": {
+              "execution": "before_each_loop_invocation",
+              "actions": [
+                {
+                  "operation": "reset",
+                  "storage": "treg",
+                  "scope": "all_pes",
+                  "value": 0,
+                }
+              ],
+            },
+            "states": [
+              {
+                "mapped_node": 2,
+                "lanes": 1,
+                "value_bits": 32,
+                "storage": "treg",
+                "seed": {
+                  "kind": "register_reset",
+                  "value": 0,
+                  "execution": "loop_launch",
+                  "scheduled": False,
+                },
+                "drain": {
+                  "execution": "loop_exit",
+                  "scheduled": False,
+                  "trace_vars": ["out"],
+                },
+              }
+            ],
+          }
+        ),
+        encoding="utf-8",
+      )
+      result = subprocess.run(
+        [
+          str(ARTIFACT_SIMULATOR),
+          "--dfg", str(root / "dfg.xml"),
+          "--mapping", str(root / "mapping.txt"),
+          "--mem-alloc", str(root / "mem_alloc.txt"),
+          "--trace", str(root / "trace.txt"),
+          "--boundary-manifest", str(root / "manifest.json"),
+          "--max-iters", "2",
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+      )
+      self.assertEqual(result.returncode, 0, result.stdout)
+      self.assertIn("Boundary Validation: Matches::1, Mismatches::0", result.stdout)
 
   def run_fixture(self, lane2_expected=10, seed2=0):
     with tempfile.TemporaryDirectory() as directory:

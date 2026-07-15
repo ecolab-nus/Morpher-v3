@@ -111,6 +111,26 @@ bool DFG::parseXML(std::string fileName)
 		{
 			currDFGNode.simd_lanes = simdLanes;
 		}
+		const char *loopCarriedState = nullptr;
+		if (node->QueryStringAttribute("loop_carried_state", &loopCarriedState) == XML_SUCCESS &&
+			loopCarriedState && std::string(loopCarriedState) == "true")
+		{
+			currDFGNode.loop_carried_state = true;
+		}
+		const char *stateStorage = nullptr;
+		bool hasStateStorage = false;
+		if (node->QueryStringAttribute("state_storage", &stateStorage) == XML_SUCCESS && stateStorage)
+		{
+			hasStateStorage = true;
+			const std::string storage(stateStorage);
+			if (storage != "treg" && storage != "explicit_recurrence")
+			{
+				throw std::runtime_error("Unsupported loop state storage on DFG node " +
+					std::to_string(idx) + ": " + storage);
+			}
+			currDFGNode.loop_carried_state = true;
+			currDFGNode.stateful_treg = storage == "treg";
+		}
 		const char *simdLaneSources = nullptr;
 		if (node->QueryStringAttribute("simd_lane_sources", &simdLaneSources) == XML_SUCCESS &&
 			simdLaneSources)
@@ -128,6 +148,16 @@ bool DFG::parseXML(std::string fileName)
 		const char *opName = op->GetText();
 		output_ss << ",op=" << opName << "\n";
 		currDFGNode.op = std::string(opName);
+		if (currDFGNode.loop_carried_state && !hasStateStorage)
+		{
+			throw std::runtime_error("Loop-carried DFG node " + std::to_string(idx) +
+				" is missing state_storage");
+		}
+		if (currDFGNode.stateful_treg && currDFGNode.op != "MAC")
+		{
+			throw std::runtime_error("TREG-backed DFG node " + std::to_string(idx) +
+				" must use MAC");
+		}
 
 		XMLElement *base_pointer_name = node->FirstChildElement("BasePointerName");
 		if(base_pointer_name){

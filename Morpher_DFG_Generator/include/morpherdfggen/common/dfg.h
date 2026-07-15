@@ -516,6 +516,21 @@ class DFG{
 			void removeIteratorOnlyControl(std::map<dfgNode*, dfgNode*>* cmergeCtrlInputs = NULL);
 			void packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 						  bool scalarBroadcast);
+			struct BoundaryState {
+				dfgNode *mappedNode = NULL;
+				int lanes = 1;
+				int valueBits = 32;
+				std::string storage;
+				std::string seedKind;
+				uint64_t seedValue = 0;
+				std::vector<std::string> seedTraceVars;
+				std::vector<std::string> finalTraceVars;
+			};
+			void writeBoundaryManifest();
+			std::vector<BoundaryState> boundaryStates;
+			std::set<std::string> boundaryPrunedArtifactVars;
+			std::unordered_map<dfgNode*, int> boundaryOriginalIndex;
+			int boundaryOriginalNodeCount = 0;
 			bool removeAGI = false;
 			bool iteratorExternalized = false;
 			// Post-externalization: which boundary artifact vars survive and

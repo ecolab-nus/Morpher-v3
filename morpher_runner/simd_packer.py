@@ -24,6 +24,14 @@ class SimdMapping:
   host_modeled_boundaries: int = 0
 
 
+@dataclass(frozen=True)
+class BoundaryMapping:
+  reindex: dict = None
+  artifact_vars_pruned: frozenset = frozenset()
+  boundary_trace_vars: frozenset = frozenset()
+  state_count: int = 0
+
+
 def remap_agi_subgraph_externalidx(search_dir: Path, reindex: dict[int, int]) -> None:
   """Remap AGI-boundary references into the final C++ manifest index space."""
   if not reindex:

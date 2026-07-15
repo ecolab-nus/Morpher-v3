@@ -46,6 +46,13 @@ Important behavior:
   control component after instrumentation and emits a reindex manifest. It
   fails when that component reaches remaining computation, memory, predicate,
   recurrence, or reduction behavior.
+- `-canonicalize-loop-boundaries` recognizes direct `i32` accumulator PHIs,
+  removes their launch/select/backedge/exit scaffolding, and emits a general
+  boundary manifest. `-native-stateful-mac` plus
+  `-treg-reset-on-launch` lowers zero-seeded MUL+ADD recurrences to MAC; the
+  runner emits the latter flag only when the selected architecture declares
+  `ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH`. The v2 boundary manifest records
+  the resulting all-PE TREG reset before every dynamic loop invocation.
 - `-simd-pack=<lanes>` runs after instrumentation, packs only complete closed
   lane-isomorphic subgraphs, and emits a SIMD manifest for trace remapping.
   The v1 path rejects control, recurrence, reduction, broadcast, partial-lane,

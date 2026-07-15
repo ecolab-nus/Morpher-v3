@@ -38,6 +38,10 @@ public:
 	bool simd_packed = false;
 	int simd_lanes = 1;
 	std::vector<int> simd_lane_sources;
+	// Stateful TREG operations own the physical (X,Y) PE across every modulo
+	// time slice.  Two independent states may not alias the same hardware TREG.
+	bool loop_carried_state = false;
+	bool stateful_treg = false;
 	std::vector<DFGNode *> parents;
 	std::vector<DFGNode *> phiParents;
 	std::vector<DFGNode *> recParents;

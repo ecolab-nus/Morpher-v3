@@ -148,6 +148,7 @@ Default config: `config/default.yaml`. Provided configs include:
 | `config/default.yaml` | Default scalar architecture with automatic bounded unroll and original/interchanged loop-order search, plus conservative C++ AGI/iterator externalization. |
 | `config/scalar.yaml` | Baseline retaining AGI and iterator/control nodes. |
 | `config/scalar_agi_pruned.yaml` | Explicit opt-in scalar config that enables C++ DFG-side AGI removal only. |
+| `config/scalar_boundary_verified.yaml` | Scalar steady-state mapping with verified accumulator boundary removal and zero-reset native MAC state. |
 | `config/simd4_verified_agi_iter.yaml` | 4-lane verified SIMD plus restricted iterator externalization; also compares original and LLVM-interchanged perfect-nest candidates. |
 | `config/simd4_verified_vred.yaml` | 4-lane reduction-axis SIMD with a vector partial-sum recurrence and an exit-only VRED contract. |
 | `config/simd4_verified_vred_u8.yaml` | Same reduction-axis path at factor 8: two SIMD-4 product groups are combined before one vector recurrence. |
@@ -179,6 +180,8 @@ Default config: `config/default.yaml`. Provided configs include:
 | `max_test_samples` | Integer `>= 0` | required in provided configs | Trace-generation limit and simulator sample cap. |
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
 | `dfg_pipeline.externalize_access` | `off`, `agi`, `agi_iter` | `off` | Trace-driven C++ access externalization. `agi` removes address-generation nodes before instrumentation. `agi_iter` additionally removes the iterator/control component only when it has no edge to surviving work; addresses are trace-driven and the iterator manifest remaps their final node indices. It rejects data, predicate, recurrence, or reduction boundaries. |
+| `dfg_pipeline.boundary_canonicalization` | `off`, `verified` | `off` | Recognize canonical `i32` scalar loop-carried accumulators, omit their PHI launch/exit scaffolding from the mapped graph, and emit a validated boundary manifest. Unsupported shapes remain unchanged. |
+| `dfg_pipeline.treg_reset_on_launch` | Boolean | `false` | Request reset-backed lowering. It is accepted only when the selected architecture declares `ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH: true`; with native `MAC`, a zero seed may then fuse to stateful MAC. A power-on-only reset is insufficient. |
 | `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi` or `agi_iter`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
 | `source_template.enabled` | `off`, `auto`, Boolean | `off` | Source-bound template lowering. `auto` stages an accepted synthesized template or falls back to normal DFG generation. |
 | `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |

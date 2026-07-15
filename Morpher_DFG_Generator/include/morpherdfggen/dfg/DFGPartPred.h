@@ -24,6 +24,8 @@ public :
 	// Iterator externalization with access to the CMERGE control-input map,
 	// enabling predicate rewires for register-carried (unrolled) reductions.
 	void externalizeIteratorControl() { removeIteratorOnlyControl(&cmergeCtrlInputs); }
+	int canonicalizeScalarAccumulatorBoundaries(bool nativeMAC,
+		bool tregResetOnLaunch);
 
 	dfgNode* combineConditionAND(dfgNode* brcond, dfgNode* selcond, dfgNode* child);
 	bool checkBackEdge(dfgNode* src, dfgNode* dest);
@@ -68,6 +70,7 @@ public :
 
 	void PrintOuts(){
 		if (this->removeAGI) removeAGINodes();
+		writeBoundaryManifest();
 		if (!this->suppressDOT) {
 			printDOT(this->kernelname + "_PartPredDFG.dot");
 			printDOTsimple(this->kernelname + "_PartPredDFG_simple.dot");

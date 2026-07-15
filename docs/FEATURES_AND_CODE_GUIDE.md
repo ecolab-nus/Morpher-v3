@@ -166,6 +166,7 @@ All keys are loaded in `morpher_runner/context.py`.
 | `sa_candidate_topk` | SA candidate limit |
 | `enable_simulation` | Run instrumentation + simulator when true |
 | `spm_mode` | Mapper SPM handling mode |
+| `bank_affinity_cost` | >0: soft mapper cost for placing a LD/ST away from the dominant bank among its array's already-placed accesses (0=off, default). Charged once per destination; never excludes a bank |
 | `llvm_debug_type` | LLVM debug mode field consumed by config loader |
 | `remove_agi` | Pass-through flag for DFG generation (`-remove-agi`) |
 

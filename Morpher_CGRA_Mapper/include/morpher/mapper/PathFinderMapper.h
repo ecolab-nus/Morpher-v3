@@ -376,6 +376,7 @@ public:
 	bool LeastCostPathAstar(LatPort start, LatPort end, DataPath *endDP, std::vector<LatPort> &path, int &cost, DFGNode *node, std::map<Port *, std::set<DFGNode *>> &mutexPaths, DFGNode *currNode);
 
 	bool estimateRouting(DFGNode *node, std::priority_queue<dest_with_cost> &estimatedRoutes, DFGNode **failedNode);
+	bool isStatefulTregDestinationAvailable(DFGNode *node, DataPath *candidate) const;
 	void addBankAffinityPenalty(DFGNode *node, const std::vector<DataPath *> &candidateDests, std::map<DataPath *, int> &dpPenaltyMap);
 	int predictiveRoute(DFGNode *node,
 						DataPath *dest,

@@ -107,6 +107,8 @@ class dfgNode{
 			std::string simdAccumulatorInitVar = "";
 			std::string simdAccumulatorExitVar = "";
 			std::string simdAccumulatorSeedVar = "";
+			bool statefulTreg = false;
+			bool loopCarriedState = false;
 			bool simdPacked = false;
 			std::vector<int> simdLaneSources;
 
@@ -298,6 +300,10 @@ class dfgNode{
 			std::string getSimdAccumulatorInitVar(){return simdAccumulatorInitVar;}
 			std::string getSimdAccumulatorExitVar(){return simdAccumulatorExitVar;}
 			std::string getSimdAccumulatorSeedVar(){return simdAccumulatorSeedVar;}
+			bool isStatefulTreg(){return statefulTreg;}
+			void setStatefulTreg(bool value){statefulTreg = value;}
+			bool isLoopCarriedState(){return loopCarriedState;}
+			void setLoopCarriedState(bool value){loopCarriedState = value;}
 			bool getSimdPacked() const {return simdPacked;}
 			const std::vector<int>& getSimdLaneSources() const {return simdLaneSources;}
 			void setSimdInfo(int group, int lanes){

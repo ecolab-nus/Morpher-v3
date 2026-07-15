@@ -4,6 +4,9 @@
   search, and conservative C++ AGI/iterator externalization.
 - `scalar.yaml`: baseline that retains AGI and iterator/control nodes.
 - `scalar_agi_pruned.yaml`: C++ AGI externalization without iterator removal.
+- `scalar_boundary_verified.yaml`: verified scalar accumulator boundary
+  canonicalization and native MAC lowering on an architecture that explicitly
+  guarantees per-launch TREG reset.
 - `simd4_verified_agi_iter.yaml`: verified SIMD-4 plus conservative iterator
   externalization and optional loop-interchange candidates.
 - `simd4_verified_vred.yaml`: verified SIMD-4 reduction path at factor 4.

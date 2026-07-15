@@ -11728,6 +11728,118 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 				 << " groups; remaining nodes=" << NodeList.size() << "\n";
 }
 
+void DFG::writeBoundaryManifest()
+{
+	if (boundaryStates.empty())
+		return;
+
+	for (size_t index = 0; index < NodeList.size(); ++index)
+		NodeList[index]->setIdx((int)index);
+
+	std::set<std::string> retainedTraceVars;
+	for (const BoundaryState& state : boundaryStates)
+	{
+		if (!state.mappedNode ||
+			std::find(NodeList.begin(), NodeList.end(), state.mappedNode) == NodeList.end())
+			report_fatal_error("Boundary state refers to a removed mapped node");
+		retainedTraceVars.insert(state.seedTraceVars.begin(), state.seedTraceVars.end());
+		retainedTraceVars.insert(state.finalTraceVars.begin(), state.finalTraceVars.end());
+	}
+
+	std::ofstream manifestFile(name + "_BOUNDARY_manifest.json");
+	if (!manifestFile.is_open())
+		report_fatal_error("Could not open boundary manifest for writing");
+	manifestFile << "{\n";
+	manifestFile << "  \"schema_version\": 2,\n";
+	manifestFile << "  \"transform\": \"loop_boundary_canonicalization\",\n";
+	manifestFile << "  \"status\": \"applied\",\n";
+	bool resetsTregOnLaunch = false;
+	for (const BoundaryState& state : boundaryStates)
+		resetsTregOnLaunch |= state.storage == "treg";
+	manifestFile << "  \"launch\": {\"execution\": \"before_each_loop_invocation\", "
+		<< "\"actions\": [";
+	if (resetsTregOnLaunch)
+		manifestFile << "{\"operation\": \"reset\", \"storage\": \"treg\", "
+			<< "\"scope\": \"all_pes\", \"value\": 0}";
+	manifestFile << "]},\n";
+	manifestFile << "  \"original_node_count\": " << boundaryOriginalNodeCount << ",\n";
+	manifestFile << "  \"final_node_count\": " << NodeList.size() << ",\n";
+	std::set<int> survivingOriginalIndices;
+	manifestFile << "  \"index_map\": [";
+	bool firstMap = true;
+	for (dfgNode *node : NodeList)
+	{
+		auto original = boundaryOriginalIndex.find(node);
+		if (original == boundaryOriginalIndex.end())
+			continue;
+		survivingOriginalIndices.insert(original->second);
+		if (!firstMap) manifestFile << ", ";
+		firstMap = false;
+		manifestFile << "{\"original_idx\": " << original->second
+			<< ", \"final_idx\": " << node->getIdx() << "}";
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"pruned_nodes\": [";
+	bool firstPruned = true;
+	for (int original = 0; original < boundaryOriginalNodeCount; ++original)
+	{
+		if (survivingOriginalIndices.count(original))
+			continue;
+		if (!firstPruned) manifestFile << ", ";
+		firstPruned = false;
+		manifestFile << original;
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"pruned_artifact_vars\": [";
+	bool firstVar = true;
+	for (const std::string& var : boundaryPrunedArtifactVars)
+	{
+		if (var.empty() || var == "NOT_A_MEM_OP" || retainedTraceVars.count(var))
+			continue;
+		if (!firstVar) manifestFile << ", ";
+		firstVar = false;
+		manifestFile << jsonString(var);
+	}
+	manifestFile << "],\n";
+	manifestFile << "  \"states\": [\n";
+	for (size_t stateIndex = 0; stateIndex < boundaryStates.size(); ++stateIndex)
+	{
+		const BoundaryState& state = boundaryStates[stateIndex];
+		if (stateIndex != 0) manifestFile << ",\n";
+		manifestFile << "    {\"mapped_node\": " << state.mappedNode->getIdx()
+			<< ", \"lanes\": " << state.lanes
+			<< ", \"value_bits\": " << state.valueBits
+			<< ", \"storage\": " << jsonString(state.storage)
+			<< ", \"seed\": {\"kind\": " << jsonString(state.seedKind);
+		if (state.seedKind == "constant" || state.seedKind == "register_reset")
+			manifestFile << ", \"value\": " << state.seedValue;
+		manifestFile << ", \"execution\": \"loop_launch\", \"scheduled\": false";
+		if (!state.seedTraceVars.empty())
+		{
+			manifestFile << ", \"trace_vars\": [";
+			for (size_t i = 0; i < state.seedTraceVars.size(); ++i)
+			{
+				if (i != 0) manifestFile << ", ";
+				manifestFile << jsonString(state.seedTraceVars[i]);
+			}
+			manifestFile << "]";
+		}
+		manifestFile << "}, \"drain\": {\"execution\": \"loop_exit\", "
+			"\"scheduled\": false, \"trace_vars\": [";
+		for (size_t i = 0; i < state.finalTraceVars.size(); ++i)
+		{
+			if (i != 0) manifestFile << ", ";
+			manifestFile << jsonString(state.finalTraceVars[i]);
+		}
+		manifestFile << "]}}";
+	}
+	manifestFile << "\n  ]\n";
+	manifestFile << "}\n";
+	llvm::outs() << "[boundary] Recorded " << boundaryStates.size()
+		<< " loop-carried state value(s) in " << name
+		<< "_BOUNDARY_manifest.json\n";
+}
+
 std::unordered_set<dfgNode *> DFG::getLineage(dfgNode *n)
 {
 

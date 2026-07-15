@@ -83,6 +83,18 @@ def resolve_simd_manifest(context):
   return matches[0] if matches else None
 
 
+def resolve_boundary_manifest(context):
+  matches = sorted(
+    glob.glob(os.path.join(context.mapper_kernel, "*_BOUNDARY_manifest.json"))
+  )
+  if len(matches) > 1:
+    raise RuntimeError(
+      "Expected at most one boundary manifest in %s, found %d."
+      % (context.mapper_kernel, len(matches))
+    )
+  return matches[0] if matches else None
+
+
 def build_artifact_sim_command(context, trace_file, validation_mode):
   kernel = context.kernel
   argv = [
@@ -103,6 +115,9 @@ def build_artifact_sim_command(context, trace_file, validation_mode):
   simd_manifest_path = resolve_simd_manifest(context)
   if simd_manifest_path is not None:
     argv.extend(["--simd-manifest", simd_manifest_path])
+  boundary_manifest_path = resolve_boundary_manifest(context)
+  if boundary_manifest_path is not None:
+    argv.extend(["--boundary-manifest", boundary_manifest_path])
   if validation_mode == "event_driven":
     argv.extend([
       "--arch",

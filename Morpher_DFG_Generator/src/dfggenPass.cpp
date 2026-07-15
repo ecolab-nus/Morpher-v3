@@ -123,6 +123,15 @@ static cl::opt<std::string> SIMDVectorOps(
 static cl::opt<bool> SIMDScalarBroadcast(
     "simd-scalar-broadcast", cl::init(false),
     cl::desc("Allow verified SIMD groups to consume one shared scalar input"));
+static cl::opt<bool> CanonicalizeLoopBoundaries(
+    "canonicalize-loop-boundaries", cl::init(false),
+    cl::desc("Replace verified scalar accumulator PHI scaffolding with steady-state recurrence state"));
+static cl::opt<bool> NativeStatefulMAC(
+    "native-stateful-mac", cl::init(false),
+    cl::desc("Fuse verified zero-seeded multiply-accumulate recurrences to native MAC"));
+static cl::opt<bool> TREGResetOnLaunch(
+    "treg-reset-on-launch", cl::init(false),
+    cl::desc("Target/runtime clears PE-local TREG state before every mapped-loop launch"));
 static cl::opt<bool> SuppressDFGDot(
     "suppress-dfg-dot", cl::init(false),
     cl::desc("Do not emit DFG DOT files; XML and mem allocation outputs are still emitted"));
@@ -3105,6 +3114,14 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 				LLVM_DEBUG(dbgs() << "\n[Skeleton.cpp][InstrumentInOutVars begin]\n");
 				LoopDFG->InstrumentInOutVars(F,mem_acceses,OLNodesWithPtrTyUsage,spm_base_address);
 				LLVM_DEBUG(dbgs() << "[Skeleton.cpp][InstrumentInOutVars end]\n\n");
+				if (CanonicalizeLoopBoundaries && SIMDPackLanes <= 1)
+				{
+					const int canonicalized =
+						LoopDFG->canonicalizeScalarAccumulatorBoundaries(
+							NativeStatefulMAC, TREGResetOnLaunch);
+					if (canonicalized > 0)
+						LoopDFG->classifyParents();
+				}
 				if (ExternalizeAccess == "agi_iter" && SIMDPackLanes <= 1)
 				{
 					LoopDFG->externalizeIteratorControl();

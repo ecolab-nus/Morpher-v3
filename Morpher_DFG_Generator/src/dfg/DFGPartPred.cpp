@@ -1653,6 +1653,12 @@ void DFGPartPred::printNewDFGXML() {
 			}
 			xmlFile << "\"";
 		}
+		if(node->isLoopCarriedState()){
+			xmlFile << " loop_carried_state=\"true\"";
+			xmlFile << " state_storage=\""
+				<< (node->isStatefulTreg() ? "treg" : "explicit_recurrence")
+				<< "\"";
+		}
 		xmlFile << ">\n";
 
 		std::string opName = HyCUBEInsStrings[node->getFinalIns()];
@@ -1882,6 +1888,246 @@ void DFGPartPred::printNewDFGXML() {
 
 }
 
+int DFGPartPred::canonicalizeScalarAccumulatorBoundaries(
+	bool nativeMAC, bool tregResetOnLaunch)
+{
+	struct Candidate
+	{
+		dfgNode *select = NULL;
+		dfgNode *initMerge = NULL;
+		dfgNode *backMerge = NULL;
+		dfgNode *update = NULL;
+		dfgNode *term = NULL;
+		dfgNode *product = NULL;
+		dfgNode *exitTransfer = NULL;
+		uint64_t seed = 0;
+		int valueBits = 32;
+		bool fuseMAC = false;
+	};
+
+	std::vector<Candidate> candidates;
+	if (boundaryOriginalIndex.empty())
+	{
+		boundaryOriginalNodeCount = (int)NodeList.size();
+		for (dfgNode *node : NodeList)
+			boundaryOriginalIndex[node] = node->getIdx();
+	}
+	for (dfgNode *select : NodeList)
+	{
+		PHINode *phi = select->getNode()
+			? dyn_cast<PHINode>(select->getNode()) : NULL;
+		if (!phi || select->getFinalIns() != SELECT || !currLoop ||
+			phi->getParent() != currLoop->getHeader() ||
+			phi->getNumIncomingValues() != 2 ||
+			!phi->getType()->isIntegerTy() ||
+			phi->getType()->getIntegerBitWidth() != 32 ||
+			select->getChildren().size() != 1 ||
+			select->getAncestors().size() != 2)
+			continue;
+
+		Value *seedValue = NULL;
+		Value *updateValue = NULL;
+		for (unsigned incoming = 0; incoming < phi->getNumIncomingValues(); ++incoming)
+		{
+			if (currLoop->contains(phi->getIncomingBlock(incoming)))
+				updateValue = phi->getIncomingValue(incoming);
+			else
+				seedValue = phi->getIncomingValue(incoming);
+		}
+		ConstantInt *seedConstant = dyn_cast_or_null<ConstantInt>(seedValue);
+		Instruction *updateInstruction = dyn_cast_or_null<Instruction>(updateValue);
+		if (!seedConstant || !updateInstruction)
+			continue;
+		BinaryOperator *updateBinary = dyn_cast<BinaryOperator>(updateInstruction);
+		if (!updateBinary || updateBinary->getOpcode() != Instruction::Add ||
+			(updateBinary->getOperand(0) != phi && updateBinary->getOperand(1) != phi))
+			continue;
+
+		dfgNode *update = findNode(updateInstruction);
+		if (!update || select->getChildren().front() != update ||
+			update->getFinalIns() != ADD)
+			continue;
+
+		dfgNode *initMerge = NULL;
+		dfgNode *backMerge = NULL;
+		bool valid = true;
+		for (dfgNode *merge : select->getAncestors())
+		{
+			if (merge->getFinalIns() != CMERGE ||
+				merge->getChildren().size() != 1 ||
+				merge->getChildren().front() != select ||
+				cmergePHINodes[merge] != select)
+			{
+				valid = false;
+				break;
+			}
+			auto dataIt = cmergeDataInputs.find(merge);
+			if (dataIt != cmergeDataInputs.end() && dataIt->second == update &&
+				merge->childBackEdgeMap[select])
+				backMerge = merge;
+			else if (merge->hasConstantVal() &&
+				(uint64_t)(uint32_t)merge->getConstantVal() == seedConstant->getZExtValue())
+				initMerge = merge;
+			else
+				valid = false;
+		}
+		if (!valid || !initMerge || !backMerge ||
+			cmergeCtrlInputs.find(initMerge) == cmergeCtrlInputs.end() ||
+			cmergeCtrlInputs[initMerge]->getNameType() != "LOOPSTART")
+			continue;
+
+		dfgNode *exitTransfer = NULL;
+		for (dfgNode *child : update->getChildren())
+		{
+			if (child == backMerge)
+				continue;
+			if (exitTransfer || child->getNameType() != "OutLoopSTORE" ||
+				child->getAncestors().size() != 1 || !child->getChildren().empty())
+			{
+				valid = false;
+				break;
+			}
+			exitTransfer = child;
+		}
+		if (!valid || !exitTransfer || update->getChildren().size() != 2 ||
+			exitTransfer->getArrBasePtr().empty() ||
+			exitTransfer->getArrBasePtr() == "NOT_A_MEM_OP")
+			continue;
+
+		dfgNode *term = NULL;
+		for (dfgNode *parent : update->getAncestors())
+		{
+			if (parent == select)
+				continue;
+			if (term)
+			{
+				valid = false;
+				break;
+			}
+			term = parent;
+		}
+		if (!valid || !term || update->getAncestors().size() != 2)
+			continue;
+
+		Candidate candidate;
+		candidate.select = select;
+		candidate.initMerge = initMerge;
+		candidate.backMerge = backMerge;
+		candidate.update = update;
+		candidate.term = term;
+		candidate.exitTransfer = exitTransfer;
+		candidate.seed = seedConstant->getZExtValue();
+		candidate.valueBits = phi->getType()->getIntegerBitWidth();
+		candidate.product = term;
+		candidate.fuseMAC = nativeMAC && tregResetOnLaunch && candidate.seed == 0 &&
+			term->getFinalIns() == MUL && term->getChildren().size() == 1 &&
+			term->getChildren().front() == update &&
+			term->getAncestors().size() == 2 &&
+			term->getAncestors()[0] != term->getAncestors()[1];
+		candidates.push_back(candidate);
+	}
+
+	std::unordered_set<dfgNode*> removed;
+	for (Candidate& candidate : candidates)
+	{
+		candidate.update->setLoopCarriedState(true);
+		BoundaryState boundary;
+		boundary.mappedNode = candidate.update;
+		boundary.valueBits = candidate.valueBits;
+		boundary.seedValue = candidate.seed;
+		boundary.finalTraceVars.push_back(candidate.exitTransfer->getArrBasePtr());
+		boundaryPrunedArtifactVars.insert(candidate.exitTransfer->getArrBasePtr());
+
+		candidate.select->removeChild(candidate.update);
+		candidate.update->removeAncestor(candidate.select);
+		if (candidate.fuseMAC)
+		{
+			candidate.product->removeChild(candidate.update);
+			candidate.update->removeAncestor(candidate.product);
+			const std::vector<dfgNode*> productParents = candidate.product->getAncestors();
+			for (size_t operand = 0; operand < productParents.size(); ++operand)
+			{
+				dfgNode *parent = productParents[operand];
+				parent->addChildNode(candidate.update);
+				candidate.update->addAncestorNode(parent);
+				Edge2OperandIdxMap[parent][candidate.update] = (int)operand + 1;
+			}
+			candidate.update->setFinalIns(MAC);
+			candidate.update->setStatefulTreg(true);
+			boundary.storage = "treg";
+			boundary.seedKind = "register_reset";
+			removed.insert(candidate.product);
+		}
+		else
+		{
+			candidate.update->addChildNode(
+				candidate.update, EDGE_TYPE_DATA, true, false, true);
+			candidate.update->addAncestorNode(
+				candidate.update, EDGE_TYPE_DATA, true, false, true);
+			Edge2OperandIdxMap[candidate.update][candidate.update] = 1;
+			Edge2OperandIdxMap[candidate.term][candidate.update] = 2;
+			boundary.storage = "explicit_recurrence";
+			boundary.seedKind = "constant";
+		}
+		boundaryStates.push_back(std::move(boundary));
+		removed.insert(candidate.select);
+		removed.insert(candidate.initMerge);
+		removed.insert(candidate.backMerge);
+		removed.insert(candidate.exitTransfer);
+	}
+
+	if (removed.empty())
+		return 0;
+
+	for (dfgNode *node : NodeList)
+	{
+		if (removed.count(node))
+			continue;
+		const std::vector<dfgNode*> parents = node->getAncestors();
+		for (dfgNode *parent : parents)
+			if (removed.count(parent))
+			{
+				parent->removeChild(node);
+				node->removeAncestor(parent);
+			}
+		const std::vector<dfgNode*> children = node->getChildren();
+		for (dfgNode *child : children)
+			if (removed.count(child))
+			{
+				node->removeChild(child);
+				child->removeAncestor(node);
+			}
+		node->parentClassification.clear();
+		node->childClassification.clear();
+	}
+
+	edgeList.erase(std::remove_if(edgeList.begin(), edgeList.end(),
+		[&removed](Edge& edge) {
+			return removed.count(edge.getSrc()) || removed.count(edge.getDest());
+		}), edgeList.end());
+	NodeList.erase(std::remove_if(NodeList.begin(), NodeList.end(),
+		[&removed](dfgNode *node) { return removed.count(node); }), NodeList.end());
+	for (auto it = OutLoopNodeMap.begin(); it != OutLoopNodeMap.end(); )
+		if (removed.count(it->second)) it = OutLoopNodeMap.erase(it); else ++it;
+	for (auto it = OutLoopNodeMapReverse.begin(); it != OutLoopNodeMapReverse.end(); )
+		if (removed.count(it->first)) it = OutLoopNodeMapReverse.erase(it); else ++it;
+	for (auto it = cmergeCtrlInputs.begin(); it != cmergeCtrlInputs.end(); )
+		if (removed.count(it->first)) it = cmergeCtrlInputs.erase(it); else ++it;
+	for (auto it = cmergeDataInputs.begin(); it != cmergeDataInputs.end(); )
+		if (removed.count(it->first)) it = cmergeDataInputs.erase(it); else ++it;
+	for (auto it = cmergePHINodes.begin(); it != cmergePHINodes.end(); )
+		if (removed.count(it->first)) it = cmergePHINodes.erase(it); else ++it;
+	for (size_t index = 0; index < NodeList.size(); ++index)
+		NodeList[index]->setIdx((int)index);
+
+	llvm::outs() << "[boundary] Canonicalized " << candidates.size()
+		<< " scalar accumulator(s), fused "
+		<< std::count_if(candidates.begin(), candidates.end(),
+			[](const Candidate& candidate) { return candidate.fuseMAC; })
+		<< " native MAC(s); remaining nodes=" << NodeList.size() << "\n";
+	return (int)candidates.size();
+}
+
 int DFGPartPred::classifyParents() {
 
 	dfgNode* node;
@@ -1902,7 +2148,8 @@ int DFGPartPred::classifyParents() {
 			Instruction* ins;
 			Value* parentIns;
 
-			if (parent == node && !node->getSimdAccumulatorOp().empty()) {
+			if (parent == node &&
+				(!node->getSimdAccumulatorOp().empty() || node->isLoopCarriedState())) {
 				node->parentClassification[1] = parent;
 				continue;
 			}

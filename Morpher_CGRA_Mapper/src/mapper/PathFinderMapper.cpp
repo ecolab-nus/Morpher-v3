@@ -852,6 +852,14 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 		}
 	}
 
+	if (node->stateful_treg)
+	{
+		candidateDests.erase(
+			std::remove_if(candidateDests.begin(), candidateDests.end(),
+				[&](DataPath *dp) { return !isStatefulTregDestinationAvailable(node, dp); }),
+			candidateDests.end());
+	}
+
 	LOG(ROUTE)<< "Candidate Dests = " << candidateDests.size() << "\n";
 	if (candidateDests.empty())
 		return false;
@@ -1169,6 +1177,26 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 	//	LOG(ROUTE) << "EstimateEouting end!\n";
 	//	if(estimatedRoutes.empty()) assert(*failedNode!=NULL);
 	return !estimatedRoutes.empty();
+}
+
+bool CGRAXMLCompile::PathFinderMapper::isStatefulTregDestinationAvailable(
+	DFGNode *node, DataPath *candidate) const
+{
+	if (!node->stateful_treg)
+		return true;
+
+	PE *candidatePE = candidate->getPE();
+	for (const DFGNode &other : dfg->nodeList)
+	{
+		if (&other == node || !other.stateful_treg || other.rootDP == nullptr)
+			continue;
+		PE *otherPE = other.rootDP->getPE();
+		// The time-expanded CGRA contains a PE object per modulo slot, but TREG
+		// is physical state shared by all slots at the same spatial coordinate.
+		if (otherPE->X == candidatePE->X && otherPE->Y == candidatePE->Y)
+			return false;
+	}
+	return true;
 }
 
 bool CGRAXMLCompile::PathFinderMapper::Route(DFGNode *node,

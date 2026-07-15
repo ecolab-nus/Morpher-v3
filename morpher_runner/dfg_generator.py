@@ -15,6 +15,7 @@ from morpher_runner.simd_packer import remap_agi_subgraph_externalidx
 from morpher_runner.simd_packer import reindex_addr_trace
 from morpher_runner.simd_packer import remap_addr_trace
 from morpher_runner.simd_packer import SimdMapping
+from morpher_runner.simd_packer import BoundaryMapping
 from morpher_runner.utils import build_clang_ir_command
 from morpher_runner.utils import BankSizeTooSmallError
 from morpher_runner.utils import build_llvm_tool_env
@@ -230,6 +231,12 @@ def build_dfg_pass_command(context, skeleton_ir=None):
     cmd.append("--simd-pack=%d" % config.arch_simd_width)
     cmd.append("--simd-vector-ops=%s" % ",".join(sorted(config.arch_vector_ops)))
     cmd.append("--simd-scalar-broadcast=%d" % (1 if config.arch_scalar_broadcast else 0))
+  if config.boundary_canonicalization == "verified":
+    cmd.append("--canonicalize-loop-boundaries")
+    if config.arch_native_mac:
+      cmd.append("--native-stateful-mac")
+    if config.treg_reset_on_launch and config.arch_treg_reset_on_launch:
+      cmd.append("--treg-reset-on-launch")
   if config.suppress_dfg_dot:
     cmd.append("--suppress-dfg-dot")
   return cmd
@@ -704,6 +711,148 @@ def validate_simd_manifest(context):
   )
 
 
+def validate_boundary_manifest(context):
+  manifest_paths = sorted(Path(context.dfg_gen_kernel).glob("*_BOUNDARY_manifest.json"))
+  if not manifest_paths:
+    return None
+  if len(manifest_paths) != 1:
+    raise RuntimeError(
+      "Boundary canonicalization requires at most one *_BOUNDARY_manifest.json "
+      "under %s; found %d." % (context.dfg_gen_kernel, len(manifest_paths))
+    )
+  manifest_path = manifest_paths[0]
+  try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError) as exc:
+    raise RuntimeError("Could not read boundary manifest %s: %s" % (manifest_path, exc))
+  if (manifest.get("schema_version") != 2 or
+      manifest.get("transform") != "loop_boundary_canonicalization" or
+      manifest.get("status") != "applied"):
+    raise RuntimeError("Boundary manifest %s has an unsupported schema." % manifest_path)
+
+  launch = manifest.get("launch")
+  actions = launch.get("actions") if isinstance(launch, dict) else None
+  if (not isinstance(launch, dict) or
+      launch.get("execution") != "before_each_loop_invocation" or
+      not isinstance(actions, list)):
+    raise RuntimeError("Boundary manifest %s has an invalid launch contract." % manifest_path)
+  reset_actions = [
+    action for action in actions
+    if isinstance(action, dict) and action == {
+      "operation": "reset",
+      "storage": "treg",
+      "scope": "all_pes",
+      "value": 0,
+    }
+  ]
+  if len(reset_actions) != len(actions) or len(reset_actions) > 1:
+    raise RuntimeError("Boundary manifest %s has invalid launch actions." % manifest_path)
+  resets_treg = bool(reset_actions)
+
+  dfg_path = Path(context.dfg_gen_kernel) / ("%s_PartPredDFG.xml" % context.kernel)
+  root = _read_unwrapped_xml(dfg_path)
+  dfg = root.find("DFG")
+  if dfg is None:
+    raise RuntimeError("Emitted DFG XML is missing <DFG>: %s" % dfg_path)
+  xml_nodes = {int(node.attrib["idx"]): node for node in dfg.findall("Node")}
+  if manifest.get("final_node_count") != len(xml_nodes) or set(xml_nodes) != set(range(len(xml_nodes))):
+    raise RuntimeError("Boundary manifest %s does not match the final XML index space." % manifest_path)
+
+  original_count = manifest.get("original_node_count")
+  reindex = {}
+  for entry in manifest.get("index_map", []):
+    if not isinstance(entry, dict):
+      raise RuntimeError("Boundary manifest %s has an invalid index map." % manifest_path)
+    original_idx = entry.get("original_idx")
+    final_idx = entry.get("final_idx")
+    if (not isinstance(original_idx, int) or original_idx in reindex or
+        not isinstance(final_idx, int) or final_idx not in xml_nodes):
+      raise RuntimeError("Boundary manifest %s has an inconsistent index map." % manifest_path)
+    reindex[original_idx] = final_idx
+  pruned_nodes = manifest.get("pruned_nodes")
+  if (not isinstance(original_count, int) or original_count < 0 or
+      not isinstance(pruned_nodes, list) or
+      any(not isinstance(idx, int) for idx in pruned_nodes) or
+      len(set(pruned_nodes)) != len(pruned_nodes) or
+      set(pruned_nodes) & set(reindex) or
+      set(pruned_nodes) | set(reindex) != set(range(original_count)) or
+      set(reindex.values()) != set(xml_nodes)):
+    raise RuntimeError("Boundary manifest %s has invalid original-node coverage." % manifest_path)
+
+  trace_vars = set()
+  seen_nodes = set()
+  has_treg_state = False
+  states = manifest.get("states")
+  if not isinstance(states, list) or not states:
+    raise RuntimeError("Boundary manifest %s has no state entries." % manifest_path)
+  for state in states:
+    if not isinstance(state, dict):
+      raise RuntimeError("Boundary manifest %s has an invalid state entry." % manifest_path)
+    node_idx = state.get("mapped_node")
+    lanes = state.get("lanes")
+    bits = state.get("value_bits")
+    storage = state.get("storage")
+    node = xml_nodes.get(node_idx) if isinstance(node_idx, int) else None
+    op_elem = node.find("OP") if node is not None else None
+    op = (op_elem.text or "").strip() if op_elem is not None else ""
+    seed = state.get("seed")
+    drain = state.get("drain")
+    if (node is None or node_idx in seen_nodes or lanes != 1 or bits != 32 or
+        storage not in ("explicit_recurrence", "treg") or
+        node.get("loop_carried_state") != "true" or
+        node.get("state_storage") != storage or
+        not isinstance(seed, dict) or not isinstance(drain, dict) or
+        seed.get("execution") != "loop_launch" or seed.get("scheduled") is not False or
+        drain.get("execution") != "loop_exit" or drain.get("scheduled") is not False):
+      raise RuntimeError("Boundary manifest %s has an inconsistent state contract." % manifest_path)
+    final_vars = drain.get("trace_vars")
+    if (not isinstance(final_vars, list) or len(final_vars) != lanes or
+        any(not isinstance(name, str) or not name for name in final_vars)):
+      raise RuntimeError("Boundary manifest %s has invalid drain trace variables." % manifest_path)
+    if storage == "explicit_recurrence":
+      has_self_recurrence = any(
+        output.get("idx") == str(node_idx) and output.get("nextiter") == "1" and
+        output.get("type") == "I1"
+        for output in node.findall("./Outputs/Output")
+      )
+      if seed.get("kind") != "constant" or not isinstance(seed.get("value"), int) or not has_self_recurrence:
+        raise RuntimeError("Boundary manifest %s has an invalid explicit recurrence seed." % manifest_path)
+    else:
+      if (op != "MAC" or seed.get("kind") != "register_reset" or
+          seed.get("value") != 0):
+        raise RuntimeError("Boundary manifest %s has an invalid TREG state contract." % manifest_path)
+      has_treg_state = True
+    trace_vars.update(final_vars)
+    for name in seed.get("trace_vars", []):
+      if not isinstance(name, str) or not name:
+        raise RuntimeError("Boundary manifest %s has invalid seed trace variables." % manifest_path)
+      trace_vars.add(name)
+    seen_nodes.add(node_idx)
+
+  if has_treg_state != resets_treg:
+    raise RuntimeError(
+      "Boundary manifest %s TREG state disagrees with its launch actions."
+      % manifest_path
+    )
+
+  pruned_vars = manifest.get("pruned_artifact_vars", [])
+  if (not isinstance(pruned_vars, list) or
+      any(not isinstance(name, str) or not name for name in pruned_vars)):
+    raise RuntimeError("Boundary manifest %s has invalid pruned_artifact_vars." % manifest_path)
+  print(
+    "Boundary manifest verified: %s states=%d final_nodes=%d\n"
+    "Mapping scope: steady-state loop DFG only; register reset/seeding and "
+    "live-out drains are CGRA-unscheduled boundary actions.\n"
+    % (manifest_path.name, len(states), len(xml_nodes))
+  )
+  return BoundaryMapping(
+    reindex=reindex,
+    artifact_vars_pruned=frozenset(set(pruned_vars) - trace_vars),
+    boundary_trace_vars=frozenset(trace_vars),
+    state_count=len(states),
+  )
+
+
 def build_instrumentation_commands(context):
   kernel = context.kernel
   clang_tool = resolve_llvm_tool("clang")
@@ -854,7 +1003,15 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
   if config.externalize_access == "agi_iter":
     iter_reindex, iter_artifact_vars_pruned = validate_iter_manifest(context)
   simd_mapping = validate_simd_manifest(context) if verified_simd_active else None
-  if iter_reindex:
+  boundary_mapping = (
+    validate_boundary_manifest(context)
+    if config.boundary_canonicalization == "verified" else None
+  )
+  if boundary_mapping is not None:
+    remap_agi_subgraph_externalidx(
+      Path(context.dfg_gen_kernel), boundary_mapping.reindex
+    )
+  elif iter_reindex:
     agi_reindex = iter_reindex
     if simd_mapping is not None:
       if simd_mapping.post_pack_iterator_externalized:
@@ -893,6 +1050,10 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
     tuple(sorted(simd_mapping.artifact_vars_pruned))
     if simd_mapping is not None else ()
   )
+  boundary_artifact_vars_pruned = (
+    tuple(sorted(boundary_mapping.artifact_vars_pruned))
+    if boundary_mapping is not None else ()
+  )
   copy_file(mapper_xml, context.mapper_kernel)
   if mapper_xml != dfg_xml:
     staged_xml = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % kernel)
@@ -911,6 +1072,8 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
     copy_file(str(iter_manifest_path), context.mapper_kernel)
   for simd_manifest_path in Path(dfg_kernel).glob("*_SIMD_manifest.json"):
     copy_file(str(simd_manifest_path), context.mapper_kernel)
+  for boundary_manifest_path in Path(dfg_kernel).glob("*_BOUNDARY_manifest.json"):
+    copy_file(str(boundary_manifest_path), context.mapper_kernel)
   remove_glob(dfg_kernel, "*.log")
 
   if not config.enable_simulation:
@@ -964,7 +1127,15 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
       print("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
 
-  if iter_reindex:
+  if boundary_mapping is not None:
+    import glob as _glob
+    addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
+    pruned_trace_vars = set(iter_artifact_vars_pruned) | set(boundary_artifact_vars_pruned)
+    for trace_path in sorted(_glob.glob("%s/%s_trace_*.txt" % (addr_trace_dir, kernel))):
+      filter_trace_vars(trace_path, trace_path, pruned_trace_vars)
+    for addr_trace_path in sorted(_glob.glob("%s/%s_addr_trace_*.txt" % (addr_trace_dir, kernel))):
+      reindex_addr_trace(addr_trace_path, addr_trace_path, boundary_mapping.reindex)
+  elif iter_reindex:
     import glob as _glob
     addr_trace_dir = "%s/memtraces" % dfg_kernel.rstrip("/")
     for trace_path in sorted(_glob.glob("%s/%s_trace_*.txt" % (addr_trace_dir, kernel))):

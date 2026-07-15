@@ -1076,6 +1076,14 @@ std::vector<CGRAXMLCompile::DataPath *> CGRAXMLCompile::SAMapper::getRandomDPCan
 		}
 	}
 
+	if (node->stateful_treg)
+	{
+		candidateDests.erase(
+			std::remove_if(candidateDests.begin(), candidateDests.end(),
+				[&](DataPath *dp) { return !isStatefulTregDestinationAvailable(node, dp); }),
+			candidateDests.end());
+	}
+
 	if (candidateDests.empty())
 	{
 		return candidateDests;

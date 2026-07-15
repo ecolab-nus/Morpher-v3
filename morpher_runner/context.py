@@ -347,6 +347,27 @@ def infer_arch_spm_config(morpher_home, mapper_home, arch_template_json):
   return len(wrapper_names), bank_size
 
 
+def infer_arch_treg_reset_on_launch(morpher_home, mapper_home, arch_template_json):
+  """Return the architecture's per-invocation physical TREG reset guarantee."""
+  arch_path = resolve_arch_template_path(morpher_home, mapper_home, arch_template_json)
+  with open(arch_path, "r", encoding="utf-8") as stream:
+    arch_data = json.load(stream)
+
+  arch_root = arch_data.get("ARCH")
+  if not isinstance(arch_root, dict):
+    raise RuntimeError("Architecture JSON %s is missing top-level ARCH object." % arch_path)
+  capabilities = arch_root.get("CAPABILITIES", {})
+  if not isinstance(capabilities, dict):
+    raise RuntimeError("Architecture JSON %s has a non-mapping ARCH.CAPABILITIES." % arch_path)
+  reset = capabilities.get("TREG_RESET_ON_LAUNCH", False)
+  if not isinstance(reset, bool):
+    raise RuntimeError(
+      "Architecture JSON %s has non-boolean "
+      "ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH." % arch_path
+    )
+  return reset
+
+
 def _module_supports_memory_ops(arch_root, module_name, seen=None):
   if seen is None:
     seen = set()
@@ -779,6 +800,10 @@ class RunnerConfig:
   node_pin: str
   externalize_access: str
   simd_pack: str
+  boundary_canonicalization: str
+  treg_reset_on_launch: bool
+  arch_native_mac: bool
+  arch_treg_reset_on_launch: bool
   layout_solver: bool
   replicate_data: bool
   bank_affinity_cost: int
@@ -947,6 +972,25 @@ class RunnerConfig:
       )
     return mode
 
+  @staticmethod
+  def _parse_boundary_canonicalization(config_dict):
+    pipeline = config_dict.get("dfg_pipeline") or {}
+    if not isinstance(pipeline, dict):
+      raise RuntimeError("Config key 'dfg_pipeline' must be a mapping.")
+    raw_mode = pipeline.get("boundary_canonicalization", "off")
+    if isinstance(raw_mode, bool):
+      mode = "verified" if raw_mode else "off"
+    else:
+      mode = str(raw_mode).strip().lower()
+    if mode not in ("off", "verified"):
+      raise RuntimeError(
+        "dfg_pipeline.boundary_canonicalization must be one of: off, verified."
+      )
+    reset = pipeline.get("treg_reset_on_launch", False)
+    if not isinstance(reset, bool):
+      raise RuntimeError("dfg_pipeline.treg_reset_on_launch must be boolean.")
+    return mode, reset
+
   @classmethod
   def from_yaml(cls, config_path):
     with open(config_path, "r", encoding="utf-8") as stream:
@@ -974,6 +1018,9 @@ class RunnerConfig:
     source_template_mode = cls._parse_source_template(config_dict)
     externalize_access = cls._parse_externalize_access(config_dict)
     simd_pack = cls._parse_simd_pack(config_dict, externalize_access)
+    boundary_canonicalization, treg_reset_on_launch = (
+      cls._parse_boundary_canonicalization(config_dict)
+    )
     try:
       bank_affinity_cost = int(config_dict.get("bank_affinity_cost", 0) or 0)
     except (TypeError, ValueError):
@@ -1024,6 +1071,23 @@ class RunnerConfig:
     inferred_mem_pes = infer_arch_mem_pe_count(morpher_home, mapper_home, arch_template_json)
     inferred_op_classes = infer_arch_op_classes(morpher_home, mapper_home, arch_template_json)
     arch_simd = infer_arch_simd_config(morpher_home, mapper_home, arch_template_json)
+    arch_treg_reset_on_launch = infer_arch_treg_reset_on_launch(
+      morpher_home, mapper_home, arch_template_json
+    )
+    arch_native_mac = bool(
+      inferred_op_classes and
+      "MAC" in (
+        set(inferred_op_classes.compute_pe_ops) |
+        set(inferred_op_classes.mem_pe_ops)
+      )
+    )
+    if treg_reset_on_launch and not arch_treg_reset_on_launch:
+      raise RuntimeError(
+        "dfg_pipeline.treg_reset_on_launch=true requests reset-backed state, "
+        "but architecture %s does not declare "
+        "ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH=true."
+        % arch_template_json
+      )
 
     xdim = config_dict.get("xdim", inferred_xdim)
     ydim = config_dict.get("ydim", inferred_ydim)
@@ -1114,6 +1178,10 @@ class RunnerConfig:
       spm_mode=config_dict.get("spm_mode", "on"),
       externalize_access=externalize_access,
       simd_pack=simd_pack,
+      boundary_canonicalization=boundary_canonicalization,
+      treg_reset_on_launch=treg_reset_on_launch,
+      arch_native_mac=arch_native_mac,
+      arch_treg_reset_on_launch=arch_treg_reset_on_launch,
       node_pin=str(config_dict.get("node_pin", "") or ""),
       layout_solver=bool(config_dict.get("layout_solver", False)),
       replicate_data=bool(config_dict.get("replicate_data", False)),
