@@ -69,6 +69,74 @@ BoundaryContract parseBoundaryContract(const std::string &path) {
   }
   json manifest;
   input >> manifest;
+  if (manifest.contains("states")) {
+    if (manifest.value("schema_version", 0) != 2 ||
+        manifest.value("transform", std::string{}) !=
+            "loop_boundary_canonicalization" ||
+        manifest.value("status", std::string{}) != "applied" ||
+        !manifest.contains("launch") || !manifest["launch"].is_object() ||
+        !manifest["states"].is_array() || manifest["states"].empty()) {
+      throw std::runtime_error("boundary manifest has an unsupported schema: " + path);
+    }
+    const auto &launch = manifest["launch"];
+    if (launch.value("execution", std::string{}) !=
+            "before_each_loop_invocation" ||
+        !launch.contains("actions") || !launch["actions"].is_array()) {
+      throw std::runtime_error("boundary manifest has an invalid launch contract: " + path);
+    }
+    for (const auto &action : launch["actions"]) {
+      if (!action.is_object() ||
+          action.value("operation", std::string{}) != "reset" ||
+          action.value("storage", std::string{}) != "treg" ||
+          action.value("scope", std::string{}) != "all_pes" ||
+          action.value("value", 1u) != 0u || contract.tregResetOnLaunch_) {
+        throw std::runtime_error("boundary manifest has an invalid launch action: " + path);
+      }
+      contract.tregResetOnLaunch_ = true;
+    }
+    std::set<int> stateSources;
+    bool hasTregState = false;
+    for (const auto &entry : manifest["states"]) {
+      if (!entry.is_object() || !entry.contains("mapped_node") ||
+          !entry.contains("storage") || !entry.contains("seed") ||
+          !entry.contains("drain")) {
+        throw std::runtime_error("boundary manifest has an incomplete state: " + path);
+      }
+      StateBoundary state;
+      state.sourceNode = entry["mapped_node"].get<int>();
+      state.lanes = entry.value("lanes", 0);
+      state.valueBits = entry.value("value_bits", 0);
+      state.storage = entry["storage"].get<std::string>();
+      const auto &seed = entry["seed"];
+      const auto &drain = entry["drain"];
+      state.seedValue = seed.value("value", 0u);
+      if (!drain.contains("trace_vars") || !drain["trace_vars"].is_array()) {
+        throw std::runtime_error("boundary manifest state lacks drain trace variables: " + path);
+      }
+      state.finalTraceVars = drain["trace_vars"].get<std::vector<std::string>>();
+      const std::string seedKind = seed.value("kind", std::string{});
+      if (state.sourceNode < 0 || !stateSources.insert(state.sourceNode).second ||
+          state.lanes != 1 || state.valueBits != 32 ||
+          (state.storage != "explicit_recurrence" && state.storage != "treg") ||
+          (state.storage == "explicit_recurrence" && seedKind != "constant") ||
+          (state.storage == "treg" &&
+           (seedKind != "register_reset" || state.seedValue != 0)) ||
+          seed.value("execution", std::string{}) != "loop_launch" ||
+          seed.value("scheduled", true) ||
+          drain.value("execution", std::string{}) != "loop_exit" ||
+          drain.value("scheduled", true) ||
+          state.finalTraceVars.size() != 1 || state.finalTraceVars[0].empty()) {
+        throw std::runtime_error("boundary manifest has an inconsistent state: " + path);
+      }
+      hasTregState |= state.storage == "treg";
+      contract.states_.push_back(std::move(state));
+    }
+    if (hasTregState != contract.tregResetOnLaunch_) {
+      throw std::runtime_error(
+          "boundary manifest TREG state disagrees with its launch actions: " + path);
+    }
+    return contract;
+  }
   if (!manifest.contains("exit_reductions") ||
       !manifest["exit_reductions"].is_array()) {
     throw std::runtime_error(
@@ -146,9 +214,28 @@ BoundaryContract parseBoundaryContract(const std::string &path) {
   return contract;
 }
 
+void applyLaunchStateActions(
+    const BoundaryContract &contract, bool architectureSupportsTregReset,
+    std::map<std::pair<int, int>, Value> &macState) {
+  if (!contract.tregResetOnLaunch()) {
+    return;
+  }
+  if (!architectureSupportsTregReset) {
+    throw std::runtime_error(
+        "launch artifact requests TREG reset, but the architecture does not "
+        "declare TREG_RESET_ON_LAUNCH");
+  }
+  macState.clear();
+}
+
 std::map<int, Value> BoundaryContract::recurrenceSeeds(
     const TraceImage &trace) const {
   std::map<int, Value> seeds;
+  for (const StateBoundary &state : states_) {
+    if (state.storage == "explicit_recurrence") {
+      seeds.emplace(state.sourceNode, Value(state.seedValue));
+    }
+  }
   for (const AccumulatorBoundary &boundary : accumulators_) {
     std::vector<uint32_t> lanes;
     lanes.reserve(static_cast<size_t>(boundary.lanes));
@@ -171,6 +258,20 @@ BoundaryResult validateBoundaryContract(
     const std::map<int, Value> &finalNodeValues,
     const TraceImage &trace) {
   BoundaryResult result;
+  for (const StateBoundary &state : contract.states()) {
+    auto valueIt = finalNodeValues.find(state.sourceNode);
+    if (valueIt == finalNodeValues.end() || !valueIt->second.isValid() ||
+        valueIt->second.isVector()) {
+      throw std::runtime_error(
+          "mapped state node " + std::to_string(state.sourceNode) +
+          " did not produce its final scalar value");
+    }
+    const uint32_t expected =
+        readTraceScalar(trace, state.finalTraceVars.front(), true);
+    recordComparison(result,
+                     "node=" + std::to_string(state.sourceNode) + " scalar_exit",
+                     valueIt->second.scalar(), expected);
+  }
   for (const AccumulatorBoundary &boundary : contract.accumulators()) {
     auto valueIt = finalNodeValues.find(boundary.sourceNode);
     if (valueIt == finalNodeValues.end() || !valueIt->second.isValid() ||

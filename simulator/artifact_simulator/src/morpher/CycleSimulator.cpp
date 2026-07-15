@@ -57,6 +57,12 @@ CycleSimulator::CycleSimulator(const Fabric &fabric, const ConfigMem &config,
 
 SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
                               bool compareAfter) {
+  if (boundary_.tregResetOnLaunch()) {
+    // `macState` is shared across phases/invocations to model physical PE
+    // state. Clearing it here makes reset an action at every loop launch,
+    // rather than relying on construction-time zero initialization.
+    applyLaunchStateActions(boundary_, fabric_.tregResetOnLaunch, macState);
+  }
   EngineHooks hooks;
   hooks.execute = [&](const FUInstr &instr, const Value &i1, const Value &i2,
                       const Value &p, int /*cycle*/) -> Value {

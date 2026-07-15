@@ -31,6 +31,7 @@ struct Args {
                              // next to --mapping)
     std::string result;      // optional: mapper result.txt (for II)
     std::string simdManifest; // optional: omitted-boundary simulation contract
+    std::string boundaryManifest; // optional: scalar/vector state boundary contract
     int maxIterations = 1024;
     std::vector<PhaseArg> extraPhases;
 };
@@ -42,6 +43,7 @@ static void usage() {
         << "[--max-iters <n>] [--addr-trace <addr_trace.txt>] "
         << "[--arch <arch.json>] [--mapping-json <mapping.json>] "
         << "[--result <result.txt>] [--simd-manifest <manifest.json>] "
+        << "[--boundary-manifest <manifest.json>] "
         << "[--phase <dfg:mapping:mem_alloc>]...\n"
         << "Without --arch: functional golden checker (arch-unaware).\n"
         << "With --arch: cycle-accurate simulation on the elaborated fabric.\n";
@@ -80,6 +82,7 @@ static Args parseArgs(int argc, char **argv) {
         else if (opt == "--mapping-json") args.mappingJson  = needValue(opt);
         else if (opt == "--result")     args.result         = needValue(opt);
         else if (opt == "--simd-manifest") args.simdManifest = needValue(opt);
+        else if (opt == "--boundary-manifest") args.boundaryManifest = needValue(opt);
         else if (opt == "--phase")      args.extraPhases.push_back(parsePhaseSpec(needValue(opt)));
         else if (opt == "--max-iters")  args.maxIterations  = std::stoi(needValue(opt));
         else if (opt == "--help") {
@@ -142,18 +145,21 @@ int main(int argc, char **argv) {
         if (!args.addrTrace.empty()) {
             parseAddressTrace(args.addrTrace, trace);
         }
-        const BoundaryContract boundary =
-            parseBoundaryContract(args.simdManifest);
+        if (!args.simdManifest.empty() && !args.boundaryManifest.empty()) {
+            throw std::runtime_error(
+                "--simd-manifest and --boundary-manifest cannot both describe omitted boundaries");
+        }
+        const BoundaryContract boundary = parseBoundaryContract(
+            !args.boundaryManifest.empty() ? args.boundaryManifest
+                                           : args.simdManifest);
         if (!boundary.empty()) {
             std::cout
                 << "Simulation scope: CGRA schedules the steady-state loop DFG only.\n"
-                << "Omitted boundary work: vector-accumulator initialization in "
-                   "the loop preheader; VRED, scalar combine, and result store "
-                   "at loop exit.\n"
-                << "Boundary model: recurrence lanes are seeded from traced "
-                   "preheader values (checked against the manifest identity); "
-                   "final vector lanes and the scalar exit are validated against "
-                   "the source trace.\n";
+                << "Omitted boundary work: loop-launch state initialization and "
+                   "loop-exit live-out drains.\n"
+                << "Boundary model: mapped recurrence state is initialized from "
+                   "the validated manifest and final state is checked against "
+                   "retained source-trace values.\n";
         }
 
         SimResult result;

@@ -45,6 +45,7 @@ struct FabricPE {
 class Fabric {
 public:
   int xdim = 0, ydim = 0;
+  bool tregResetOnLaunch = false;
 
   std::vector<FabricPE> pes;   // index = y * xdim + x
   std::vector<FabricFU> fus;

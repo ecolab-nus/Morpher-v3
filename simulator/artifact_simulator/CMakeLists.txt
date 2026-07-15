@@ -25,3 +25,19 @@ target_include_directories(artifact_simulator PRIVATE
 )
 
 target_compile_features(artifact_simulator PRIVATE cxx_std_17)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(launch_reset_test
+    tests/LaunchResetTest.cpp
+    src/core/Value.cpp
+    src/core/Ops.cpp
+    src/morpher/BoundaryContract.cpp
+  )
+  target_include_directories(launch_reset_test PRIVATE
+    include
+    ../../Morpher_CGRA_Mapper/include
+  )
+  target_compile_features(launch_reset_test PRIVATE cxx_std_17)
+  add_test(NAME launch_reset_test COMMAND launch_reset_test)
+endif()

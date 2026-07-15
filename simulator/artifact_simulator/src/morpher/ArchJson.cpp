@@ -57,6 +57,19 @@ Fabric elaborateArchJson(const std::string &jsonPath) {
   }
 
   Fabric fabric;
+  if (arch.contains("CAPABILITIES")) {
+    const json &capabilities = arch.at("CAPABILITIES");
+    if (!capabilities.is_object()) {
+      throw std::runtime_error("ARCH.CAPABILITIES must be an object: " + jsonPath);
+    }
+    if (capabilities.contains("TREG_RESET_ON_LAUNCH") &&
+        !capabilities.at("TREG_RESET_ON_LAUNCH").is_boolean()) {
+      throw std::runtime_error(
+          "ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH must be boolean: " + jsonPath);
+    }
+    fabric.tregResetOnLaunch =
+        capabilities.value("TREG_RESET_ON_LAUNCH", false);
+  }
   fabric.xdim = (*gridEntry)["DIMS"]["X"].get<int>();
   fabric.ydim = (*gridEntry)["DIMS"]["Y"].get<int>();
 
