@@ -60,6 +60,16 @@ def main() -> int:
       item["legal_factors"] == [2, 5, 10]
       for item in recipe["parallel_dimensions"]
     )
+  elif fixture == "matvec":
+    assert recipe["transform_supported"] is True
+    assert recipe["unsupported_reason"] is None
+    assert recipe["parallel_dimensions"] == [{
+      "level": 0,
+      "trip_count": 16,
+      "requires_exact_divisor": True,
+      "legal_factors": [2, 4, 8, 16],
+    }]
+    assert recipe["rolled_reduction"] == {"level": 1, "trip_count": 16}
 
   return 0
 

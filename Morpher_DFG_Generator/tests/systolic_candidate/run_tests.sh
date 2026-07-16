@@ -222,11 +222,50 @@ elif [[ $(grep -c '!morpher.systolic.mac_coord' "${int_out}") -ne 16 ]]; then
 elif [[ $(grep -c '!morpher.systolic.mem_stream_index' "${int_out}") -ne 8 ]]; then
   echo "FAIL gemm_int_memory_acc_marker transform: expected 8 stream indices"
   FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.dataflow' "${int_out}") -ne 24 ]]; then
+  echo "FAIL gemm_int_memory_acc_marker transform: expected selected dataflow on 8 loads and 16 MACs"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
 elif ! grep -q 'promoted 1 output recurrence' "${int_err}"; then
   echo "FAIL gemm_int_memory_acc_marker transform: output recurrence was not promoted"
   FAIL_COUNT=$((FAIL_COUNT + 1))
 else
   echo "PASS gemm_int_memory_acc_marker transform: stateful 4x4 MAC tile metadata"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
+matvec_src="${SCRIPT_DIR}/matvec_marker.c"
+matvec_ll="${TMP_DIR}/matvec_marker.transform.ll"
+matvec_out="${TMP_DIR}/matvec_marker.transformed.ll"
+matvec_err="${TMP_DIR}/matvec_marker.transform.err"
+clang -O1 -fno-unroll-loops -emit-llvm -S "${matvec_src}" -o "${matvec_ll}" 2>/dev/null
+opt -load-pass-plugin "${PLUGIN}" \
+    -passes='morpher-systolic-unroll-jam' \
+    -morpher-systolic-fn=matvec_marker \
+    -morpher-systolic-candidate-index=0 \
+    -morpher-systolic-factor0=4 \
+    -morpher-systolic-factor1=1 \
+    "${matvec_ll}" -S -o "${matvec_out}" 2>"${matvec_err}"
+if [[ $? -ne 0 ]]; then
+  echo "FAIL matvec_marker transform: opt failed"
+  head -20 "${matvec_err}"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c 'morpher.systolic.acc.* = phi i32' "${matvec_out}") -ne 4 ]]; then
+  echo "FAIL matvec_marker transform: expected 4 scalar accumulators"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.mac_coord' "${matvec_out}") -ne 4 ]]; then
+  echo "FAIL matvec_marker transform: expected 4 MAC coordinates"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.mem_stream_index' "${matvec_out}") -ne 5 ]]; then
+  echo "FAIL matvec_marker transform: expected 4 row loads plus one shared column load"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.dataflow' "${matvec_out}") -ne 9 ]]; then
+  echo "FAIL matvec_marker transform: expected selected dataflow on 5 loads and 4 MACs"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c 'call void @please_map_me' "${matvec_out}") -ne 1 ]]; then
+  echo "FAIL matvec_marker transform: expected one restored map marker"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS matvec_marker transform: 4x1 jammed dot body with shared operand"
   PASS_COUNT=$((PASS_COUNT + 1))
 fi
 

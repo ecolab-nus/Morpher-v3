@@ -100,6 +100,7 @@ class dfgNode{
 			//served phi index
 			std::string array_base_pointer = "NOT_A_MEM_OP";
 			std::string systolicMemStream = "";
+			std::string systolicDataflow = "";
 			int systolicMemStreamIndex = -1;
 			int systolicMacRow = -1;
 			int systolicMacColumn = -1;
@@ -297,6 +298,7 @@ class dfgNode{
 			}
 			std::string getArrBasePtr(){return array_base_pointer;}
 			std::string getSystolicMemStream() const {return systolicMemStream;}
+			std::string getSystolicDataflow() const {return systolicDataflow;}
 			void setSystolicMemStream(const std::string &role){systolicMemStream = role;}
 			int getSystolicMemStreamIndex() const {return systolicMemStreamIndex;}
 			int getSystolicMacRow() const {return systolicMacRow;}

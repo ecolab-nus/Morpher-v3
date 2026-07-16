@@ -112,6 +112,17 @@ bool DFG::parseXML(std::string fileName)
 			currDFGNode.simd_lanes = simdLanes;
 		}
 		const char *systolicMemStream = nullptr;
+		const char *systolicDataflow = nullptr;
+		if (node->QueryStringAttribute("systolic_dataflow", &systolicDataflow) == XML_SUCCESS &&
+			systolicDataflow)
+		{
+			currDFGNode.systolic_dataflow = systolicDataflow;
+			if (currDFGNode.systolic_dataflow != "output_stationary" &&
+				currDFGNode.systolic_dataflow != "weight_stationary" &&
+				currDFGNode.systolic_dataflow != "input_stationary")
+				throw std::runtime_error("Unsupported systolic dataflow on DFG node " +
+					std::to_string(idx) + ": " + currDFGNode.systolic_dataflow);
+		}
 		if (node->QueryStringAttribute("systolic_mem_stream", &systolicMemStream) == XML_SUCCESS &&
 			systolicMemStream)
 		{
@@ -132,7 +143,10 @@ bool DFG::parseXML(std::string fileName)
 		if ((!currDFGNode.systolic_mem_stream.empty() &&
 			 currDFGNode.systolic_mem_stream_index < 0) ||
 			 ((currDFGNode.systolic_mac_row < 0) !=
-			  (currDFGNode.systolic_mac_column < 0)))
+			  (currDFGNode.systolic_mac_column < 0)) ||
+			 ((!currDFGNode.systolic_mem_stream.empty() ||
+			   currDFGNode.systolic_mac_row >= 0) &&
+			  currDFGNode.systolic_dataflow.empty()))
 		{
 			throw std::runtime_error("Incomplete systolic placement metadata on DFG node " +
 				std::to_string(idx));

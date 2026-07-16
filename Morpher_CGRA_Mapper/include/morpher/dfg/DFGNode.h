@@ -38,6 +38,7 @@ public:
 	// candidate. "row" streams prefer the left boundary; "column" streams
 	// prefer the bottom boundary during the constrained PF attempt.
 	std::string systolic_mem_stream;
+	std::string systolic_dataflow;
 	int systolic_mem_stream_index = -1;
 	int systolic_mac_row = -1;
 	int systolic_mac_column = -1;

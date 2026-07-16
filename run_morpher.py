@@ -445,18 +445,20 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
     if not isinstance(recipe, dict) or not recipe.get("transform_supported"):
       continue
     dimensions = recipe.get("parallel_dimensions")
-    if not isinstance(dimensions, list) or len(dimensions) != 2:
+    if not isinstance(dimensions, list) or len(dimensions) not in (1, 2):
       continue
-    if [item.get("level") for item in dimensions] != [0, 1]:
+    if [item.get("level") for item in dimensions] != list(range(len(dimensions))):
       continue
     factor0s = sorted({
       int(factor) for factor in dimensions[0].get("legal_factors", [])
       if int(factor) > 1 and int(factor) <= dim0_limit
     }, reverse=True)
-    factor1s = sorted({
-      int(factor) for factor in dimensions[1].get("legal_factors", [])
-      if int(factor) > 1 and int(factor) <= dim1_limit
-    }, reverse=True)
+    factor1s = [1]
+    if len(dimensions) == 2:
+      factor1s = sorted({
+        int(factor) for factor in dimensions[1].get("legal_factors", [])
+        if int(factor) > 1 and int(factor) <= dim1_limit
+      }, reverse=True)
     candidate_index = int(record.get("candidate_index", -1))
     if candidate_index < 0:
       continue

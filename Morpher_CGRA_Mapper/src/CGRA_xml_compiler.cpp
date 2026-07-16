@@ -179,6 +179,15 @@ int main(int argn, char *argc[])
 	const bool hasSystolicMemoryStreams = std::any_of(
 		currDFG.nodeList.begin(), currDFG.nodeList.end(),
 		[](const DFGNode &node) { return !node.systolic_mem_stream.empty(); });
+	std::set<std::string> selectedSystolicDataflows;
+	for (const DFGNode &node : currDFG.nodeList)
+		if (!node.systolic_dataflow.empty())
+			selectedSystolicDataflows.insert(node.systolic_dataflow);
+	if (selectedSystolicDataflows.size() > 1)
+		throw std::runtime_error("DFG mixes multiple selected systolic dataflows");
+	if (!selectedSystolicDataflows.empty())
+		std::cout << "Selected systolic dataflow: "
+		          << *selectedSystolicDataflows.begin() << "\n";
 	if (print_dfg)
 	{
 		currDFG.printDFG();

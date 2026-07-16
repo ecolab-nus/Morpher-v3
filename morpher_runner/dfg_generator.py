@@ -205,7 +205,8 @@ def build_unroll_command(context, unroll_factor, input_ir=None):
 
 
 def build_systolic_unroll_jam_command(
-  context, candidate_index, factor0, factor1, input_ir=None
+  context, candidate_index, factor0, factor1, input_ir=None,
+  dataflow="output_stationary",
 ):
   kernel = context.kernel
   if input_ir is None:
@@ -226,6 +227,8 @@ def build_systolic_unroll_jam_command(
       str(factor0),
       "-morpher-systolic-factor1",
       str(factor1),
+      "-morpher-systolic-dataflow",
+      dataflow,
       input_ir,
       "-S",
       "-o",

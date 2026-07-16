@@ -80,6 +80,8 @@ dfgNode::dfgNode(Instruction *ins, DFG* parent){
 		readStringMetadata(ins, "morpher.simd.accumulator_seed_var");
 	this->systolicMemStream =
 		readStringMetadata(ins, "morpher.systolic.mem_stream");
+	this->systolicDataflow =
+		readStringMetadata(ins, "morpher.systolic.dataflow");
 	this->systolicMemStreamIndex =
 		readIntMetadata(ins, "morpher.systolic.mem_stream_index", -1);
 	this->systolicMacRow =

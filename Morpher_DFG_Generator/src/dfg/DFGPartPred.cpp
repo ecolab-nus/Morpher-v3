@@ -1666,6 +1666,10 @@ void DFGPartPred::printNewDFGXML() {
 				xmlFile << " systolic_mem_stream_index=\""
 					<< node->getSystolicMemStreamIndex() << "\"";
 		}
+		if(!node->getSystolicDataflow().empty()){
+			xmlFile << " systolic_dataflow=\""
+				<< node->getSystolicDataflow() << "\"";
+		}
 		if(node->getSystolicMacRow() >= 0 && node->getSystolicMacColumn() >= 0){
 			xmlFile << " systolic_mac_row=\"" << node->getSystolicMacRow()
 				<< "\" systolic_mac_column=\""

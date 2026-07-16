@@ -208,6 +208,8 @@ class TraceDrivenCommandTests(unittest.TestCase):
     self.assertIn("-passes=morpher-systolic-unroll-jam", command.argv)
     self.assertIn("-morpher-systolic-fn", command.argv)
     self.assertIn("-morpher-systolic-candidate-index", command.argv)
+    self.assertIn("-morpher-systolic-dataflow", command.argv)
+    self.assertIn("output_stationary", command.argv)
     self.assertIn("probe_sj_c2_3x4_opt.ll", command.argv)
     self.assertIn("-morpher-systolic-fp-nondeterminism=true", command.argv)
 
@@ -266,6 +268,24 @@ class TraceDrivenCommandTests(unittest.TestCase):
       [(4, 3, 12), (4, 2, 8), (2, 3, 6), (2, 2, 4)],
     )
     self.assertTrue(all(v["candidate_index"] == 3 for v in variants))
+
+  def test_systolic_dot_variants_use_one_spatial_dimension(self):
+    records = [{
+      "function": "probe",
+      "candidate_index": 1,
+      "transform_recipe": {
+        "candidate_id": "probe#1",
+        "transform_supported": True,
+        "parallel_dimensions": [
+          {"level": 0, "legal_factors": [2, 4, 8]},
+        ],
+      },
+    }]
+    variants = _systolic_jam_variants(records, "probe", 4, 3)
+    self.assertEqual(
+      [(v["factor0"], v["factor1"], v["factor"]) for v in variants],
+      [(4, 1, 4), (2, 1, 2)],
+    )
 
   def test_systolic_variants_ignore_unsupported_or_other_functions(self):
     records = [
