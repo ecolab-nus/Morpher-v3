@@ -269,6 +269,92 @@ else
   PASS_COUNT=$((PASS_COUNT + 1))
 fi
 
+beta_src="${SCRIPT_DIR}/gemm_beta_marker.c"
+beta_ll="${TMP_DIR}/gemm_beta_marker.transform.ll"
+beta_out="${TMP_DIR}/gemm_beta_marker.transformed.ll"
+beta_err="${TMP_DIR}/gemm_beta_marker.transform.err"
+clang -O1 -fno-unroll-loops -emit-llvm -S "${beta_src}" -o "${beta_ll}" 2>/dev/null
+opt -load-pass-plugin "${PLUGIN}" \
+    -passes='morpher-systolic-schedule-prep,morpher-systolic-polly-distribute,simplifycfg,adce,simplifycfg,morpher-systolic-unroll-jam' \
+    -polly-only-func=gemm_beta_marker \
+    -morpher-systolic-fn=gemm_beta_marker \
+    -morpher-systolic-candidate-index=0 \
+    -morpher-systolic-factor0=4 \
+    -morpher-systolic-factor1=4 \
+    "${beta_ll}" -S -o "${beta_out}" 2>"${beta_err}"
+if [[ $? -ne 0 ]]; then
+  echo "FAIL gemm_beta_marker transform: Polly distribution or jam failed"
+  head -20 "${beta_err}"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.mac_coord' "${beta_out}") -ne 16 ]]; then
+  echo "FAIL gemm_beta_marker transform: expected 16 MAC coordinates"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c 'call void @please_map_me' "${beta_out}") -ne 1 ]]; then
+  echo "FAIL gemm_beta_marker transform: expected one restored map marker"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif ! grep -q 'Morpher/Polly distributed beta' "${beta_err}"; then
+  echo "FAIL gemm_beta_marker transform: targeted distribution did not run"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS gemm_beta_marker transform: Polly-distributed 4x4 jammed body"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
+ws_src="${SCRIPT_DIR}/gemm_ws_marker.c"
+ws_ll="${TMP_DIR}/gemm_ws_marker.transform.ll"
+ws_out="${TMP_DIR}/gemm_ws_marker.transformed.ll"
+ws_err="${TMP_DIR}/gemm_ws_marker.transform.err"
+clang -m32 -O1 -fno-unroll-loops -emit-llvm -S "${ws_src}" -o "${ws_ll}" 2>/dev/null
+opt -load-pass-plugin "${PLUGIN}" \
+    -passes='morpher-systolic-unroll-jam' \
+    -morpher-systolic-fn=gemm_ws_marker \
+    -morpher-systolic-candidate-index=0 \
+    -morpher-systolic-factor0=4 \
+    -morpher-systolic-factor1=4 \
+    -morpher-systolic-dataflow=weight_stationary \
+    "${ws_ll}" -S -o "${ws_out}" 2>"${ws_err}"
+if [[ $? -ne 0 ]]; then
+  echo "FAIL gemm_ws_marker transform: opt failed"
+  head -20 "${ws_err}"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.mac_coord' "${ws_out}") -ne 16 ]]; then
+  echo "FAIL gemm_ws_marker transform: expected 16 spatial multiplies"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.stationary_weight' "${ws_out}") -ne 16 ]]; then
+  echo "FAIL gemm_ws_marker transform: expected 16 stationary weights"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c 'call void @please_map_me' "${ws_out}") -ne 1 ]]; then
+  echo "FAIL gemm_ws_marker transform: expected one restored map marker"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS gemm_ws_marker transform: exact 4x4 integer weight-stationary tile"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
+ws_dfg_dir="${TMP_DIR}/gemm_ws_dfg"
+mkdir -p "${ws_dfg_dir}"
+(cd "${ws_dfg_dir}" && opt -load-pass-plugin "${PLUGIN}" \
+    -passes=skeleton --fn gemm_ws_marker --nobanks 4 --banksize 65536 \
+    --externalize-access=agi_iter --suppress-dfg-dot -S "${ws_out}" \
+    -o instrumented.ll) >/dev/null 2>"${ws_dfg_dir}/dfg.err"
+if [[ $? -ne 0 ]]; then
+  echo "FAIL gemm_ws_marker DFG: generation failed"
+  head -20 "${ws_dfg_dir}/dfg.err"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c 'stationary_weight_operand' \
+    "${ws_dfg_dir}/gemm_ws_marker_PartPredDFG.xml") -ne 16 ]]; then
+  echo "FAIL gemm_ws_marker DFG: expected 16 register-supplied operands"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif ! python3 -c \
+    'import json,sys; m=json.load(open(sys.argv[1])); assert len(m["stationary_preloads"]) == 16; assert len([a for a in m["launch"]["actions"] if a["operation"] == "preload"]) == 16' \
+    "${ws_dfg_dir}/gemm_ws_marker_INNERMOST_LN1_BOUNDARY_manifest.json"; then
+  echo "FAIL gemm_ws_marker DFG: invalid launch preload contract"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS gemm_ws_marker DFG: 16 loads externalized into launch preloads"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
 if python3 -c \
     'import subprocess, sys; result = subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); raise SystemExit(0 if result.returncode != 0 else 1)' \
     opt -load-pass-plugin "${PLUGIN}" \

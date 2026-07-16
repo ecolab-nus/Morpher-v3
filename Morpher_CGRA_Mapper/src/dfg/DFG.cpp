@@ -140,6 +140,24 @@ bool DFG::parseXML(std::string fileName)
 			&currDFGNode.systolic_mac_row);
 		node->QueryIntAttribute("systolic_mac_column",
 			&currDFGNode.systolic_mac_column);
+		const char *stationaryOperand = nullptr;
+		if (node->QueryStringAttribute("stationary_weight_operand",
+				&stationaryOperand) == XML_SUCCESS && stationaryOperand)
+		{
+			const std::string operand(stationaryOperand);
+			if (operand != "I1" && operand != "I2")
+				throw std::runtime_error("Invalid stationary weight operand on DFG node " +
+					std::to_string(idx));
+			currDFGNode.stationary_weight_operand = operand == "I1" ? 1 : 2;
+			const char *traceVar = nullptr;
+			if (node->QueryStringAttribute("stationary_weight_trace_var", &traceVar) != XML_SUCCESS ||
+				!traceVar || std::string(traceVar).empty())
+				throw std::runtime_error("Stationary weight is missing its trace variable on DFG node " +
+					std::to_string(idx));
+			currDFGNode.stationary_weight_trace_var = traceVar;
+			node->QueryIntAttribute("stationary_weight_byte_offset",
+				&currDFGNode.stationary_weight_byte_offset);
+		}
 		if ((!currDFGNode.systolic_mem_stream.empty() &&
 			 currDFGNode.systolic_mem_stream_index < 0) ||
 			 ((currDFGNode.systolic_mac_row < 0) !=
@@ -188,6 +206,13 @@ bool DFG::parseXML(std::string fileName)
 		const char *opName = op->GetText();
 		output_ss << ",op=" << opName << "\n";
 		currDFGNode.op = std::string(opName);
+		if (currDFGNode.stationary_weight_operand > 0 &&
+			(currDFGNode.systolic_dataflow != "weight_stationary" ||
+			 currDFGNode.systolic_mac_row < 0 ||
+			 currDFGNode.systolic_mac_column < 0 ||
+			 currDFGNode.op != "MUL"))
+			throw std::runtime_error("Stationary register operand requires a coordinate-pinned weight-stationary MUL on DFG node " +
+				std::to_string(idx));
 		if (currDFGNode.loop_carried_state && !hasStateStorage)
 		{
 			throw std::runtime_error("Loop-carried DFG node " + std::to_string(idx) +

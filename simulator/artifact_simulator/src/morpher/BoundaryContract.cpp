@@ -42,6 +42,24 @@ uint32_t readTraceScalar(const TraceImage &trace, const std::string &name,
   return value;
 }
 
+uint32_t readTraceScalarAt(const TraceImage &trace, const std::string &name,
+                           uint32_t baseOffset) {
+  auto variableIt = trace.variables.find(name);
+  if (variableIt == trace.variables.end()) {
+    throw std::runtime_error("boundary trace variable is missing: " + name);
+  }
+  uint32_t value = 0;
+  for (uint32_t offset = 0; offset < 4; ++offset) {
+    auto byteIt = variableIt->second.pre.find(baseOffset + offset);
+    if (byteIt == variableIt->second.pre.end()) {
+      throw std::runtime_error("stationary preload lacks contiguous i32 bytes: " +
+                               name + "+" + std::to_string(baseOffset));
+    }
+    value |= static_cast<uint32_t>(byteIt->second) << (8 * offset);
+  }
+  return value;
+}
+
 void recordComparison(BoundaryResult &result, const std::string &label,
                       uint32_t actual, uint32_t expected) {
   if (actual == expected) {
@@ -75,7 +93,12 @@ BoundaryContract parseBoundaryContract(const std::string &path) {
             "loop_boundary_canonicalization" ||
         manifest.value("status", std::string{}) != "applied" ||
         !manifest.contains("launch") || !manifest["launch"].is_object() ||
-        !manifest["states"].is_array() || manifest["states"].empty()) {
+        !manifest["states"].is_array() ||
+        (manifest.contains("stationary_preloads") &&
+         !manifest["stationary_preloads"].is_array()) ||
+        (manifest["states"].empty() &&
+         (!manifest.contains("stationary_preloads") ||
+          manifest["stationary_preloads"].empty()))) {
       throw std::runtime_error("boundary manifest has an unsupported schema: " + path);
     }
     const auto &launch = manifest["launch"];
@@ -84,15 +107,32 @@ BoundaryContract parseBoundaryContract(const std::string &path) {
         !launch.contains("actions") || !launch["actions"].is_array()) {
       throw std::runtime_error("boundary manifest has an invalid launch contract: " + path);
     }
+    std::set<std::pair<int, int>> preloadActionOperands;
     for (const auto &action : launch["actions"]) {
-      if (!action.is_object() ||
-          action.value("operation", std::string{}) != "reset" ||
-          action.value("storage", std::string{}) != "treg" ||
-          action.value("scope", std::string{}) != "all_pes" ||
-          action.value("value", 1u) != 0u || contract.tregResetOnLaunch_) {
+      if (!action.is_object()) {
         throw std::runtime_error("boundary manifest has an invalid launch action: " + path);
       }
-      contract.tregResetOnLaunch_ = true;
+      const std::string operation = action.value("operation", std::string{});
+      if (operation == "reset") {
+        if (action.value("storage", std::string{}) != "treg" ||
+            action.value("scope", std::string{}) != "all_pes" ||
+            action.value("value", 1u) != 0u || contract.tregResetOnLaunch_) {
+          throw std::runtime_error("boundary manifest has an invalid reset action: " + path);
+        }
+        contract.tregResetOnLaunch_ = true;
+      } else if (operation == "preload") {
+        const std::string operand = action.value("operand", std::string{});
+        const int operandIndex = operand == "I1" ? 1 : operand == "I2" ? 2 : -1;
+        const int mappedNode = action.value("mapped_node", -1);
+        if (action.value("storage", std::string{}) != "regfile" ||
+            action.value("scheduled", true) || mappedNode < 0 ||
+            operandIndex < 0 ||
+            !preloadActionOperands.insert({mappedNode, operandIndex}).second) {
+          throw std::runtime_error("boundary manifest has an invalid preload action: " + path);
+        }
+      } else {
+        throw std::runtime_error("boundary manifest has an unknown launch action: " + path);
+      }
     }
     std::set<int> stateSources;
     bool hasTregState = false;
@@ -134,6 +174,34 @@ BoundaryContract parseBoundaryContract(const std::string &path) {
     if (hasTregState != contract.tregResetOnLaunch_) {
       throw std::runtime_error(
           "boundary manifest TREG state disagrees with its launch actions: " + path);
+    }
+    std::set<std::pair<int, int>> stationaryOperands;
+    const json stationaryEntries = manifest.value("stationary_preloads", json::array());
+    for (const auto &entry : stationaryEntries) {
+      if (!entry.is_object() || !entry.contains("mapped_node") ||
+          !entry.contains("operand") || !entry.contains("trace_address")) {
+        throw std::runtime_error("boundary manifest has an incomplete stationary preload: " + path);
+      }
+      StationaryPreloadBoundary preload;
+      preload.sourceNode = entry["mapped_node"].get<int>();
+      const std::string operand = entry["operand"].get<std::string>();
+      preload.operand = operand == "I1" ? 1 : operand == "I2" ? 2 : -1;
+      preload.valueBits = entry.value("value_bits", 0);
+      preload.row = entry.value("row", -1);
+      preload.column = entry.value("column", -1);
+      const auto &address = entry["trace_address"];
+      preload.traceVar = address.value("variable", std::string{});
+      preload.byteOffset = address.value("byte_offset", 0u);
+      if (preload.sourceNode < 0 || preload.operand < 0 ||
+          preload.valueBits != 32 || preload.row < 0 || preload.column < 0 ||
+          preload.traceVar.empty() ||
+          !stationaryOperands.insert({preload.sourceNode, preload.operand}).second) {
+        throw std::runtime_error("boundary manifest has an inconsistent stationary preload: " + path);
+      }
+      contract.stationaryPreloads_.push_back(std::move(preload));
+    }
+    if (preloadActionOperands != stationaryOperands) {
+      throw std::runtime_error("boundary manifest preload actions disagree with stationary_preloads: " + path);
     }
     return contract;
   }
@@ -251,6 +319,17 @@ std::map<int, Value> BoundaryContract::recurrenceSeeds(
     seeds.emplace(boundary.sourceNode, Value(std::move(lanes)));
   }
   return seeds;
+}
+
+std::map<std::pair<int, int>, Value> BoundaryContract::stationaryOperands(
+    const TraceImage &trace) const {
+  std::map<std::pair<int, int>, Value> operands;
+  for (const StationaryPreloadBoundary &preload : stationaryPreloads_) {
+    operands.emplace(std::make_pair(preload.sourceNode, preload.operand),
+                     Value(readTraceScalarAt(trace, preload.traceVar,
+                                             preload.byteOffset)));
+  }
+  return operands;
 }
 
 BoundaryResult validateBoundaryContract(

@@ -652,6 +652,19 @@ dfgNode* dfgNode::addLoadParent(Value* ins) {
 	else{
 		temp = Parent->OutLoopNodeMap[ins];
 	}
+	if (Instruction *instruction = dyn_cast<Instruction>(ins)) {
+		if (MDNode *coordinates = instruction->getMetadata(
+				"morpher.systolic.stationary_weight")) {
+			if (coordinates->getNumOperands() != 2)
+				report_fatal_error("Malformed stationary-weight coordinates");
+			auto *row = mdconst::dyn_extract<ConstantInt>(coordinates->getOperand(0));
+			auto *column = mdconst::dyn_extract<ConstantInt>(coordinates->getOperand(1));
+			if (!row || !column)
+				report_fatal_error("Non-integer stationary-weight coordinates");
+			temp->setStationaryWeightCoordinates(
+				(int)row->getZExtValue(), (int)column->getZExtValue());
+		}
+	}
 
 	this->addAncestorNode(temp);
 	temp->addChildNode(this);

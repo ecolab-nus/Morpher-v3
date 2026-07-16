@@ -19,7 +19,11 @@ int main() {
       "launch": {
         "execution": "before_each_loop_invocation",
         "actions": [
-          {"operation": "reset", "storage": "treg", "scope": "all_pes", "value": 0}
+          {"operation": "reset", "storage": "treg", "scope": "all_pes", "value": 0},
+          {"operation": "preload", "storage": "regfile", "mapped_node": 7,
+           "operand": "I2", "row": 1, "column": 2, "value_bits": 32,
+           "trace_address": {"variable": "weight", "byte_offset": 4},
+           "scheduled": false}
         ]
       },
       "states": [{
@@ -31,12 +35,23 @@ int main() {
                  "execution": "loop_launch", "scheduled": false},
         "drain": {"execution": "loop_exit", "scheduled": false,
                   "trace_vars": ["out"]}
+      }],
+      "stationary_preloads": [{
+        "mapped_node": 7, "operand": "I2", "value_bits": 32,
+        "row": 1, "column": 2,
+        "trace_address": {"variable": "weight", "byte_offset": 4}
       }]
     })";
   }
 
   try {
     const BoundaryContract contract = parseBoundaryContract(path);
+    TraceImage trace;
+    trace.variables["weight"].pre = {
+      {4, 0x78}, {5, 0x56}, {6, 0x34}, {7, 0x12}
+    };
+    const auto stationary = contract.stationaryOperands(trace);
+    if (stationary.at({7, 2}).scalar() != 0x12345678u) return 5;
     std::map<std::pair<int, int>, Value> state;
 
     state[{0, 0}] = Value(17);

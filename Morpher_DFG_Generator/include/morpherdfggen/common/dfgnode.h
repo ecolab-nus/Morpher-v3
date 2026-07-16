@@ -104,6 +104,11 @@ class dfgNode{
 			int systolicMemStreamIndex = -1;
 			int systolicMacRow = -1;
 			int systolicMacColumn = -1;
+			int stationaryWeightRow = -1;
+			int stationaryWeightColumn = -1;
+			int stationaryWeightOperand = -1;
+			std::string stationaryWeightTraceVar = "";
+			int stationaryWeightByteOffset = 0;
 			int simdGroup = -1;
 			int simdLanes = 1;
 			std::string simdReduceOp = "";
@@ -303,6 +308,21 @@ class dfgNode{
 			int getSystolicMemStreamIndex() const {return systolicMemStreamIndex;}
 			int getSystolicMacRow() const {return systolicMacRow;}
 			int getSystolicMacColumn() const {return systolicMacColumn;}
+			int getStationaryWeightRow() const {return stationaryWeightRow;}
+			int getStationaryWeightColumn() const {return stationaryWeightColumn;}
+			void setStationaryWeightCoordinates(int row, int column){
+				stationaryWeightRow = row; stationaryWeightColumn = column;
+			}
+			bool hasStationaryWeightOperand() const {return stationaryWeightOperand > 0;}
+			int getStationaryWeightOperand() const {return stationaryWeightOperand;}
+			const std::string& getStationaryWeightTraceVar() const {return stationaryWeightTraceVar;}
+			int getStationaryWeightByteOffset() const {return stationaryWeightByteOffset;}
+			void setStationaryWeightOperand(int operand, const std::string &traceVar,
+				int byteOffset){
+				stationaryWeightOperand = operand;
+				stationaryWeightTraceVar = traceVar;
+				stationaryWeightByteOffset = byteOffset;
+			}
 			int getSimdGroup(){return simdGroup;}
 			int getSimdLanes(){return simdLanes;}
 			std::string getSimdReduceOp(){return simdReduceOp;}

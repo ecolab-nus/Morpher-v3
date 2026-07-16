@@ -221,6 +221,14 @@ class TraceDrivenCommandTests(unittest.TestCase):
       "-morpher-systolic-fp-nondeterminism=false", deterministic.argv
     )
 
+    distributed = build_systolic_unroll_jam_command(
+      context, 0, 4, 4, schedule="polly_distribute_beta"
+    )
+    self.assertIn("-polly-only-func=probe", distributed.argv)
+    self.assertIn(
+      "morpher-systolic-polly-distribute", " ".join(distributed.argv)
+    )
+
   def test_auto_unroll_parses_loop_interchange_search(self):
     parsed = RunnerConfig._parse_auto_unroll(
       {"auto_unroll": {"enabled": True, "try_loop_interchange": True}}
@@ -287,6 +295,27 @@ class TraceDrivenCommandTests(unittest.TestCase):
       [(4, 1, 4), (2, 1, 2)],
     )
 
+  def test_systolic_variants_add_exact_tile_weight_stationary_choice(self):
+    records = [{
+      "function": "probe",
+      "candidate_index": 2,
+      "dataflow_hints": ["output_stationary", "weight_stationary"],
+      "transform_recipe": {
+        "candidate_id": "probe#2",
+        "transform_supported": True,
+        "parallel_dimensions": [
+          {"level": 0, "trip_count": 16, "legal_factors": [2, 4]},
+          {"level": 1, "trip_count": 4, "legal_factors": [2, 4]},
+        ],
+        "rolled_reduction": {"level": 2, "trip_count": 4},
+      },
+    }]
+    variants = _systolic_jam_variants(records, "probe", 4, 4)
+    ws = [v for v in variants if v["dataflow"] == "weight_stationary"]
+    self.assertEqual(len(ws), 1)
+    self.assertEqual((ws[0]["factor0"], ws[0]["factor1"]), (4, 4))
+    self.assertEqual(ws[0]["schedule"], "direct")
+
   def test_systolic_variants_ignore_unsupported_or_other_functions(self):
     records = [
       {
@@ -307,6 +336,42 @@ class TraceDrivenCommandTests(unittest.TestCase):
       },
     ]
     self.assertEqual(_systolic_jam_variants(records, "probe", 4, 4), [])
+
+  def test_systolic_variants_schedule_distributable_beta_gemm(self):
+    records = [
+      {
+        "function": "probe",
+        "candidate_index": 0,
+        "arithmetic_summary": {"mac_pairs": 0},
+        "affine_accesses": [{"kind": "store"}],
+        "transform_recipe": {"transform_supported": False},
+      },
+      {
+        "function": "probe",
+        "candidate_index": 1,
+        "lowering_family": "gemm_like_2d_reduction",
+        "loop_classes": [
+          {"kind": "PARALLEL"},
+          {"kind": "REDUCTION"},
+          {"kind": "PARALLEL"},
+        ],
+        "trip_counts": [
+          {"trip_count": 16},
+          {"trip_count": 16},
+          {"trip_count": 16},
+        ],
+        "transform_recipe": {
+          "candidate_id": "probe#1",
+          "transform_supported": False,
+        },
+      },
+    ]
+    variants = _systolic_jam_variants(records, "probe", 4, 4)
+    self.assertEqual(len(variants), 4)
+    self.assertTrue(all(v["candidate_index"] == 0 for v in variants))
+    self.assertTrue(
+      all(v["schedule"] == "polly_distribute_beta" for v in variants)
+    )
 
   def test_final_graph_recurrence_bound_ignores_stale_asap_levels(self):
     with tempfile.TemporaryDirectory() as directory:

@@ -3127,6 +3127,9 @@ static bool runMorpherDFGGen(Function &F, LoopInfo &LI, ScalarEvolution &SE,
 					LoopDFG->externalizeIteratorControl();
 					LoopDFG->classifyParents();
 				}
+				if (SIMDPackLanes <= 1 &&
+					LoopDFG->externalizeStationaryWeights() > 0)
+					LoopDFG->classifyParents();
 				if (SIMDPackLanes > 1)
 				{
 					std::unordered_set<std::string> vectorOps;

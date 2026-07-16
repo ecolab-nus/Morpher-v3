@@ -206,7 +206,7 @@ def build_unroll_command(context, unroll_factor, input_ir=None):
 
 def build_systolic_unroll_jam_command(
   context, candidate_index, factor0, factor1, input_ir=None,
-  dataflow="output_stationary",
+  dataflow="output_stationary", schedule="direct",
 ):
   kernel = context.kernel
   if input_ir is None:
@@ -214,11 +214,22 @@ def build_systolic_unroll_jam_command(
   output_ir = "%s_sj_c%d_%dx%d_opt.ll" % (
     kernel, candidate_index, factor0, factor1
   )
+  if schedule == "direct":
+    pass_pipeline = "morpher-systolic-unroll-jam"
+  elif schedule == "polly_distribute_beta":
+    pass_pipeline = (
+      "morpher-systolic-schedule-prep,"
+      "morpher-systolic-polly-distribute,"
+      "simplifycfg,adce,simplifycfg,"
+      "morpher-systolic-unroll-jam"
+    )
+  else:
+    raise ValueError("unsupported systolic schedule: %s" % schedule)
   argv = [
       resolve_llvm_tool("opt"),
       "-load-pass-plugin",
       "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
-      "-passes=morpher-systolic-unroll-jam",
+      "-passes=%s" % pass_pipeline,
       "-morpher-systolic-fn",
       kernel,
       "-morpher-systolic-candidate-index",
@@ -234,6 +245,8 @@ def build_systolic_unroll_jam_command(
       "-o",
       output_ir,
     ]
+  if schedule == "polly_distribute_beta":
+    argv.insert(4, "-polly-only-func=%s" % kernel)
   config = getattr(context, "config", None)
   fp_nondeterminism = getattr(config, "auto_unroll_fp_nondeterminism", True)
   argv.insert(
@@ -966,7 +979,8 @@ def _unroll_pass_required(config, unroll_factor):
 
 
 def run_dfg_generator(
-  context, unroll_factor=None, interchange_loops=False, systolic_jam=None
+  context, unroll_factor=None, interchange_loops=False, systolic_jam=None,
+  systolic_schedule="direct", systolic_dataflow="output_stationary",
 ):
   config = context.config
   kernel = context.kernel
@@ -1052,7 +1066,8 @@ def run_dfg_generator(
     candidate_index, factor0, factor1 = systolic_jam
     print("Applying detected systolic unroll-and-jam recipe..\n")
     command = build_systolic_unroll_jam_command(
-      context, candidate_index, factor0, factor1, skeleton_ir
+      context, candidate_index, factor0, factor1, skeleton_ir,
+      dataflow=systolic_dataflow, schedule=systolic_schedule,
     )
     run_command(command)
     skeleton_ir = "%s_sj_c%d_%dx%d_opt.ll" % (

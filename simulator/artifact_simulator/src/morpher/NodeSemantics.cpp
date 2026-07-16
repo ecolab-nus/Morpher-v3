@@ -19,7 +19,7 @@ Value inputByType(const DFGNode &node, const OperandSource &src,
       return src.inputValue(node, i);
     }
   }
-  return Value::invalid();
+  return src.stationaryValue(node, type);
 }
 
 Value firstDataInput(const DFGNode &node, const OperandSource &src) {

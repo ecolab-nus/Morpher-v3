@@ -377,6 +377,9 @@ public:
 
 	bool estimateRouting(DFGNode *node, std::priority_queue<dest_with_cost> &estimatedRoutes, DFGNode **failedNode);
 	bool isStatefulTregDestinationAvailable(DFGNode *node, DataPath *candidate) const;
+	bool isStationaryWeightReservedPort(Port *port) const;
+	bool isStationaryWeightDestinationAvailable(DFGNode *node,
+		DataPath *candidate) const;
 	void applySystolicMemorySideConstraint(DFGNode *node, std::vector<DataPath *> &candidateDests) const;
 	void addBankAffinityPenalty(DFGNode *node, const std::vector<DataPath *> &candidateDests, std::map<DataPath *, int> &dpPenaltyMap);
 	int predictiveRoute(DFGNode *node,

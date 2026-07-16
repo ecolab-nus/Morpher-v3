@@ -8,6 +8,8 @@ FunctionPassManager createMorpherDFGGenPipeline();
 FunctionPassManager createMorpherLoopUnrollPipeline();
 FunctionPassManager createMorpherLoopInterchangePipeline();
 FunctionPassManager createMorpherSystolicCandidatePipeline();
+FunctionPassManager createMorpherSystolicSchedulePrepPipeline();
+FunctionPassManager createMorpherSystolicPollyDistributePipeline();
 FunctionPassManager createMorpherSystolicUnrollJamPipeline();
 
 extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
@@ -35,6 +37,16 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
               if (Name == "morpher-systolic-candidate") {
                 MPM.addPass(createModuleToFunctionPassAdaptor(
                     createMorpherSystolicCandidatePipeline()));
+                return true;
+              }
+              if (Name == "morpher-systolic-schedule-prep") {
+                MPM.addPass(createModuleToFunctionPassAdaptor(
+                    createMorpherSystolicSchedulePrepPipeline()));
+                return true;
+              }
+              if (Name == "morpher-systolic-polly-distribute") {
+                MPM.addPass(createModuleToFunctionPassAdaptor(
+                    createMorpherSystolicPollyDistributePipeline()));
                 return true;
               }
               if (Name == "morpher-systolic-unroll-jam") {

@@ -11730,7 +11730,7 @@ void DFG::packSIMD(int lanes, const std::unordered_set<std::string>& vectorOps,
 
 void DFG::writeBoundaryManifest()
 {
-	if (boundaryStates.empty())
+	if (boundaryStates.empty() && stationaryPreloads.empty())
 		return;
 
 	for (size_t index = 0; index < NodeList.size(); ++index)
@@ -11745,6 +11745,13 @@ void DFG::writeBoundaryManifest()
 		retainedTraceVars.insert(state.seedTraceVars.begin(), state.seedTraceVars.end());
 		retainedTraceVars.insert(state.finalTraceVars.begin(), state.finalTraceVars.end());
 	}
+	for (const StationaryPreload& preload : stationaryPreloads)
+	{
+		if (!preload.mappedNode ||
+			std::find(NodeList.begin(), NodeList.end(), preload.mappedNode) == NodeList.end())
+			report_fatal_error("Stationary preload refers to a removed mapped node");
+		retainedTraceVars.insert(preload.traceVar);
+	}
 
 	std::ofstream manifestFile(name + "_BOUNDARY_manifest.json");
 	if (!manifestFile.is_open())
@@ -11758,9 +11765,27 @@ void DFG::writeBoundaryManifest()
 		resetsTregOnLaunch |= state.storage == "treg";
 	manifestFile << "  \"launch\": {\"execution\": \"before_each_loop_invocation\", "
 		<< "\"actions\": [";
+	bool firstAction = true;
 	if (resetsTregOnLaunch)
+	{
 		manifestFile << "{\"operation\": \"reset\", \"storage\": \"treg\", "
 			<< "\"scope\": \"all_pes\", \"value\": 0}";
+		firstAction = false;
+	}
+	for (const StationaryPreload& preload : stationaryPreloads)
+	{
+		if (!firstAction) manifestFile << ", ";
+		firstAction = false;
+		manifestFile << "{\"operation\": \"preload\", \"storage\": \"regfile\", "
+			<< "\"mapped_node\": " << preload.mappedNode->getIdx()
+			<< ", \"operand\": \"I" << preload.operand << "\""
+			<< ", \"row\": " << preload.row
+			<< ", \"column\": " << preload.column
+			<< ", \"value_bits\": " << preload.valueBits
+			<< ", \"trace_address\": {\"variable\": "
+			<< jsonString(preload.traceVar) << ", \"byte_offset\": "
+			<< preload.byteOffset << "}, \"scheduled\": false}";
+	}
 	manifestFile << "]},\n";
 	manifestFile << "  \"original_node_count\": " << boundaryOriginalNodeCount << ",\n";
 	manifestFile << "  \"final_node_count\": " << NodeList.size() << ",\n";
@@ -11833,10 +11858,26 @@ void DFG::writeBoundaryManifest()
 		}
 		manifestFile << "]}}";
 	}
-	manifestFile << "\n  ]\n";
+	manifestFile << "\n  ],\n";
+	manifestFile << "  \"stationary_preloads\": [";
+	for (size_t index = 0; index < stationaryPreloads.size(); ++index)
+	{
+		const StationaryPreload& preload = stationaryPreloads[index];
+		if (index != 0) manifestFile << ", ";
+		manifestFile << "{\"mapped_node\": " << preload.mappedNode->getIdx()
+			<< ", \"operand\": \"I" << preload.operand << "\""
+			<< ", \"value_bits\": " << preload.valueBits
+			<< ", \"row\": " << preload.row
+			<< ", \"column\": " << preload.column
+			<< ", \"trace_address\": {\"variable\": "
+			<< jsonString(preload.traceVar) << ", \"byte_offset\": "
+			<< preload.byteOffset << "}}";
+	}
+	manifestFile << "]\n";
 	manifestFile << "}\n";
 	llvm::outs() << "[boundary] Recorded " << boundaryStates.size()
-		<< " loop-carried state value(s) in " << name
+		<< " loop-carried state value(s) and " << stationaryPreloads.size()
+		<< " stationary preload(s) in " << name
 		<< "_BOUNDARY_manifest.json\n";
 }
 

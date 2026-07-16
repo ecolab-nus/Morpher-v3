@@ -30,6 +30,9 @@ public:
   // The node's own previous-iteration output (MAC recurrence fallback when
   // no physical accumulator is supplied). May return invalid.
   virtual Value selfPreviousValue(const DFGNode &node) const = 0;
+  // Launch-preloaded regular-register operand omitted from steady-state DFG.
+  virtual Value stationaryValue(const DFGNode &node,
+                                const std::string &type) const = 0;
 };
 
 // Derived operand helpers (Morpher DFG edge-type conventions).

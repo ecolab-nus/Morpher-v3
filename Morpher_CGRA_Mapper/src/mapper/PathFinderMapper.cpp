@@ -375,6 +375,8 @@ bool CGRAXMLCompile::PathFinderMapper::LeastCostPathAstar(LatPort start,
 		for (LatPort nextLatPort : nextPorts)
 		{
 			Port *nextPort = nextLatPort.second;
+			if (isStationaryWeightReservedPort(nextPort))
+				continue;
 
 			if (nextLatPort.first > end.first)
 				continue; //continue if the next port has higher latency
@@ -861,6 +863,15 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 				[&](DataPath *dp) { return !isStatefulTregDestinationAvailable(node, dp); }),
 			candidateDests.end());
 	}
+	if (node->stationary_weight_operand > 0)
+	{
+		candidateDests.erase(
+			std::remove_if(candidateDests.begin(), candidateDests.end(),
+				[&](DataPath *dp) {
+					return !isStationaryWeightDestinationAvailable(node, dp);
+				}),
+			candidateDests.end());
+	}
 
 	applySystolicMemorySideConstraint(node, candidateDests);
 
@@ -1198,6 +1209,77 @@ bool CGRAXMLCompile::PathFinderMapper::isStatefulTregDestinationAvailable(
 		// The time-expanded CGRA contains a PE object per modulo slot, but TREG
 		// is physical state shared by all slots at the same spatial coordinate.
 		if (otherPE->X == candidatePE->X && otherPE->Y == candidatePE->Y)
+			return false;
+	}
+	return true;
+}
+
+bool CGRAXMLCompile::PathFinderMapper::isStationaryWeightReservedPort(
+	Port *port) const
+{
+	if (!port)
+		return false;
+	const std::string name = port->getName();
+	const bool genericReg0 = name == "REG_I0" || name == "REG_O0";
+	const bool jsonRfReg0 = port->getMod()->getName() == "RF0" &&
+		(name == "R0_RI" || name == "R0_RO");
+	const bool jsonDirectionalReg0 =
+		name == "NR_RI" || name == "NR_RO";
+	if (!genericReg0 && !jsonRfReg0 && !jsonDirectionalReg0)
+		return false;
+	PE *portPE = port->getPE();
+	if (!portPE)
+		return false;
+	for (const DFGNode &node : dfg->nodeList)
+	{
+		if (node.stationary_weight_operand <= 0 || node.rootDP == nullptr)
+			continue;
+		PE *ownerPE = node.rootDP->getPE();
+		// Register 0 is physical state shared by all modulo slots at this
+		// spatial coordinate.  The preload is not a routed steady-state edge.
+		if (ownerPE->X == portPE->X && ownerPE->Y == portPE->Y)
+			return true;
+	}
+	return false;
+}
+
+bool CGRAXMLCompile::PathFinderMapper::isStationaryWeightDestinationAvailable(
+	DFGNode *node, DataPath *candidate) const
+{
+	if (node->stationary_weight_operand <= 0)
+		return true;
+	PE *candidatePE = candidate->getPE();
+	for (PE *pe : cgra->getAllPEList())
+	{
+		if (pe->X != candidatePE->X || pe->Y != candidatePE->Y)
+			continue;
+		auto directionalReg = pe->Name2RegPort.find("NR");
+		if (directionalReg != pe->Name2RegPort.end())
+		{
+			if (directionalReg->second.first->getNode() ||
+				directionalReg->second.second->getNode())
+				return false;
+			continue;
+		}
+		auto rfIt = pe->Name2SubMod.find("RF0");
+		if (rfIt == pe->Name2SubMod.end())
+			return false;
+		Module *rf = rfIt->second;
+		auto jsonReg = rf->Name2RegPort.find("R0");
+		if (jsonReg != rf->Name2RegPort.end())
+		{
+			if (jsonReg->second.first->getNode() ||
+				jsonReg->second.second->getNode())
+				return false;
+			continue;
+		}
+		Port *regIn = nullptr;
+		Port *regOut = nullptr;
+		for (Port *port : rf->inputPorts)
+			if (port->getName() == "REG_I0") regIn = port;
+		for (Port *port : rf->outputPorts)
+			if (port->getName() == "REG_O0") regOut = port;
+		if (!regIn || !regOut || regIn->getNode() || regOut->getNode())
 			return false;
 	}
 	return true;

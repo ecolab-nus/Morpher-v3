@@ -428,8 +428,13 @@ def _candidate_auto_unroll_dirs(
   }
 
 
-def _candidate_systolic_jam_dirs(golden_dirs, candidate_index, factor0, factor1):
+def _candidate_systolic_jam_dirs(
+  golden_dirs, candidate_index, factor0, factor1,
+  dataflow="output_stationary",
+):
   suffix = "_sj_c%d_%dx%d" % (candidate_index, factor0, factor1)
+  if dataflow != "output_stationary":
+    suffix += "_%s" % dataflow
   return {
     label: "%s%s" % (path.rstrip("/"), suffix)
     for label, path in golden_dirs.items()
@@ -438,13 +443,54 @@ def _candidate_systolic_jam_dirs(golden_dirs, candidate_index, factor0, factor1)
 
 def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
   variants = []
-  for record in records:
-    if str(record.get("function") or "") != function:
-      continue
+  function_records = [
+    record for record in records
+    if str(record.get("function") or "") == function
+  ]
+  has_beta_sibling = any(
+    int((record.get("arithmetic_summary") or {}).get("mac_pairs", 0)) == 0
+    and any(
+      access.get("kind") == "store"
+      for access in record.get("affine_accesses", [])
+      if isinstance(access, dict)
+    )
+    for record in function_records
+  )
+  for record in function_records:
     recipe = record.get("transform_recipe")
-    if not isinstance(recipe, dict) or not recipe.get("transform_supported"):
+    if not isinstance(recipe, dict):
       continue
+    schedule = "direct"
+    candidate_index = int(record.get("candidate_index", -1))
     dimensions = recipe.get("parallel_dimensions")
+    if not recipe.get("transform_supported"):
+      classes = record.get("loop_classes")
+      trip_counts = record.get("trip_counts")
+      is_distributable_beta_gemm = (
+        has_beta_sibling
+        and record.get("lowering_family") == "gemm_like_2d_reduction"
+        and isinstance(classes, list)
+        and [item.get("kind") for item in classes]
+            == ["PARALLEL", "REDUCTION", "PARALLEL"]
+        and isinstance(trip_counts, list)
+        and len(trip_counts) == 3
+      )
+      if not is_distributable_beta_gemm:
+        continue
+      def legal_factors(trip_count):
+        trip_count = int(trip_count)
+        return [
+          factor for factor in range(2, trip_count + 1)
+          if trip_count % factor == 0
+        ]
+      dimensions = [
+        {"level": 0, "legal_factors": legal_factors(trip_counts[0]["trip_count"])},
+        {"level": 1, "legal_factors": legal_factors(trip_counts[2]["trip_count"])},
+      ]
+      # Polly code generation removes the dead source branch before the
+      # transform detector runs again, so the canonicalized contraction is #0.
+      candidate_index = 0
+      schedule = "polly_distribute_beta"
     if not isinstance(dimensions, list) or len(dimensions) not in (1, 2):
       continue
     if [item.get("level") for item in dimensions] != list(range(len(dimensions))):
@@ -459,7 +505,6 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
         int(factor) for factor in dimensions[1].get("legal_factors", [])
         if int(factor) > 1 and int(factor) <= dim1_limit
       }, reverse=True)
-    candidate_index = int(record.get("candidate_index", -1))
     if candidate_index < 0:
       continue
     for factor0 in factor0s:
@@ -470,11 +515,36 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
           "factor1": factor1,
           "factor": factor0 * factor1,
           "recipe_id": recipe.get("candidate_id", ""),
+          "schedule": schedule,
+          "dataflow": "output_stationary",
         })
+    if (
+      schedule == "direct"
+      and len(dimensions) == 2
+      and "weight_stationary" in record.get("dataflow_hints", [])
+    ):
+      reduction = recipe.get("rolled_reduction")
+      if isinstance(reduction, dict):
+        reduction_trip = int(reduction.get("trip_count", 0))
+        column_trip = int(dimensions[1].get("trip_count", 0))
+        if (
+          reduction_trip > 1 and reduction_trip <= dim0_limit
+          and column_trip > 1 and column_trip <= dim1_limit
+        ):
+          variants.append({
+            "candidate_index": candidate_index,
+            "factor0": reduction_trip,
+            "factor1": column_trip,
+            "factor": reduction_trip * column_trip,
+            "recipe_id": recipe.get("candidate_id", ""),
+            "schedule": schedule,
+            "dataflow": "weight_stationary",
+          })
   variants.sort(
     key=lambda variant: (
       -variant["factor"], -variant["factor0"], -variant["factor1"],
       variant["candidate_index"],
+      variant["dataflow"],
     )
   )
   return variants
@@ -571,8 +641,9 @@ def _run_auto_unroll(context):
   if systolic_variants:
     print(
       "Systolic jam variants: %s" % ", ".join(
-        "c%d:%dx%d" % (
-          variant["candidate_index"], variant["factor0"], variant["factor1"]
+        "%s:c%d:%dx%d" % (
+          variant["dataflow"], variant["candidate_index"],
+          variant["factor0"], variant["factor1"]
         )
         for variant in systolic_variants
       )
@@ -664,12 +735,13 @@ def _run_auto_unroll(context):
         factor = variant["factor"]
         candidate_dirs = _candidate_systolic_jam_dirs(
           golden_dirs, variant["candidate_index"], variant["factor0"],
-          variant["factor1"]
+          variant["factor1"], variant["dataflow"]
         )
         _prepare_auto_unroll_candidate_dirs(source_snapshot, candidate_dirs)
         _set_auto_unroll_dirs(context, candidate_dirs)
-        label = "systolic_jam,candidate=%d,factors=%dx%d" % (
-          variant["candidate_index"], variant["factor0"], variant["factor1"]
+        label = "systolic_jam,dataflow=%s,candidate=%d,factors=%dx%d" % (
+          variant["dataflow"], variant["candidate_index"],
+          variant["factor0"], variant["factor1"]
         )
         print("== Generate %s ==\n" % label)
         try:
@@ -679,6 +751,8 @@ def _run_auto_unroll(context):
               variant["candidate_index"], variant["factor0"],
               variant["factor1"],
             ),
+            systolic_schedule=variant["schedule"],
+            systolic_dataflow=variant["dataflow"],
           )
           metrics = _candidate_graph_metrics(
             candidate_dirs, context.kernel, factor, "systolic_jam",

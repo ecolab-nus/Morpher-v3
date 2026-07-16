@@ -39,6 +39,7 @@
 #include "llvm/Transforms/Scalar/IndVarSimplify.h"
 #include "llvm/Transforms/Scalar/LoopFuse.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
+#include "llvm/Transforms/Scalar/LoopUnrollPass.h"
 #include "llvm/Transforms/Scalar/LoopUnrollAndJamPass.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 
@@ -94,6 +95,8 @@ constexpr StringLiteral SystolicMacCoordMetadata =
     "morpher.systolic.mac_coord";
 constexpr StringLiteral SystolicDataflowMetadata =
     "morpher.systolic.dataflow";
+constexpr StringLiteral SystolicStationaryWeightMetadata =
+    "morpher.systolic.stationary_weight";
 constexpr StringLiteral SystolicMemStreamBindingsAttr =
     "morpher-systolic-mem-stream-bindings";
 constexpr StringLiteral SystolicDataflowAttr =
@@ -1885,9 +1888,10 @@ struct ConfigureSystolicUnrollJamPass
       report_fatal_error("morpher-systolic-fn must name the function to transform");
     if (function.getName() != MorpherSystolicTransformFunction)
       return PreservedAnalyses::all();
-    if (MorpherSystolicDataflow != "output_stationary")
+    if (MorpherSystolicDataflow != "output_stationary" &&
+        MorpherSystolicDataflow != "weight_stationary")
       report_fatal_error(
-          "selected systolic dataflow requires an exact-axis transform that is not yet installed");
+          "selected systolic dataflow transform is not implemented");
     if (MorpherSystolicFactor0 <= 1 || MorpherSystolicFactor1 == 0)
       report_fatal_error("systolic unroll-and-jam factor0 must exceed one and factor1 must be positive");
 
@@ -1947,6 +1951,45 @@ struct ConfigureSystolicUnrollJamPass
       if (!currentTrip || *currentTrip != expectedTrips[level])
         report_fatal_error("systolic transform recipe trip count no longer matches the IR");
     }
+    if (MorpherSystolicDataflow == "weight_stationary") {
+      if (dimensionCount != 2 ||
+          MorpherSystolicFactor0 != recipe.reductionTripCount ||
+          MorpherSystolicFactor1 != recipe.dimensionTripCounts[1])
+        report_fatal_error(
+            "weight-stationary v1 requires the reduction and second parallel dimension to exactly fill the spatial tile");
+      for (BasicBlock *block : levels[0]->getBlocks())
+        for (Instruction &instruction : *block)
+          if ((instruction.getType()->isFloatingPointTy() &&
+               (isAddShape(instruction.getOpcode()) ||
+                isMulShape(instruction.getOpcode()))) ||
+              (isa<IntrinsicInst>(instruction) &&
+               (cast<IntrinsicInst>(instruction).getIntrinsicID() ==
+                    Intrinsic::fmuladd ||
+                cast<IntrinsicInst>(instruction).getIntrinsicID() ==
+                    Intrinsic::fma)))
+            report_fatal_error(
+                "weight-stationary v1 is restricted to integer contractions; floating-point chain semantics are not yet defined");
+      if (!isSafeToUnrollAndJam(levels[1], scalarEvolution, dominatorTree,
+                                dependenceInfo, loopInfo))
+        report_fatal_error(
+            "LLVM rejected weight-stationary column/reduction unroll-and-jam legality");
+      LLVMContext &context = function.getContext();
+      Metadata *columnFactor = ConstantAsMetadata::get(
+          ConstantInt::get(Type::getInt32Ty(context),
+                           MorpherSystolicFactor1));
+      setLoopProperty(levels[1], "llvm.loop.unroll_and_jam.count", columnFactor,
+                      /*removeUnrollDisable=*/true);
+      setLoopProperty(levels[2], "llvm.loop.unroll.full", {},
+                      /*removeUnrollDisable=*/true);
+      setLoopProperty(levels[0], SystolicReductionMetadata, {});
+      errs() << "Morpher weight-stationary spatialization configured: function="
+             << function.getName() << " candidate="
+             << MorpherSystolicCandidateIndex << " reductionxcolumns="
+             << MorpherSystolicFactor0 << "x" << MorpherSystolicFactor1
+             << " stream=dimension0\n";
+      return PreservedAnalyses::none();
+    }
+
     if (recipe.dimensionTripCounts[0] % MorpherSystolicFactor0 != 0 ||
         (dimensionCount == 2 &&
          recipe.dimensionTripCounts[1] % MorpherSystolicFactor1 != 0))
@@ -2081,8 +2124,13 @@ struct RestoreSystolicMemoryStreamsPass
     if (taggedLoads == 0)
       report_fatal_error(
           "systolic transform lost every classified input memory stream");
-    if (rowLoads.size() != MorpherSystolicFactor0 ||
-        columnLoads.size() != MorpherSystolicFactor1)
+    const bool weightStationary = selectedDataflow == "weight_stationary";
+    const unsigned expectedRowLoads = MorpherSystolicFactor0;
+    const unsigned expectedColumnLoads = weightStationary
+        ? MorpherSystolicFactor0 * MorpherSystolicFactor1
+        : MorpherSystolicFactor1;
+    if (rowLoads.size() != expectedRowLoads ||
+        columnLoads.size() != expectedColumnLoads)
       report_fatal_error(
           "systolic transform input stream count does not match jam factors");
 
@@ -2102,7 +2150,8 @@ struct RestoreSystolicMemoryStreamsPass
       }
     };
     attachIndices(rowLoads, rowIndex);
-    attachIndices(columnLoads, columnIndex);
+    if (!weightStationary)
+      attachIndices(columnLoads, columnIndex);
 
     auto directLoad = [](Value *value) -> LoadInst * {
       while (auto *cast = dyn_cast<CastInst>(value))
@@ -2114,28 +2163,39 @@ struct RestoreSystolicMemoryStreamsPass
       for (Instruction &instruction : block) {
         Value *lhs = nullptr;
         Value *rhs = nullptr;
-        if (auto *intrinsic = dyn_cast<IntrinsicInst>(&instruction)) {
+        if (weightStationary) {
+          auto *product = dyn_cast<BinaryOperator>(&instruction);
+          if (!product || !isMulShape(product->getOpcode()))
+            continue;
+          lhs = product->getOperand(0);
+          rhs = product->getOperand(1);
+        } else if (auto *intrinsic = dyn_cast<IntrinsicInst>(&instruction)) {
           Intrinsic::ID id = intrinsic->getIntrinsicID();
           if (id != Intrinsic::fmuladd && id != Intrinsic::fma)
             continue;
           lhs = intrinsic->getOperand(0);
           rhs = intrinsic->getOperand(1);
         } else {
-          auto *add = dyn_cast<BinaryOperator>(&instruction);
-          if (!add || !isAddShape(add->getOpcode()))
+          auto *binary = dyn_cast<BinaryOperator>(&instruction);
+          if (!binary)
             continue;
-          BinaryOperator *product = nullptr;
-          for (unsigned operand = 0; operand < 2; ++operand) {
-            auto *candidate = dyn_cast<BinaryOperator>(add->getOperand(operand));
-            if (candidate && isMulShape(candidate->getOpcode())) {
-              product = candidate;
-              break;
+          if (!isAddShape(binary->getOpcode())) {
+            continue;
+          } else {
+            BinaryOperator *product = nullptr;
+            for (unsigned operand = 0; operand < 2; ++operand) {
+              auto *candidate =
+                  dyn_cast<BinaryOperator>(binary->getOperand(operand));
+              if (candidate && isMulShape(candidate->getOpcode())) {
+                product = candidate;
+                break;
+              }
             }
+            if (!product)
+              continue;
+            lhs = product->getOperand(0);
+            rhs = product->getOperand(1);
           }
-          if (!product)
-            continue;
-          lhs = product->getOperand(0);
-          rhs = product->getOperand(1);
         }
 
         LoadInst *first = directLoad(lhs);
@@ -2144,16 +2204,48 @@ struct RestoreSystolicMemoryStreamsPass
           continue;
         LoadInst *row = rowIndex.count(first) ? first
                           : rowIndex.count(second) ? second : nullptr;
-        LoadInst *column = columnIndex.count(first) ? first
+        LoadInst *column = weightStationary
+            ? (std::find(columnLoads.begin(), columnLoads.end(), first) !=
+                       columnLoads.end()
+                   ? first
+                   : std::find(columnLoads.begin(), columnLoads.end(), second) !=
+                             columnLoads.end()
+                         ? second
+                         : nullptr)
+            : columnIndex.count(first) ? first
                              : columnIndex.count(second) ? second : nullptr;
         if (!row || !column)
           continue;
+        if (weightStationary && !columnIndex.count(column)) {
+          const unsigned rowCoordinate = rowIndex[row];
+          unsigned nextColumn = 0;
+          for (const auto &entry : columnIndex)
+            if (entry.second / MorpherSystolicFactor1 == rowCoordinate)
+              ++nextColumn;
+          if (nextColumn >= MorpherSystolicFactor1)
+            report_fatal_error(
+                "weight-stationary transform produced too many weights for one reduction row");
+          columnIndex[column] =
+              rowCoordinate * MorpherSystolicFactor1 + nextColumn;
+          LLVMContext &weightContext = column->getContext();
+          Metadata *weightCoordinates[] = {
+              ConstantAsMetadata::get(ConstantInt::get(
+                  Type::getInt32Ty(weightContext), rowCoordinate)),
+              ConstantAsMetadata::get(ConstantInt::get(
+                  Type::getInt32Ty(weightContext), nextColumn))};
+          column->setMetadata(
+              SystolicStationaryWeightMetadata,
+              MDNode::get(weightContext, weightCoordinates));
+        }
         LLVMContext &context = instruction.getContext();
+        const unsigned columnCoordinate = weightStationary
+            ? columnIndex[column] % MorpherSystolicFactor1
+            : columnIndex[column];
         Metadata *coordinates[] = {
             ConstantAsMetadata::get(ConstantInt::get(
                 Type::getInt32Ty(context), rowIndex[row])),
             ConstantAsMetadata::get(ConstantInt::get(
-                Type::getInt32Ty(context), columnIndex[column]))};
+                Type::getInt32Ty(context), columnCoordinate))};
         instruction.setMetadata(SystolicMacCoordMetadata,
                                 MDNode::get(context, coordinates));
         instruction.setMetadata(
@@ -2166,7 +2258,8 @@ struct RestoreSystolicMemoryStreamsPass
         MorpherSystolicFactor0 * MorpherSystolicFactor1;
     if (taggedMacs != expectedMacs)
       report_fatal_error(
-          "systolic transform MAC coordinate count does not match jam tile");
+          Twine("systolic transform MAC coordinate count does not match jam tile: found ") +
+          Twine(taggedMacs) + ", expected " + Twine(expectedMacs));
     errs() << "Morpher systolic unroll-and-jam restored " << taggedLoads
            << " indexed input stream tag(s) and " << taggedMacs
            << " MAC coordinate(s) in " << function.getName() << "\n";
@@ -2184,6 +2277,14 @@ FunctionPassManager createMorpherSystolicCandidatePipeline() {
   return FPM;
 }
 
+FunctionPassManager createMorpherSystolicSchedulePrepPipeline() {
+  FunctionPassManager FPM;
+  FPM.addPass(LoopSimplifyPass());
+  FPM.addPass(LCSSAPass());
+  FPM.addPass(StripSystolicMapMarkerPass());
+  return FPM;
+}
+
 FunctionPassManager createMorpherSystolicUnrollJamPipeline() {
   FunctionPassManager FPM;
   FPM.addPass(LoopSimplifyPass());
@@ -2193,6 +2294,8 @@ FunctionPassManager createMorpherSystolicUnrollJamPipeline() {
   FPM.addPass(CanonicalizeSystolicOutputPass());
   FPM.addPass(ConfigureSystolicUnrollJamPass());
   FPM.addPass(createFunctionToLoopPassAdaptor(LoopUnrollAndJamPass()));
+  FPM.addPass(createFunctionToLoopPassAdaptor(
+      LoopFullUnrollPass(/*OptLevel=*/3, /*OnlyWhenForced=*/true)));
   FPM.addPass(LoopFusePass());
   FPM.addPass(createFunctionToLoopPassAdaptor(IndVarSimplifyPass()));
   FPM.addPass(InstCombinePass());

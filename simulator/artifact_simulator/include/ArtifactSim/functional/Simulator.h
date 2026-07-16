@@ -26,6 +26,7 @@ public:
 private:
   DFGGraph graph_;
   BoundaryContract boundary_;
+  std::map<std::pair<int, int>, Value> stationaryOperands_;
   NodeExecutor exec_;
   int maxIterations_;
   std::map<int, Value> values_;

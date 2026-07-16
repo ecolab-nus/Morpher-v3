@@ -24,10 +24,22 @@ llvm_add_library(dfggenPass MODULE
     dfg/DFGPartPred.cpp
     ../include/morpherdfggen/dfg/SystolicCandidatePass.h
     dfg/SystolicCandidatePass.cpp
+    dfg/SystolicPollySchedule.cpp
 )
+
+find_path(POLLY_INCLUDE_DIR polly/ScopPass.h
+    HINTS ${LLVM_INCLUDE_DIRS}
+    DOC "LLVM-version-matched Polly development headers")
+if(NOT POLLY_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "Systolic exact scheduling requires the LLVM-version-matched Polly "
+        "development headers (Ubuntu package: libpolly-18-dev).")
+endif()
 
 target_include_directories(dfggenPass PRIVATE
     ${LLVM_INCLUDE_DIRS}
+    ${POLLY_INCLUDE_DIR}
+    ${POLLY_INCLUDE_DIR}/polly
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 

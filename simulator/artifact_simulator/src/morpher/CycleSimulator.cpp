@@ -12,8 +12,10 @@ namespace {
 // simply arrives on the port when the fabric delivers it).
 class PortOperandSource : public OperandSource {
 public:
-  PortOperandSource(Value i1, Value i2, Value p)
-      : i1_(std::move(i1)), i2_(std::move(i2)), p_(std::move(p)) {}
+  PortOperandSource(Value i1, Value i2, Value p, int node,
+                    const std::map<std::pair<int, int>, Value> &stationary)
+      : i1_(std::move(i1)), i2_(std::move(i2)), p_(std::move(p)),
+        node_(node), stationary_(stationary) {}
 
   Value inputValue(const DFGNode &node, size_t index) const override {
     if (index >= node.inputs.size()) {
@@ -37,8 +39,16 @@ public:
     return Value::invalid();
   }
 
+  Value stationaryValue(const DFGNode &, const std::string &type) const override {
+    const int operand = type == "I1" ? 1 : type == "I2" ? 2 : -1;
+    auto it = stationary_.find({node_, operand});
+    return it != stationary_.end() ? it->second : Value::invalid();
+  }
+
 private:
   Value i1_, i2_, p_;
+  int node_;
+  const std::map<std::pair<int, int>, Value> &stationary_;
 };
 
 } // namespace
@@ -51,6 +61,7 @@ CycleSimulator::CycleSimulator(const Fabric &fabric, const ConfigMem &config,
       config_(config),
       graph_(graph),
       boundary_(std::move(boundary)),
+      stationaryOperands_(boundary_.stationaryOperands(trace)),
       exec_(graph_, std::move(alloc), trace,
             boundary_.recurrenceSeeds(trace)),
       maxIterations_(maxIterations) {}
@@ -69,7 +80,7 @@ SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
     const DFGNode &node = graph_.node(instr.node);
     const FabricPE &pe = fabric_.pes[static_cast<size_t>(
         fabric_.portPE[static_cast<size_t>(instr.i1Port)])];
-    PortOperandSource operands(i1, i2, p);
+    PortOperandSource operands(i1, i2, p, node.idx, stationaryOperands_);
     const bool isMac = node.op == "MAC" || node.op == "VMAC";
     Value *accumulator = isMac ? &macState[{pe.x, pe.y}] : nullptr;
     Value out = exec_.execute(node, operands, accumulator);

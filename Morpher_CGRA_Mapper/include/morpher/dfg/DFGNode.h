@@ -42,6 +42,11 @@ public:
 	int systolic_mem_stream_index = -1;
 	int systolic_mac_row = -1;
 	int systolic_mac_column = -1;
+	// A weight-stationary compute consumes this operand from register 0,
+	// preloaded once at loop launch from the named trace-image address.
+	int stationary_weight_operand = -1;
+	std::string stationary_weight_trace_var;
+	int stationary_weight_byte_offset = 0;
 	int gep_offset = -1;
 	bool simd_packed = false;
 	int simd_lanes = 1;

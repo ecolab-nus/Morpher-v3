@@ -1675,6 +1675,14 @@ void DFGPartPred::printNewDFGXML() {
 				<< "\" systolic_mac_column=\""
 				<< node->getSystolicMacColumn() << "\"";
 		}
+		if(node->hasStationaryWeightOperand()){
+			xmlFile << " stationary_weight_operand=\"I"
+				<< node->getStationaryWeightOperand() << "\"";
+			xmlFile << " stationary_weight_trace_var=\""
+				<< node->getStationaryWeightTraceVar() << "\"";
+			xmlFile << " stationary_weight_byte_offset=\""
+				<< node->getStationaryWeightByteOffset() << "\"";
+		}
 		xmlFile << ">\n";
 
 		std::string opName = HyCUBEInsStrings[node->getFinalIns()];
@@ -2142,6 +2150,91 @@ int DFGPartPred::canonicalizeScalarAccumulatorBoundaries(
 			[](const Candidate& candidate) { return candidate.fuseMAC; })
 		<< " native MAC(s); remaining nodes=" << NodeList.size() << "\n";
 	return (int)candidates.size();
+}
+
+int DFGPartPred::externalizeStationaryWeights()
+{
+	if (boundaryOriginalIndex.empty())
+	{
+		boundaryOriginalNodeCount = (int)NodeList.size();
+		for (dfgNode *node : NodeList)
+			boundaryOriginalIndex[node] = node->getIdx();
+	}
+
+	std::vector<dfgNode *> weights;
+	for (dfgNode *node : NodeList)
+		if (node->getNameType() == "OutLoopLOAD" &&
+			node->getStationaryWeightRow() >= 0 &&
+			node->getStationaryWeightColumn() >= 0)
+			weights.push_back(node);
+	if (weights.empty())
+		return 0;
+
+	for (dfgNode *weight : weights)
+	{
+		if (weight->getChildren().size() != 1)
+			report_fatal_error(
+				"A stationary weight must feed exactly one spatial compute node");
+		dfgNode *consumer = weight->getChildren().front();
+		if (consumer->getFinalIns() != MUL ||
+			consumer->getSystolicDataflow() != "weight_stationary" ||
+			consumer->getSystolicMacRow() != weight->getStationaryWeightRow() ||
+			consumer->getSystolicMacColumn() != weight->getStationaryWeightColumn())
+			report_fatal_error(
+				"Stationary weight and weight-owning multiply coordinates disagree");
+
+		int operand = -1;
+		for (const auto &classified : consumer->parentClassification)
+			if (classified.second == weight)
+			{
+				if (classified.first != 1 && classified.first != 2)
+					report_fatal_error(
+						"Stationary weight is not a data operand of its multiply");
+				operand = classified.first;
+				break;
+			}
+		if (operand < 0)
+			report_fatal_error(
+				"Stationary weight operand classification is missing");
+
+		StationaryPreload preload;
+		preload.mappedNode = consumer;
+		preload.operand = operand;
+		preload.valueBits = weight->getTypeSizeBytes() * 8;
+		preload.row = weight->getStationaryWeightRow();
+		preload.column = weight->getStationaryWeightColumn();
+		preload.traceVar = weight->getArrBasePtr();
+		if (preload.traceVar.empty() || preload.traceVar == "NOT_A_MEM_OP")
+			report_fatal_error("Stationary weight has no trace-image variable");
+		stationaryPreloads.push_back(preload);
+		consumer->setStationaryWeightOperand(
+			operand, preload.traceVar, preload.byteOffset);
+
+		consumer->parentClassification.erase(operand);
+		for (auto it = weight->childClassification.begin();
+			it != weight->childClassification.end(); )
+			if (it->second == consumer) it = weight->childClassification.erase(it);
+			else ++it;
+		weight->removeChild(consumer);
+		consumer->removeAncestor(weight);
+		if (Edge *edge = findEdge(weight, consumer))
+			removeEdge(edge);
+		Edge2OperandIdxMap[weight].erase(consumer);
+	}
+
+	std::unordered_set<dfgNode *> removed(weights.begin(), weights.end());
+	NodeList.erase(std::remove_if(NodeList.begin(), NodeList.end(),
+		[&removed](dfgNode *node) { return removed.count(node); }), NodeList.end());
+	for (auto it = OutLoopNodeMap.begin(); it != OutLoopNodeMap.end(); )
+		if (removed.count(it->second)) it = OutLoopNodeMap.erase(it); else ++it;
+	for (auto it = OutLoopNodeMapReverse.begin(); it != OutLoopNodeMapReverse.end(); )
+		if (removed.count(it->first)) it = OutLoopNodeMapReverse.erase(it); else ++it;
+	for (size_t index = 0; index < NodeList.size(); ++index)
+		NodeList[index]->setIdx((int)index);
+
+	llvm::outs() << "[boundary] Externalized " << stationaryPreloads.size()
+		<< " stationary weight operand(s) into launch preloads\n";
+	return (int)stationaryPreloads.size();
 }
 
 int DFGPartPred::classifyParents() {
@@ -2811,6 +2904,19 @@ dfgNode* DFGPartPred::addLoadParent(Value* ins, dfgNode* child) {
 	}
 	else{
 		temp = OutLoopNodeMap[ins];
+	}
+	if (Instruction *instruction = dyn_cast<Instruction>(ins)) {
+		if (MDNode *coordinates = instruction->getMetadata(
+				"morpher.systolic.stationary_weight")) {
+			if (coordinates->getNumOperands() != 2)
+				report_fatal_error("Malformed stationary-weight coordinates");
+			auto *row = mdconst::dyn_extract<ConstantInt>(coordinates->getOperand(0));
+			auto *column = mdconst::dyn_extract<ConstantInt>(coordinates->getOperand(1));
+			if (!row || !column)
+				report_fatal_error("Non-integer stationary-weight coordinates");
+			temp->setStationaryWeightCoordinates(
+				(int)row->getZExtValue(), (int)column->getZExtValue());
+		}
 	}
 
 	if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(ins)){

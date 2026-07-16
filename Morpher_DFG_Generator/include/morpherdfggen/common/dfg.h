@@ -526,8 +526,18 @@ class DFG{
 				std::vector<std::string> seedTraceVars;
 				std::vector<std::string> finalTraceVars;
 			};
+			struct StationaryPreload {
+				dfgNode *mappedNode = NULL;
+				int operand = -1;
+				int valueBits = 32;
+				int row = -1;
+				int column = -1;
+				std::string traceVar;
+				int byteOffset = 0;
+			};
 			void writeBoundaryManifest();
 			std::vector<BoundaryState> boundaryStates;
+			std::vector<StationaryPreload> stationaryPreloads;
 			std::set<std::string> boundaryPrunedArtifactVars;
 			std::unordered_map<dfgNode*, int> boundaryOriginalIndex;
 			int boundaryOriginalNodeCount = 0;

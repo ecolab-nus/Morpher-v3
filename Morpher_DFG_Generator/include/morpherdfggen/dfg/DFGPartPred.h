@@ -26,6 +26,7 @@ public :
 	void externalizeIteratorControl() { removeIteratorOnlyControl(&cmergeCtrlInputs); }
 	int canonicalizeScalarAccumulatorBoundaries(bool nativeMAC,
 		bool tregResetOnLaunch);
+	int externalizeStationaryWeights();
 
 	dfgNode* combineConditionAND(dfgNode* brcond, dfgNode* selcond, dfgNode* child);
 	bool checkBackEdge(dfgNode* src, dfgNode* dest);
