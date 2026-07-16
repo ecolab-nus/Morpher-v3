@@ -814,11 +814,11 @@ class RunnerConfig:
   auto_unroll_stop_on_degradation: bool
   auto_unroll_scalar_reduction_policy: str
   auto_unroll_scalar_reduction_terms: int
+  auto_unroll_fp_nondeterminism: bool
   arch_simd_enabled: bool
   arch_simd_width: int
   arch_scalar_broadcast: bool
   arch_vector_ops: frozenset
-  source_template_mode: str = "off"
 
   @staticmethod
   def _parse_auto_unroll(config_dict):
@@ -862,6 +862,11 @@ class RunnerConfig:
     try_loop_interchange = bool(auto_cfg.get("try_loop_interchange", True))
 
     stop_on_degradation = bool(auto_cfg.get("stop_on_degradation", False))
+    fp_nondeterminism = auto_cfg.get("fp_nondeterminism", True)
+    if not isinstance(fp_nondeterminism, bool):
+      raise RuntimeError(
+        "auto_unroll.fp_nondeterminism must be boolean."
+      )
     scalar_reduction_policy = str(
       auto_cfg.get("scalar_reduction_policy", "none")
     ).strip().lower()
@@ -899,29 +904,8 @@ class RunnerConfig:
       stop_on_degradation,
       scalar_reduction_policy,
       scalar_reduction_terms,
+      fp_nondeterminism,
     )
-
-  @staticmethod
-  def _parse_source_template(config_dict):
-    source_cfg = config_dict.get("source_template", {})
-    if source_cfg is None:
-      source_cfg = {}
-    if isinstance(source_cfg, bool):
-      return "auto" if source_cfg else "off"
-    if not isinstance(source_cfg, dict):
-      raise RuntimeError("Config key 'source_template' must be a mapping or boolean.")
-
-    enabled = source_cfg.get("enabled", "off")
-    if isinstance(enabled, bool):
-      return "auto" if enabled else "off"
-    mode = str(enabled).strip().lower()
-    if mode in ("true", "on", "yes"):
-      return "auto"
-    if mode in ("false", "off", "no", ""):
-      return "off"
-    if mode != "auto":
-      raise RuntimeError("source_template.enabled must be one of: off, auto.")
-    return mode
 
   @staticmethod
   def _parse_externalize_access(config_dict):
@@ -977,7 +961,7 @@ class RunnerConfig:
     pipeline = config_dict.get("dfg_pipeline") or {}
     if not isinstance(pipeline, dict):
       raise RuntimeError("Config key 'dfg_pipeline' must be a mapping.")
-    raw_mode = pipeline.get("boundary_canonicalization", "off")
+    raw_mode = pipeline.get("boundary_canonicalization", "verified")
     if isinstance(raw_mode, bool):
       mode = "verified" if raw_mode else "off"
     else:
@@ -986,8 +970,8 @@ class RunnerConfig:
       raise RuntimeError(
         "dfg_pipeline.boundary_canonicalization must be one of: off, verified."
       )
-    reset = pipeline.get("treg_reset_on_launch", False)
-    if not isinstance(reset, bool):
+    reset = pipeline.get("treg_reset_on_launch")
+    if reset is not None and not isinstance(reset, bool):
       raise RuntimeError("dfg_pipeline.treg_reset_on_launch must be boolean.")
     return mode, reset
 
@@ -1009,13 +993,13 @@ class RunnerConfig:
       auto_unroll_stop_on_degradation,
       auto_unroll_scalar_reduction_policy,
       auto_unroll_scalar_reduction_terms,
+      auto_unroll_fp_nondeterminism,
     ) = cls._parse_auto_unroll(config_dict)
     if "recmin_policy" in config_dict:
       raise RuntimeError(
         "recmin_policy was removed; RecMin is derived from explicit recurrence "
         "edges in the final transformed DFG."
       )
-    source_template_mode = cls._parse_source_template(config_dict)
     externalize_access = cls._parse_externalize_access(config_dict)
     simd_pack = cls._parse_simd_pack(config_dict, externalize_access)
     boundary_canonicalization, treg_reset_on_launch = (
@@ -1029,8 +1013,8 @@ class RunnerConfig:
       raise RuntimeError("bank_affinity_cost must be a non-negative integer.")
     if "experimental_python_semantic_transforms" in config_dict:
       raise RuntimeError(
-        "experimental_python_semantic_transforms was removed; source templates "
-        "are configured directly with source_template.enabled."
+        "experimental_python_semantic_transforms was removed; semantic transforms "
+        "are implemented as verified C++ IR passes."
       )
     _print_deprecation_warning(config_dict)
     validation_mode = str(config_dict.get("validation_mode", "functional")).strip().lower()
@@ -1081,7 +1065,10 @@ class RunnerConfig:
         set(inferred_op_classes.mem_pe_ops)
       )
     )
-    if treg_reset_on_launch and not arch_treg_reset_on_launch:
+    requested_treg_reset = treg_reset_on_launch
+    if requested_treg_reset is None:
+      treg_reset_on_launch = arch_treg_reset_on_launch
+    if requested_treg_reset is True and not arch_treg_reset_on_launch:
       raise RuntimeError(
         "dfg_pipeline.treg_reset_on_launch=true requests reset-backed state, "
         "but architecture %s does not declare "
@@ -1193,7 +1180,7 @@ class RunnerConfig:
       auto_unroll_stop_on_degradation=auto_unroll_stop_on_degradation,
       auto_unroll_scalar_reduction_policy=auto_unroll_scalar_reduction_policy,
       auto_unroll_scalar_reduction_terms=auto_unroll_scalar_reduction_terms,
-      source_template_mode=source_template_mode,
+      auto_unroll_fp_nondeterminism=auto_unroll_fp_nondeterminism,
       arch_simd_enabled=arch_simd.enabled,
       arch_simd_width=arch_simd.width,
       arch_scalar_broadcast=arch_simd.scalar_broadcast,

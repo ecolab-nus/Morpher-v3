@@ -1,0 +1,25 @@
+memory_mode: auto
+arch_template_json: edge_mem_4x4/scalar_3side.json
+mapper_subfolder: hycube
+mapper_preset: trusted_pf
+init_II: 1
+multihop: 4
+max_test_samples: 2
+enable_simulation: true
+validation_mode: functional
+spm_mode: 'off'
+
+dfg_pipeline:
+  externalize_access: agi_iter
+
+layout_solver: false
+replicate_data: false
+
+auto_unroll:
+  enabled: true
+  # The scalar baseline is retained; detected systolic recipes contribute
+  # architecture-bounded two-axis factors independently.
+  factors: [1]
+  try_loop_interchange: false
+  stop_on_degradation: false
+  scalar_reduction_policy: "none"

@@ -377,6 +377,7 @@ public:
 
 	bool estimateRouting(DFGNode *node, std::priority_queue<dest_with_cost> &estimatedRoutes, DFGNode **failedNode);
 	bool isStatefulTregDestinationAvailable(DFGNode *node, DataPath *candidate) const;
+	void applySystolicMemorySideConstraint(DFGNode *node, std::vector<DataPath *> &candidateDests) const;
 	void addBankAffinityPenalty(DFGNode *node, const std::vector<DataPath *> &candidateDests, std::map<DataPath *, int> &dpPenaltyMap);
 	int predictiveRoute(DFGNode *node,
 						DataPath *dest,
@@ -464,6 +465,7 @@ public:
 	void printBinFile(const std::vector<InsFormat>& insFArr, std::string fName, CGRA* cgra);
 	void setRestartOffset(int offset){restartOffset = offset;}
 	void setStrictBookkeeping(bool enable){strictBookkeeping = enable;}
+	void setEnforceSystolicMemorySides(bool enable){enforceSystolicMemorySides = enable;}
 	void setAttemptOutcome(AttemptOutcome outcome){lastAttemptOutcome = outcome;}
 	AttemptOutcome getAttemptOutcome() const { return lastAttemptOutcome; }
 	void resetAttemptOutcome(){lastAttemptOutcome = AttemptOutcome::UNKNOWN;}
@@ -514,6 +516,7 @@ protected:
 	int restartOffset = 0;
 	bool prioritizeMemoryOpsFirst = false;
 	bool strictBookkeeping = true;
+	bool enforceSystolicMemorySides = false;
 	AttemptOutcome lastAttemptOutcome = AttemptOutcome::UNKNOWN;
 	int progressIteration = -1;
 	const char *progressPhase = "idle";

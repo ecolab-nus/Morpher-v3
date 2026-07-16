@@ -7,6 +7,7 @@
 //============================================================================
 
 #include <iostream>
+#include <algorithm>
 #include <chrono>
 #include <sstream>
 #include <stdexcept>
@@ -22,6 +23,7 @@
 #include <morpher/arch/CGRA.h>
 #include <morpher/mapper/PathFinderMapper.h>
 #include <morpher/mapper/SimulatedAnnealingMapper.h>
+#include <morpher/mapper/SystolicMemoryAffinity.h>
 #include <math.h>
 
 #include <ctype.h>
@@ -174,6 +176,9 @@ int main(int argn, char *argc[])
 	
 	DFG currDFG;
 	currDFG.parseXML(inputDFG_filename);
+	const bool hasSystolicMemoryStreams = std::any_of(
+		currDFG.nodeList.begin(), currDFG.nodeList.end(),
+		[](const DFGNode &node) { return !node.systolic_mem_stream.empty(); });
 	if (print_dfg)
 	{
 		currDFG.printDFG();
@@ -325,8 +330,9 @@ int main(int argn, char *argc[])
 	pf_mapper->setDebugDumps(args.pf_debug_dumps != 0);
 	sa_mapper->setDebugDumps(args.pf_debug_dumps != 0);
 
-	// Starting-II utilization headroom: at 100% FU occupancy there is no slack
-	// for routing through PEs, so PF cannot realistically converge.
+	// Starting-II utilization headroom: dense general DFGs benefit from routing
+	// slack. Callers may explicitly pass 100 for structured candidates (for
+	// example, systolic dataflow) where full compute occupancy is intentional.
 	double utilCap = 1.0;
 	if (args.pf_util_headroom > 0)
 	{
@@ -334,7 +340,7 @@ int main(int argn, char *argc[])
 	}
 	else if (args.pf_guard_mode != "exhaust")
 	{
-		utilCap = 0.85;
+		utilCap = 0.90;
 	}
 
 	std::cout << "PF guard policy: mode=" << args.pf_guard_mode
@@ -408,7 +414,9 @@ int main(int argn, char *argc[])
 	                                 int phase_attempts) -> AttemptResult
 	{
 		AttemptResult result;
-		phase_attempts = std::max(1, phase_attempts);
+		phase_attempts = use_sa_map
+			? std::max(1, phase_attempts)
+			: systolicPathFinderAttemptCount(phase_attempts, hasSystolicMemoryStreams);
 		for (int restart = 0; restart < phase_attempts; ++restart)
 		{
 			DFG tempDFGStorage;
@@ -437,6 +445,16 @@ int main(int argn, char *argc[])
 			tempCGRA->max_hops = args.max_hops;
 			active_mapper->setRestartOffset(restart);
 			active_mapper->setStrictBookkeeping(strict_bookkeeping);
+			const bool enforceSystolicSides = enforceSystolicSidesOnAttempt(
+				hasSystolicMemoryStreams, use_sa_map, restart);
+			active_mapper->setEnforceSystolicMemorySides(enforceSystolicSides);
+			if (hasSystolicMemoryStreams && !use_sa_map)
+			{
+				std::cout << "Systolic memory-side policy at II = " << II
+				          << ": " << (enforceSystolicSides
+				              ? "row->left,column->bottom"
+				              : "unrestricted same-II fallback") << "\n";
+			}
 			active_mapper->resetAttemptOutcome();
 			active_mapper->getcongestedPortsPtr()->clear();
 			active_mapper->getconflictedPortsPtr()->clear();

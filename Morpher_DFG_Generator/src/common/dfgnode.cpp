@@ -23,6 +23,28 @@ static int readIntMetadata(Instruction *ins, const char *name, int defaultValue)
 	return defaultValue;
 }
 
+static int readIntMetadataOperand(Instruction *ins, const char *name,
+	unsigned operand, int defaultValue)
+{
+	if (!ins)
+	{
+		return defaultValue;
+	}
+	MDNode *md = ins->getMetadata(name);
+	if (!md || operand >= md->getNumOperands())
+	{
+		return defaultValue;
+	}
+	if (auto *cam = dyn_cast<ConstantAsMetadata>(md->getOperand(operand)))
+	{
+		if (auto *ci = dyn_cast<ConstantInt>(cam->getValue()))
+		{
+			return ci->getSExtValue();
+		}
+	}
+	return defaultValue;
+}
+
 static std::string readStringMetadata(Instruction *ins, const char *name)
 {
 	if (!ins)
@@ -56,6 +78,14 @@ dfgNode::dfgNode(Instruction *ins, DFG* parent){
 		readStringMetadata(ins, "morpher.simd.accumulator_exit_var");
 	this->simdAccumulatorSeedVar =
 		readStringMetadata(ins, "morpher.simd.accumulator_seed_var");
+	this->systolicMemStream =
+		readStringMetadata(ins, "morpher.systolic.mem_stream");
+	this->systolicMemStreamIndex =
+		readIntMetadata(ins, "morpher.systolic.mem_stream_index", -1);
+	this->systolicMacRow =
+		readIntMetadataOperand(ins, "morpher.systolic.mac_coord", 0, -1);
+	this->systolicMacColumn =
+		readIntMetadataOperand(ins, "morpher.systolic.mac_coord", 1, -1);
 
 	for (int i = 0; i < ins->getNumOperands(); ++i) {
 		if(ConstantInt *CI = dyn_cast<ConstantInt>(ins->getOperand(i))){

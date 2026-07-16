@@ -1,10 +1,11 @@
-// SystolicCandidatePass — detects affine tensor-contraction loop nests amenable
-// to a future systolic-template lowering. Pure analysis pass: emits a JSON
-// report and attaches `!systolic.candidate` LoopID metadata. See REFERENCE.md
-// for limitations.
+// SystolicCandidatePass detects affine tensor-contraction loop nests and emits
+// a versioned transform recipe. The companion pipeline consumes IR-native
+// recipe metadata and performs a restricted systolic unroll-and-jam transform.
+// See REFERENCE.md for the intentionally narrow legality contract.
 
 #include "morpherdfggen/dfg/SystolicCandidatePass.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -18,16 +19,28 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/LCSSA.h"
 #include "llvm/Transforms/Utils/LoopSimplify.h"
+#include "llvm/Transforms/Utils/UnrollLoop.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/EarlyCSE.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/IndVarSimplify.h"
+#include "llvm/Transforms/Scalar/LoopFuse.h"
+#include "llvm/Transforms/Scalar/LoopPassManager.h"
+#include "llvm/Transforms/Scalar/LoopUnrollAndJamPass.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 
 #include <algorithm>
 #include <fstream>
@@ -44,6 +57,41 @@ namespace {
 static cl::opt<std::string> MorpherSystolicReport(
     "morpher-systolic-report", cl::init(""),
     cl::desc("Write SystolicCandidatePass JSON report to this file (default: stderr)"));
+
+static cl::opt<std::string> MorpherSystolicTransformFunction(
+    "morpher-systolic-fn", cl::init(""),
+    cl::desc("Function containing the systolic candidate to transform"));
+
+static cl::opt<unsigned> MorpherSystolicCandidateIndex(
+    "morpher-systolic-candidate-index", cl::init(0),
+    cl::desc("Zero-based systolic candidate index within the target function"));
+
+static cl::opt<unsigned> MorpherSystolicFactor0(
+    "morpher-systolic-factor0", cl::init(0),
+    cl::desc("Exact unroll-and-jam factor for the first parallel dimension"));
+
+static cl::opt<unsigned> MorpherSystolicFactor1(
+    "morpher-systolic-factor1", cl::init(0),
+    cl::desc("Exact unroll-and-jam factor for the second parallel dimension"));
+
+static cl::opt<bool> MorpherSystolicFPNondeterminism(
+    "morpher-systolic-fp-nondeterminism", cl::init(true),
+    cl::desc("Permit floating-point reassociation during systolic output canonicalization"));
+
+constexpr StringLiteral SystolicRecipeMetadata =
+    "morpher.systolic.transform.recipe.v1";
+constexpr StringLiteral SystolicReductionMetadata =
+    "morpher.systolic.rolled_reduction.v1";
+constexpr StringLiteral SystolicMemStreamMetadata =
+    "morpher.systolic.mem_stream";
+constexpr StringLiteral SystolicMemStreamIndexMetadata =
+    "morpher.systolic.mem_stream_index";
+constexpr StringLiteral SystolicMacCoordMetadata =
+    "morpher.systolic.mac_coord";
+constexpr StringLiteral SystolicMemStreamBindingsAttr =
+    "morpher-systolic-mem-stream-bindings";
+constexpr StringLiteral SystolicStrippedMarkerAttr =
+    "morpher-systolic-stripped-map-marker";
 
 // ----------------------------------------------------------------------------
 // Data structures
@@ -67,6 +115,22 @@ struct MemopInfo {
 struct WeightedTerm {
   const LoadInst *load = nullptr;
   int64_t coefficient = 0;
+};
+
+struct TransformDimension {
+  unsigned level = 0;
+  uint64_t tripCount = 0;
+  SmallVector<uint64_t, 8> exactDivisors;
+};
+
+struct TransformRecipe {
+  static constexpr unsigned SchemaVersion = 1;
+
+  bool supported = false;
+  std::string reason;
+  SmallVector<TransformDimension, 2> parallelDimensions;
+  unsigned reductionLevel = 0;
+  uint64_t reductionTripCount = 0;
 };
 
 // ----------------------------------------------------------------------------
@@ -735,7 +799,14 @@ pickHints(NestRecord &rec, SmallVectorImpl<MemopInfo> &memops,
 // Phase 9b: LoopID metadata attachment
 // ----------------------------------------------------------------------------
 
-void attachLoopMetadata(Loop *L, ArrayRef<std::string> hints) {
+Metadata *unsignedMetadata(LLVMContext &Ctx, uint64_t value) {
+  return ConstantAsMetadata::get(
+      ConstantInt::get(Type::getInt64Ty(Ctx), value));
+}
+
+void attachLoopMetadata(Loop *L, ArrayRef<std::string> hints,
+                        const TransformRecipe &recipe,
+                        unsigned candidateIndex) {
   LLVMContext &Ctx = L->getHeader()->getContext();
   SmallVector<Metadata *, 8> ops;
   TempMDTuple selfRef = MDNode::getTemporary(Ctx, std::nullopt);
@@ -747,6 +818,20 @@ void attachLoopMetadata(Loop *L, ArrayRef<std::string> hints) {
     propOps.push_back(MDString::get(Ctx, h));
   ops.push_back(MDNode::get(Ctx, propOps));
 
+  if (recipe.supported) {
+    SmallVector<Metadata *, 9> recipeOps;
+    recipeOps.push_back(MDString::get(Ctx, SystolicRecipeMetadata));
+    recipeOps.push_back(unsignedMetadata(Ctx, TransformRecipe::SchemaVersion));
+    recipeOps.push_back(unsignedMetadata(Ctx, candidateIndex));
+    for (const TransformDimension &dimension : recipe.parallelDimensions) {
+      recipeOps.push_back(unsignedMetadata(Ctx, dimension.level));
+      recipeOps.push_back(unsignedMetadata(Ctx, dimension.tripCount));
+    }
+    recipeOps.push_back(unsignedMetadata(Ctx, recipe.reductionLevel));
+    recipeOps.push_back(unsignedMetadata(Ctx, recipe.reductionTripCount));
+    ops.push_back(MDNode::get(Ctx, recipeOps));
+  }
+
   // Preserve existing LoopID operands (skip its self-ref at index 0).
   if (MDNode *existing = L->getLoopID())
     for (unsigned i = 1; i < existing->getNumOperands(); ++i)
@@ -755,6 +840,72 @@ void attachLoopMetadata(Loop *L, ArrayRef<std::string> hints) {
   MDNode *newID = MDNode::getDistinct(Ctx, ops);
   newID->replaceOperandWith(0, newID); // resolve self-reference
   L->setLoopID(newID);
+}
+
+// Record only the two contraction input streams.  The first transformed
+// parallel dimension is the PE-row dimension, so an input indexed by it and
+// the reduction dimension enters from the left.  The second is the PE-column
+// dimension and enters from the bottom.  The binding lives in a temporary
+// function string attribute during LLVM cleanup because GVN intentionally
+// drops unknown instruction metadata.  A final pass restores per-load
+// metadata after sharing is done.
+// Output seed loads share a base with a store and deliberately remain
+// unrestricted.
+void attachSystolicMemoryStreams(
+    NestRecord &rec, const SmallVectorImpl<MemopInfo> &memops,
+    ArrayRef<const MemopInfo *> stores, const TransformRecipe &recipe) {
+  if (!recipe.supported || recipe.parallelDimensions.size() != 2 ||
+      recipe.reductionLevel >= rec.levels.size())
+    return;
+  const unsigned rowLevel = recipe.parallelDimensions[0].level;
+  const unsigned columnLevel = recipe.parallelDimensions[1].level;
+  if (rowLevel >= rec.levels.size() || columnLevel >= rec.levels.size())
+    return;
+
+  Loop *rowLoop = rec.levels[rowLevel];
+  Loop *columnLoop = rec.levels[columnLevel];
+  Loop *reductionLoop = rec.levels[recipe.reductionLevel];
+  SmallPtrSet<Value *, 4> outputBases;
+  for (const MemopInfo *store : stores)
+    outputBases.insert(store->basePtr);
+
+  auto baseKey = [](Value *base) -> std::string {
+    if (auto *argument = dyn_cast<Argument>(base))
+      return "a" + std::to_string(argument->getArgNo());
+    if (auto *global = dyn_cast<GlobalValue>(base))
+      return "g" + std::to_string(GlobalValue::getGUID(global->getName()));
+    if (auto *alloca = dyn_cast<AllocaInst>(base)) {
+      if (alloca->getName().empty())
+        alloca->setName("morpher.systolic.base");
+      return "l" + std::to_string(GlobalValue::getGUID(alloca->getName()));
+    }
+    return "";
+  };
+  std::string bindings;
+  SmallPtrSet<Value *, 4> boundBases;
+  for (const MemopInfo &memop : memops) {
+    if (memop.isStore || outputBases.count(memop.basePtr) ||
+        !memop.deps.count(reductionLoop))
+      continue;
+    StringRef role;
+    if (memop.deps.count(rowLoop) && !memop.deps.count(columnLoop))
+      role = "row";
+    else if (memop.deps.count(columnLoop) && !memop.deps.count(rowLoop))
+      role = "column";
+    else
+      continue;
+    if (!boundBases.insert(memop.basePtr).second)
+      continue;
+    std::string key = baseKey(memop.basePtr);
+    if (key.empty())
+      continue;
+    if (!bindings.empty())
+      bindings += ",";
+    bindings += role.str() + ":" + key;
+  }
+  if (!bindings.empty())
+    rec.outer->getHeader()->getParent()->addFnAttr(
+        SystolicMemStreamBindingsAttr, bindings);
 }
 
 // ----------------------------------------------------------------------------
@@ -801,6 +952,89 @@ std::optional<uint64_t> constantTripCount(Loop *L, ScalarEvolution &SE) {
   return std::nullopt;
 }
 
+SmallVector<uint64_t, 8> exactUnrollDivisors(uint64_t tripCount) {
+  SmallVector<uint64_t, 8> out;
+  for (uint64_t factor = 2; factor <= tripCount / factor; ++factor) {
+    if (tripCount % factor != 0)
+      continue;
+    out.push_back(factor);
+    uint64_t pairedFactor = tripCount / factor;
+    if (pairedFactor != factor)
+      out.push_back(pairedFactor);
+  }
+  if (tripCount > 1)
+    out.push_back(tripCount);
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
+bool isPerfectThreeLevelChain(const NestRecord &rec) {
+  if (rec.levels.size() != 3)
+    return false;
+  for (unsigned level = 0; level + 1 < rec.levels.size(); ++level) {
+    ArrayRef<Loop *> subLoops = rec.levels[level]->getSubLoops();
+    if (subLoops.size() != 1 || subLoops.front() != rec.levels[level + 1])
+      return false;
+  }
+  return rec.levels.back()->getSubLoops().empty();
+}
+
+TransformRecipe buildTransformRecipe(
+    const NestRecord &rec, LoopInfo &LI, ScalarEvolution &SE, StringRef verdict,
+    StringRef family, StringRef rejectReason,
+    const DenseSet<const Loop *> &reductionLoops,
+    const DenseSet<const Loop *> &outputDeps,
+    ArrayRef<const MemopInfo *> stores) {
+  TransformRecipe recipe;
+  auto unsupported = [&](Twine reason) {
+    recipe.reason = reason.str();
+    return recipe;
+  };
+
+  if (verdict == "no" || !rejectReason.empty())
+    return unsupported(rejectReason.empty() ? "candidate rejected by detector"
+                                            : rejectReason);
+  if (family != "gemm_like_2d_reduction")
+    return unsupported("lowering family is not gemm_like_2d_reduction");
+  if (!isPerfectThreeLevelChain(rec))
+    return unsupported("v1 requires a canonical perfect three-level nest");
+  if (LI.getLoopsInPreorder().size() != 3)
+    return unsupported("v1 requires the candidate to be the function's only loop nest");
+  if (stores.size() != 1)
+    return unsupported("v1 requires exactly one output base");
+  if (reductionLoops.size() != 1)
+    return unsupported("v1 requires exactly one reduction loop");
+
+  const Loop *reduction = *reductionLoops.begin();
+  if (rec.levels.back() != reduction)
+    return unsupported("v1 requires the reduction loop to be innermost");
+  if (outputDeps.size() != 2 || !outputDeps.count(rec.levels[0]) ||
+      !outputDeps.count(rec.levels[1]))
+    return unsupported("v1 requires the two outer loops to be parallel output dimensions");
+
+  for (unsigned level = 0; level < rec.levels.size(); ++level) {
+    auto tripCount = constantTripCount(rec.levels[level], SE);
+    if (!tripCount || *tripCount == 0)
+      return unsupported("v1 requires constant positive trip counts");
+    if (level < 2) {
+      TransformDimension dimension;
+      dimension.level = level;
+      dimension.tripCount = *tripCount;
+      dimension.exactDivisors = exactUnrollDivisors(*tripCount);
+      if (dimension.exactDivisors.empty())
+        return unsupported("parallel trip count has no non-trivial exact divisor");
+      recipe.parallelDimensions.push_back(std::move(dimension));
+    } else {
+      recipe.reductionLevel = level;
+      recipe.reductionTripCount = *tripCount;
+    }
+  }
+
+  recipe.supported = true;
+  return recipe;
+}
+
 StringRef loweringFamilyFor(Function &F, const NestRecord &rec,
                             const DenseSet<const Loop *> &reductionLoops,
                             unsigned macs, unsigned stencilPairs,
@@ -826,7 +1060,7 @@ bool sourceEquivalentCandidateFor(StringRef family, StringRef verdict,
 }
 
 void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
-               ScalarEvolution &SE,
+               ScalarEvolution &SE, unsigned candidateIndex,
                StringRef verdict, ArrayRef<std::string> hints,
                const SmallVectorImpl<MemopInfo> &memops,
                const DenseSet<const Loop *> &reductionLoops,
@@ -835,10 +1069,11 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
                unsigned addOps,
                ArrayRef<const MemopInfo *> stores,
                unsigned triangularLoops, double kernelShapeFactor,
-               StringRef rejectReason) {
+               StringRef rejectReason, const TransformRecipe &recipe) {
   OS << "{";
   OS << "\"function\":";
   writeQuoted(OS, F.getName());
+  OS << ",\"candidate_index\":" << candidateIndex;
   OS << ",\"loop_header\":";
   writeQuoted(OS, rec.outer->getHeader()->getName());
   OS << ",\"verdict\":";
@@ -1000,6 +1235,45 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
                                        stencilPairs, coefficientsKnown);
   OS << ",\"lowering_family\":";
   writeQuoted(OS, family);
+  OS << ",\"transform_recipe\":{";
+  OS << "\"schema_version\":" << TransformRecipe::SchemaVersion;
+  OS << ",\"candidate_id\":";
+  writeQuoted(OS, (Twine(F.getName()) + "#" + Twine(candidateIndex)).str());
+  OS << ",\"transform_supported\":"
+     << (recipe.supported ? "true" : "false");
+  OS << ",\"unsupported_reason\":";
+  if (recipe.supported)
+    OS << "null";
+  else
+    writeQuoted(OS, recipe.reason);
+  OS << ",\"parallel_dimensions\":[";
+  for (unsigned dimensionIndex = 0;
+       dimensionIndex < recipe.parallelDimensions.size(); ++dimensionIndex) {
+    if (dimensionIndex)
+      OS << ",";
+    const TransformDimension &dimension =
+        recipe.parallelDimensions[dimensionIndex];
+    OS << "{\"level\":" << dimension.level;
+    OS << ",\"trip_count\":" << dimension.tripCount;
+    OS << ",\"requires_exact_divisor\":true";
+    OS << ",\"legal_factors\":[";
+    for (unsigned factorIndex = 0;
+         factorIndex < dimension.exactDivisors.size(); ++factorIndex) {
+      if (factorIndex)
+        OS << ",";
+      OS << dimension.exactDivisors[factorIndex];
+    }
+    OS << "]}";
+  }
+  OS << "]";
+  OS << ",\"rolled_reduction\":";
+  if (recipe.supported) {
+    OS << "{\"level\":" << recipe.reductionLevel;
+    OS << ",\"trip_count\":" << recipe.reductionTripCount << "}";
+  } else {
+    OS << "null";
+  }
+  OS << "}";
   OS << ",\"source_equivalent_candidate\":"
      << (sourceEquivalentCandidateFor(family, verdict, rejectReason) ? "true" : "false");
   OS << ",\"systolic_reject_reason\":";
@@ -1044,6 +1318,11 @@ void emitReport(const std::string &json) {
 // ----------------------------------------------------------------------------
 
 struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
+  explicit SystolicCandidatePass(bool emitJSONReport = true)
+      : emitJSONReport(emitJSONReport) {}
+
+  bool emitJSONReport;
+
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
     LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
     ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
@@ -1052,7 +1331,9 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
     AAResults &AA = AM.getResult<AAManager>(F);
 
     auto nests = findNests(LI);
-    for (NestRecord &rec : nests) {
+    for (unsigned candidateIndex = 0; candidateIndex < nests.size();
+         ++candidateIndex) {
+      NestRecord &rec = nests[candidateIndex];
       std::string rejectReason;
       std::string verdict = "yes";
       SmallVector<std::string, 3> hints;
@@ -1069,16 +1350,28 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
       double kernelShapeFactor = 1.0;
 
       auto reportThis = [&]() {
+        StringRef transformFamily = loweringFamilyFor(
+            F, rec, reductionLoops, macs, stencilPairs,
+            /*exactWeightedSum=*/false);
+        TransformRecipe recipe = buildTransformRecipe(
+            rec, LI, SE, verdict, transformFamily, rejectReason, reductionLoops,
+            outputDeps, stores);
         std::string buf;
         raw_string_ostream OS(buf);
-        writeJSON(OS, F, rec, SE, verdict, hints, memops, reductionLoops,
+        writeJSON(OS, F, rec, SE, candidateIndex, verdict, hints, memops, reductionLoops,
                   outputDeps, macs, stencilPairs, totalArith, mulOps, addOps,
                   stores,
-                  triangularLoops, kernelShapeFactor, rejectReason);
+                  triangularLoops, kernelShapeFactor, rejectReason, recipe);
         OS.flush();
-        emitReport(buf);
-        if (verdict != "no")
-          attachLoopMetadata(rec.outer, hints);
+        if (emitJSONReport)
+          emitReport(buf);
+        if (verdict != "no") {
+          // The temporary binding attribute is an implementation detail of
+          // the consuming transform and must not leak from report-only runs.
+          if (!emitJSONReport)
+            attachSystolicMemoryStreams(rec, memops, stores, recipe);
+          attachLoopMetadata(rec.outer, hints, recipe, candidateIndex);
+        }
       };
 
       if (!recoverIVs(rec, SE)) {
@@ -1224,12 +1517,611 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
   }
 };
 
+MDNode *findLoopProperty(const Loop *loop, StringRef name) {
+  MDNode *loopID = loop ? loop->getLoopID() : nullptr;
+  if (!loopID)
+    return nullptr;
+  for (unsigned operandIndex = 1; operandIndex < loopID->getNumOperands();
+       ++operandIndex) {
+    auto *property = dyn_cast_or_null<MDNode>(loopID->getOperand(operandIndex));
+    if (!property || property->getNumOperands() == 0)
+      continue;
+    auto *propertyName =
+        dyn_cast_or_null<MDString>(property->getOperand(0));
+    if (propertyName && propertyName->getString() == name)
+      return property;
+  }
+  return nullptr;
+}
+
+std::optional<uint64_t> metadataUnsigned(MDNode *node, unsigned operandIndex) {
+  if (!node || operandIndex >= node->getNumOperands())
+    return std::nullopt;
+  auto *constant =
+      dyn_cast_or_null<ConstantAsMetadata>(node->getOperand(operandIndex));
+  auto *integer = constant ? dyn_cast<ConstantInt>(constant->getValue()) : nullptr;
+  if (!integer || integer->isNegative())
+    return std::nullopt;
+  return integer->getZExtValue();
+}
+
+void setLoopProperty(Loop *loop, StringRef name, ArrayRef<Metadata *> values,
+                     bool removeUnrollDisable = false) {
+  LLVMContext &context = loop->getHeader()->getContext();
+  SmallVector<Metadata *, 8> operands;
+  TempMDTuple selfReference = MDNode::getTemporary(context, std::nullopt);
+  operands.push_back(selfReference.get());
+
+  SmallVector<Metadata *, 4> propertyOperands;
+  propertyOperands.push_back(MDString::get(context, name));
+  propertyOperands.append(values.begin(), values.end());
+  operands.push_back(MDNode::get(context, propertyOperands));
+
+  if (MDNode *existing = loop->getLoopID()) {
+    for (unsigned operandIndex = 1;
+         operandIndex < existing->getNumOperands(); ++operandIndex) {
+      auto *property =
+          dyn_cast_or_null<MDNode>(existing->getOperand(operandIndex));
+      StringRef propertyName;
+      if (property && property->getNumOperands() != 0)
+        if (auto *text = dyn_cast_or_null<MDString>(property->getOperand(0)))
+          propertyName = text->getString();
+      if (propertyName == name ||
+          (removeUnrollDisable &&
+           (propertyName == "llvm.loop.unroll.disable" ||
+            propertyName == "llvm.loop.unroll_and_jam.disable")))
+        continue;
+      operands.push_back(existing->getOperand(operandIndex));
+    }
+  }
+
+  MDNode *newLoopID = MDNode::getDistinct(context, operands);
+  newLoopID->replaceOperandWith(0, newLoopID);
+  loop->setLoopID(newLoopID);
+}
+
+Function *resolveCalledFunction(CallBase *call) {
+  if (!call)
+    return nullptr;
+  if (Function *called = call->getCalledFunction())
+    return called;
+  return dyn_cast<Function>(call->getCalledOperand()->stripPointerCasts());
+}
+
+bool isMapMarker(CallBase *call) {
+  Function *called = resolveCalledFunction(call);
+  return called && called->getName() == "please_map_me";
+}
+
+struct ParsedTransformRecipe {
+  unsigned candidateIndex = 0;
+  unsigned dimension0Level = 0;
+  uint64_t dimension0TripCount = 0;
+  unsigned dimension1Level = 0;
+  uint64_t dimension1TripCount = 0;
+  unsigned reductionLevel = 0;
+  uint64_t reductionTripCount = 0;
+};
+
+struct StripSystolicMapMarkerPass
+    : public PassInfoMixin<StripSystolicMapMarkerPass> {
+  PreservedAnalyses run(Function &function,
+                        FunctionAnalysisManager &analysisManager) {
+    if (function.isDeclaration() ||
+        function.getName() != MorpherSystolicTransformFunction)
+      return PreservedAnalyses::all();
+
+    LoopInfo &loopInfo = analysisManager.getResult<LoopAnalysis>(function);
+    Loop *markerLoop = nullptr;
+    SmallVector<CallBase *, 4> markers;
+    for (BasicBlock &block : function) {
+      for (Instruction &instruction : block) {
+        auto *call = dyn_cast<CallBase>(&instruction);
+        if (!call || !isMapMarker(call))
+          continue;
+        Loop *containingLoop = loopInfo.getLoopFor(&block);
+        if (!containingLoop)
+          report_fatal_error("please_map_me() must be inside the candidate nest");
+        if (markerLoop && markerLoop != containingLoop)
+          report_fatal_error("please_map_me() calls annotate different loops");
+        if (!call->use_empty())
+          report_fatal_error("please_map_me() return value cannot be used");
+        markerLoop = containingLoop;
+        markers.push_back(call);
+      }
+    }
+    if (markers.empty())
+      return PreservedAnalyses::all();
+
+    function.addFnAttr(SystolicStrippedMarkerAttr,
+                       Twine(markerLoop->getLoopDepth()).str());
+    for (CallBase *marker : markers)
+      marker->eraseFromParent();
+    errs() << "Morpher systolic unroll-and-jam temporarily removed "
+           << markers.size() << " map marker(s) from " << function.getName()
+           << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
+std::optional<ParsedTransformRecipe> parseTransformRecipe(const Loop *loop) {
+  MDNode *property = findLoopProperty(loop, SystolicRecipeMetadata);
+  if (!property || property->getNumOperands() != 9)
+    return std::nullopt;
+  auto schema = metadataUnsigned(property, 1);
+  auto candidate = metadataUnsigned(property, 2);
+  auto dimension0Level = metadataUnsigned(property, 3);
+  auto dimension0TripCount = metadataUnsigned(property, 4);
+  auto dimension1Level = metadataUnsigned(property, 5);
+  auto dimension1TripCount = metadataUnsigned(property, 6);
+  auto reductionLevel = metadataUnsigned(property, 7);
+  auto reductionTripCount = metadataUnsigned(property, 8);
+  if (!schema || *schema != TransformRecipe::SchemaVersion || !candidate ||
+      !dimension0Level || !dimension0TripCount || !dimension1Level ||
+      !dimension1TripCount || !reductionLevel || !reductionTripCount)
+    return std::nullopt;
+
+  ParsedTransformRecipe recipe;
+  recipe.candidateIndex = static_cast<unsigned>(*candidate);
+  recipe.dimension0Level = static_cast<unsigned>(*dimension0Level);
+  recipe.dimension0TripCount = *dimension0TripCount;
+  recipe.dimension1Level = static_cast<unsigned>(*dimension1Level);
+  recipe.dimension1TripCount = *dimension1TripCount;
+  recipe.reductionLevel = static_cast<unsigned>(*reductionLevel);
+  recipe.reductionTripCount = *reductionTripCount;
+  return recipe;
+}
+
+SmallVector<Loop *, 4> uniqueLoopChain(Loop *outer) {
+  SmallVector<Loop *, 4> levels;
+  for (Loop *loop = outer; loop != nullptr;) {
+    levels.push_back(loop);
+    ArrayRef<Loop *> subLoops = loop->getSubLoops();
+    if (subLoops.empty())
+      break;
+    if (subLoops.size() != 1)
+      return {};
+    loop = subLoops.front();
+  }
+  return levels;
+}
+
+// Convert the exact `C[...] += product` memory recurrence used by
+// GEMM-like kernels into a zero-seeded scalar reduction plus one epilogue
+// update of C.  Doing this before unroll-and-jam lets LLVM clone the scalar
+// accumulator once per output lane, and lets the existing verified boundary
+// canonicalizer fuse every cloned MUL+ADD into a stateful native MAC.
+//
+// Floating-point recurrences require an explicit opt-in because moving the
+// dynamic C seed after the reduction changes IEEE/FMA rounding. Floating
+// kernels can alternatively use the already-supported explicit
+// `accumulator = 0` source form.
+struct CanonicalizeSystolicOutputPass
+    : public PassInfoMixin<CanonicalizeSystolicOutputPass> {
+  PreservedAnalyses run(Function &function, FunctionAnalysisManager &analysisManager) {
+    if (function.isDeclaration() ||
+        function.getName() != MorpherSystolicTransformFunction)
+      return PreservedAnalyses::all();
+
+    LoopInfo &loopInfo = analysisManager.getResult<LoopAnalysis>(function);
+    Loop *outer = nullptr;
+    for (Loop *candidate : loopInfo.getLoopsInPreorder()) {
+      auto parsed = parseTransformRecipe(candidate);
+      if (!parsed || parsed->candidateIndex != MorpherSystolicCandidateIndex)
+        continue;
+      if (outer)
+        report_fatal_error("systolic candidate index is ambiguous during output canonicalization");
+      outer = candidate;
+    }
+    if (!outer)
+      report_fatal_error("systolic output canonicalization lost the transform recipe");
+
+    SmallVector<Loop *, 4> levels = uniqueLoopChain(outer);
+    if (levels.size() != 3)
+      report_fatal_error("systolic output canonicalization requires a three-level loop chain");
+    Loop *reduction = levels.back();
+    BasicBlock *header = reduction->getHeader();
+    BasicBlock *preheader = reduction->getLoopPreheader();
+    BasicBlock *latch = reduction->getLoopLatch();
+    BasicBlock *exit = reduction->getUniqueExitBlock();
+    BasicBlock *exiting = reduction->getExitingBlock();
+    if (!header || !preheader || !latch || !exit || exiting != latch ||
+        reduction->getNumBlocks() != 1)
+      report_fatal_error(
+          "systolic output canonicalization requires one canonical reduction block");
+
+    SmallVector<StoreInst *, 4> stores;
+    for (Instruction &instruction : *header)
+      if (auto *store = dyn_cast<StoreInst>(&instruction))
+        stores.push_back(store);
+
+    unsigned promoted = 0;
+    bool promotedFloating = false;
+    for (StoreInst *store : stores) {
+      if (!store->isSimple())
+        continue;
+      auto *update = dyn_cast<Instruction>(store->getValueOperand());
+      if (!update)
+        continue;
+      auto *binaryUpdate = dyn_cast<BinaryOperator>(update);
+      auto *intrinsicUpdate = dyn_cast<IntrinsicInst>(update);
+      const bool isInteger = binaryUpdate &&
+                             binaryUpdate->getOpcode() == Instruction::Add &&
+                             update->getType()->isIntegerTy();
+      const bool isFloatingAdd = binaryUpdate &&
+                                 binaryUpdate->getOpcode() == Instruction::FAdd &&
+                                 update->getType()->isFloatingPointTy();
+      const bool isFloatingFMA = intrinsicUpdate &&
+                                 intrinsicUpdate->getIntrinsicID() == Intrinsic::fmuladd &&
+                                 update->getType()->isFloatingPointTy();
+      const bool isFloating = isFloatingAdd || isFloatingFMA;
+      if (!isInteger && !(isFloating && MorpherSystolicFPNondeterminism))
+        continue;
+
+      LoadInst *seedLoad = nullptr;
+      unsigned seedOperand = 0;
+      const unsigned seedBegin = isFloatingFMA ? 2 : 0;
+      const unsigned seedEnd = isFloatingFMA ? 3 : 2;
+      for (unsigned operand = seedBegin; operand < seedEnd; ++operand) {
+        auto *load = dyn_cast<LoadInst>(update->getOperand(operand));
+        if (!load || !load->isSimple() ||
+            load->getPointerOperand() != store->getPointerOperand())
+          continue;
+        seedLoad = load;
+        seedOperand = operand;
+        break;
+      }
+      if (!seedLoad || !seedLoad->hasOneUse() || !update->hasOneUse() ||
+          !reduction->isLoopInvariant(store->getPointerOperand()))
+        continue;
+
+      PHINode *accumulator = PHINode::Create(
+          update->getType(), 2, "morpher.systolic.acc", &*header->begin());
+      accumulator->addIncoming(Constant::getNullValue(update->getType()), preheader);
+      accumulator->addIncoming(update, latch);
+      update->setOperand(seedOperand, accumulator);
+      // The zero-based integer partial sum can overflow in cases where the
+      // original C-biased intermediate did not. Modular ADD still agrees for
+      // every source execution in which the original signed operations were
+      // defined, so stale source no-wrap flags must not survive.
+      if (isInteger) {
+        binaryUpdate->setHasNoSignedWrap(false);
+        binaryUpdate->setHasNoUnsignedWrap(false);
+      }
+
+      IRBuilder<> builder(&*exit->getFirstInsertionPt());
+      LoadInst *initialC = builder.CreateLoad(
+          seedLoad->getType(), store->getPointerOperand(),
+          "morpher.systolic.initial_c");
+      initialC->setAlignment(seedLoad->getAlign());
+      initialC->copyMetadata(*seedLoad);
+      Value *finalC = isInteger
+          ? builder.CreateAdd(initialC, update, "morpher.systolic.final_c")
+          : builder.CreateFAdd(initialC, update, "morpher.systolic.final_c");
+      StoreInst *finalStore = builder.CreateStore(finalC, store->getPointerOperand());
+      finalStore->setAlignment(store->getAlign());
+      finalStore->copyMetadata(*store);
+
+      store->eraseFromParent();
+      seedLoad->eraseFromParent();
+      promotedFloating |= isFloating;
+      ++promoted;
+    }
+
+    if (promoted == 0) {
+      errs() << "Morpher systolic output canonicalization: no supported memory "
+                "recurrence in " << function.getName() << "\n";
+      return PreservedAnalyses::all();
+    }
+    if (promoted != 1)
+      report_fatal_error(
+          "systolic v1 expected exactly one pre-jam output recurrence");
+    errs() << "Morpher systolic output canonicalization promoted " << promoted
+           << " output recurrence in " << function.getName();
+    if (promotedFloating)
+      errs() << " (fp_nondeterminism enabled)";
+    errs() << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
+struct ConfigureSystolicUnrollJamPass
+    : public PassInfoMixin<ConfigureSystolicUnrollJamPass> {
+  PreservedAnalyses run(Function &function, FunctionAnalysisManager &analysisManager) {
+    if (function.isDeclaration())
+      return PreservedAnalyses::all();
+    if (MorpherSystolicTransformFunction.empty())
+      report_fatal_error("morpher-systolic-fn must name the function to transform");
+    if (function.getName() != MorpherSystolicTransformFunction)
+      return PreservedAnalyses::all();
+    if (MorpherSystolicFactor0 <= 1 || MorpherSystolicFactor1 <= 1)
+      report_fatal_error("systolic unroll-and-jam factors must both be greater than one");
+
+    LoopInfo &loopInfo = analysisManager.getResult<LoopAnalysis>(function);
+    ScalarEvolution &scalarEvolution =
+        analysisManager.getResult<ScalarEvolutionAnalysis>(function);
+    DominatorTree &dominatorTree =
+        analysisManager.getResult<DominatorTreeAnalysis>(function);
+    DependenceInfo &dependenceInfo =
+        analysisManager.getResult<DependenceAnalysis>(function);
+
+    Loop *outer = nullptr;
+    ParsedTransformRecipe recipe;
+    for (Loop *candidate : loopInfo.getLoopsInPreorder()) {
+      auto parsed = parseTransformRecipe(candidate);
+      if (!parsed || parsed->candidateIndex != MorpherSystolicCandidateIndex)
+        continue;
+      if (outer)
+        report_fatal_error("systolic candidate index is ambiguous in target function");
+      outer = candidate;
+      recipe = *parsed;
+    }
+    if (!outer)
+      report_fatal_error("requested function/candidate has no supported systolic transform recipe");
+
+    SmallVector<Loop *, 4> levels = uniqueLoopChain(outer);
+    if (levels.size() != 3 || recipe.dimension0Level != 0 ||
+        recipe.dimension1Level != 1 || recipe.reductionLevel != 2)
+      report_fatal_error("systolic transform recipe no longer matches a canonical three-level nest");
+    if (loopInfo.getLoopsInPreorder().size() != 3)
+      report_fatal_error(
+          "systolic transform requires the candidate to be the function's only loop nest");
+    Attribute markerDepth = function.getFnAttribute(SystolicStrippedMarkerAttr);
+    if (!markerDepth.isStringAttribute())
+      report_fatal_error(
+          "systolic transform requires please_map_me() in the rolled reduction loop");
+    unsigned expectedDepth = 0;
+    if (markerDepth.getValueAsString().getAsInteger(10, expectedDepth) ||
+        levels[2]->getLoopDepth() != expectedDepth)
+      report_fatal_error("please_map_me() did not annotate the rolled reduction loop");
+
+    const uint64_t expectedTrips[] = {
+        recipe.dimension0TripCount, recipe.dimension1TripCount,
+        recipe.reductionTripCount};
+    for (unsigned level = 0; level < levels.size(); ++level) {
+      auto currentTrip = constantTripCount(levels[level], scalarEvolution);
+      if (!currentTrip || *currentTrip != expectedTrips[level])
+        report_fatal_error("systolic transform recipe trip count no longer matches the IR");
+    }
+    if (recipe.dimension0TripCount % MorpherSystolicFactor0 != 0 ||
+        recipe.dimension1TripCount % MorpherSystolicFactor1 != 0)
+      report_fatal_error("systolic unroll-and-jam factors must exactly divide their trip counts");
+    if (!isSafeToUnrollAndJam(levels[0], scalarEvolution, dominatorTree,
+                              dependenceInfo, loopInfo) ||
+        !isSafeToUnrollAndJam(levels[1], scalarEvolution, dominatorTree,
+                              dependenceInfo, loopInfo))
+      report_fatal_error("LLVM rejected unroll-and-jam legality for the selected nest");
+
+    LLVMContext &context = function.getContext();
+    Metadata *factor0 = ConstantAsMetadata::get(
+        ConstantInt::get(Type::getInt32Ty(context), MorpherSystolicFactor0));
+    Metadata *factor1 = ConstantAsMetadata::get(
+        ConstantInt::get(Type::getInt32Ty(context), MorpherSystolicFactor1));
+    setLoopProperty(levels[0], "llvm.loop.unroll_and_jam.count", factor0,
+                    /*removeUnrollDisable=*/true);
+    setLoopProperty(levels[1], "llvm.loop.unroll_and_jam.count", factor1,
+                    /*removeUnrollDisable=*/true);
+    setLoopProperty(levels[2], SystolicReductionMetadata, {});
+
+    errs() << "Morpher systolic unroll-and-jam configured: function="
+           << function.getName() << " candidate="
+           << MorpherSystolicCandidateIndex << " factors="
+           << MorpherSystolicFactor0 << "x" << MorpherSystolicFactor1 << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
+struct RestoreSystolicMapMarkerPass
+    : public PassInfoMixin<RestoreSystolicMapMarkerPass> {
+  PreservedAnalyses run(Function &function, FunctionAnalysisManager &analysisManager) {
+    if (function.isDeclaration() ||
+        function.getName() != MorpherSystolicTransformFunction)
+      return PreservedAnalyses::all();
+
+    LoopInfo &loopInfo = analysisManager.getResult<LoopAnalysis>(function);
+    SmallVector<Loop *, 4> reductions;
+    for (Loop *loop : loopInfo.getLoopsInPreorder())
+      if (findLoopProperty(loop, SystolicReductionMetadata))
+        reductions.push_back(loop);
+    if (reductions.size() != 1)
+      report_fatal_error(
+          "systolic unroll-and-jam did not produce one rolled reduction loop");
+
+    if (!function.hasFnAttribute(SystolicStrippedMarkerAttr))
+      return PreservedAnalyses::all();
+    for (BasicBlock &block : function)
+      for (Instruction &instruction : block)
+        if (auto *call = dyn_cast<CallBase>(&instruction))
+          if (isMapMarker(call))
+            report_fatal_error("please_map_me() unexpectedly survived marker stripping");
+
+    Function *markerFunction = function.getParent()->getFunction("please_map_me");
+    if (!markerFunction)
+      report_fatal_error("please_map_me() declaration disappeared during systolic transform");
+    IRBuilder<> builder(reductions.front()->getHeader()->getTerminator());
+    builder.CreateCall(markerFunction->getFunctionType(), markerFunction);
+    function.removeFnAttr(SystolicStrippedMarkerAttr);
+    errs() << "Morpher systolic unroll-and-jam restored map marker in rolled "
+              "reduction loop of "
+           << function.getName() << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
+struct RestoreSystolicMemoryStreamsPass
+    : public PassInfoMixin<RestoreSystolicMemoryStreamsPass> {
+  PreservedAnalyses run(Function &function, FunctionAnalysisManager &) {
+    Attribute bindingsAttr = function.getFnAttribute(SystolicMemStreamBindingsAttr);
+    if (!bindingsAttr.isStringAttribute())
+      return PreservedAnalyses::all();
+
+    auto baseKey = [](Value *base) -> std::string {
+      if (auto *argument = dyn_cast<Argument>(base))
+        return "a" + std::to_string(argument->getArgNo());
+      if (auto *global = dyn_cast<GlobalValue>(base))
+        return "g" + std::to_string(GlobalValue::getGUID(global->getName()));
+      if (auto *alloca = dyn_cast<AllocaInst>(base))
+        return alloca->getName().empty()
+                   ? ""
+                   : "l" + std::to_string(
+                         GlobalValue::getGUID(alloca->getName()));
+      return "";
+    };
+    SmallVector<std::pair<std::string, std::string>, 4> bindings;
+    SmallVector<StringRef, 4> encodedBindings;
+    bindingsAttr.getValueAsString().split(encodedBindings, ',', -1, false);
+    for (StringRef encoded : encodedBindings) {
+      auto split = encoded.split(':');
+      if (!split.first.empty() && !split.second.empty())
+        bindings.emplace_back(split.first.str(), split.second.str());
+    }
+
+    unsigned taggedLoads = 0;
+    SmallVector<LoadInst *, 8> rowLoads;
+    SmallVector<LoadInst *, 8> columnLoads;
+    for (BasicBlock &block : function) {
+      for (Instruction &instruction : block) {
+        auto *load = dyn_cast<LoadInst>(&instruction);
+        if (!load)
+          continue;
+        Value *base = resolveBasePointer(load->getPointerOperand());
+        const std::string key = baseKey(base);
+        for (const auto &binding : bindings) {
+          if (binding.second != key)
+            continue;
+          LLVMContext &context = instruction.getContext();
+          instruction.setMetadata(
+              SystolicMemStreamMetadata,
+              MDNode::get(context, MDString::get(context, binding.first)));
+          if (binding.first == "row")
+            rowLoads.push_back(load);
+          else if (binding.first == "column")
+            columnLoads.push_back(load);
+          ++taggedLoads;
+          break;
+        }
+      }
+    }
+    function.removeFnAttr(SystolicMemStreamBindingsAttr);
+    if (taggedLoads == 0)
+      report_fatal_error(
+          "systolic transform lost every classified input memory stream");
+    if (rowLoads.size() != MorpherSystolicFactor0 ||
+        columnLoads.size() != MorpherSystolicFactor1)
+      report_fatal_error(
+          "systolic transform input stream count does not match jam factors");
+
+    DenseMap<LoadInst *, unsigned> rowIndex;
+    DenseMap<LoadInst *, unsigned> columnIndex;
+    auto attachIndices = [](ArrayRef<LoadInst *> loads,
+                            DenseMap<LoadInst *, unsigned> &indices) {
+      for (unsigned index = 0; index < loads.size(); ++index) {
+        LoadInst *load = loads[index];
+        indices[load] = index;
+        LLVMContext &context = load->getContext();
+        load->setMetadata(
+            SystolicMemStreamIndexMetadata,
+            MDNode::get(context, ConstantAsMetadata::get(
+                                     ConstantInt::get(Type::getInt32Ty(context),
+                                                      index))));
+      }
+    };
+    attachIndices(rowLoads, rowIndex);
+    attachIndices(columnLoads, columnIndex);
+
+    auto directLoad = [](Value *value) -> LoadInst * {
+      while (auto *cast = dyn_cast<CastInst>(value))
+        value = cast->getOperand(0);
+      return dyn_cast<LoadInst>(value);
+    };
+    unsigned taggedMacs = 0;
+    for (BasicBlock &block : function) {
+      for (Instruction &instruction : block) {
+        Value *lhs = nullptr;
+        Value *rhs = nullptr;
+        if (auto *intrinsic = dyn_cast<IntrinsicInst>(&instruction)) {
+          Intrinsic::ID id = intrinsic->getIntrinsicID();
+          if (id != Intrinsic::fmuladd && id != Intrinsic::fma)
+            continue;
+          lhs = intrinsic->getOperand(0);
+          rhs = intrinsic->getOperand(1);
+        } else {
+          auto *add = dyn_cast<BinaryOperator>(&instruction);
+          if (!add || !isAddShape(add->getOpcode()))
+            continue;
+          BinaryOperator *product = nullptr;
+          for (unsigned operand = 0; operand < 2; ++operand) {
+            auto *candidate = dyn_cast<BinaryOperator>(add->getOperand(operand));
+            if (candidate && isMulShape(candidate->getOpcode())) {
+              product = candidate;
+              break;
+            }
+          }
+          if (!product)
+            continue;
+          lhs = product->getOperand(0);
+          rhs = product->getOperand(1);
+        }
+
+        LoadInst *first = directLoad(lhs);
+        LoadInst *second = directLoad(rhs);
+        if (!first || !second)
+          continue;
+        LoadInst *row = rowIndex.count(first) ? first
+                          : rowIndex.count(second) ? second : nullptr;
+        LoadInst *column = columnIndex.count(first) ? first
+                             : columnIndex.count(second) ? second : nullptr;
+        if (!row || !column)
+          continue;
+        LLVMContext &context = instruction.getContext();
+        Metadata *coordinates[] = {
+            ConstantAsMetadata::get(ConstantInt::get(
+                Type::getInt32Ty(context), rowIndex[row])),
+            ConstantAsMetadata::get(ConstantInt::get(
+                Type::getInt32Ty(context), columnIndex[column]))};
+        instruction.setMetadata(SystolicMacCoordMetadata,
+                                MDNode::get(context, coordinates));
+        ++taggedMacs;
+      }
+    }
+    const unsigned expectedMacs =
+        MorpherSystolicFactor0 * MorpherSystolicFactor1;
+    if (taggedMacs != expectedMacs)
+      report_fatal_error(
+          "systolic transform MAC coordinate count does not match jam tile");
+    errs() << "Morpher systolic unroll-and-jam restored " << taggedLoads
+           << " indexed input stream tag(s) and " << taggedMacs
+           << " MAC coordinate(s) in " << function.getName() << "\n";
+    return PreservedAnalyses::none();
+  }
+};
+
 } // namespace
 
 FunctionPassManager createMorpherSystolicCandidatePipeline() {
   FunctionPassManager FPM;
   FPM.addPass(LoopSimplifyPass());
   FPM.addPass(LCSSAPass());
-  FPM.addPass(SystolicCandidatePass());
+  FPM.addPass(SystolicCandidatePass(/*emitJSONReport=*/true));
+  return FPM;
+}
+
+FunctionPassManager createMorpherSystolicUnrollJamPipeline() {
+  FunctionPassManager FPM;
+  FPM.addPass(LoopSimplifyPass());
+  FPM.addPass(LCSSAPass());
+  FPM.addPass(SystolicCandidatePass(/*emitJSONReport=*/false));
+  FPM.addPass(StripSystolicMapMarkerPass());
+  FPM.addPass(CanonicalizeSystolicOutputPass());
+  FPM.addPass(ConfigureSystolicUnrollJamPass());
+  FPM.addPass(createFunctionToLoopPassAdaptor(LoopUnrollAndJamPass()));
+  FPM.addPass(LoopFusePass());
+  FPM.addPass(createFunctionToLoopPassAdaptor(IndVarSimplifyPass()));
+  FPM.addPass(InstCombinePass());
+  FPM.addPass(EarlyCSEPass());
+  FPM.addPass(GVNPass());
+  FPM.addPass(SimplifyCFGPass());
+  FPM.addPass(RestoreSystolicMemoryStreamsPass());
+  FPM.addPass(RestoreSystolicMapMarkerPass());
   return FPM;
 }

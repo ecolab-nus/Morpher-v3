@@ -54,7 +54,7 @@ struct arguments
 	int pf_guard_max_consecutive = 0; // 0=mode default
 	int pf_frontier_stall_repeats = 0; // 0=disabled; fail PF iteration after repeated same-frontier failures
 	int pf_frontier_stall_min_mapped = 0;
-	int pf_util_headroom = 0; // starting-II utilization cap in percent; 0=mode default (85, exhaust=100=off)
+	int pf_util_headroom = 0; // starting-II utilization cap in percent; 0=mode default (90, exhaust=100=off)
 	int pf_stagnation_iters = 0; // 0=mode default; abort an II when unmapped stays high after this many PF iterations
 	int pf_stagnation_percent = 0; // 0=mode default; the "stays high" threshold as percent of DFG nodes
 	int pf_debug_dumps = 0; // 1: write per-iteration mapping.csv/routeInfo.log/congestion.info debug dumps
@@ -112,7 +112,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<int>("", "--pf_guard_max_consecutive", "consecutive guarded PF iterations before failing PF phase (0=mode default)", 0)
 					.add_option<int>("", "--pf_frontier_stall_repeats", "fail PF iteration after repeated same-frontier route failures (0=disabled)", 0)
 					.add_option<int>("", "--pf_frontier_stall_min_mapped", "only apply PF frontier stall detector after this many mapped nodes", 0)
-					.add_option<int>("", "--pf_util_headroom", "starting-II utilization cap in percent (0=mode default: 85, exhaust off; 100=off)", 0)
+					.add_option<int>("", "--pf_util_headroom", "starting-II utilization cap in percent (0=mode default: 90, exhaust off; 100=off)", 0)
 					.add_option<int>("", "--pf_stagnation_iters", "abort an II when unmapped stays above threshold after this many PF iterations (0=mode default)", 0)
 					.add_option<int>("", "--pf_stagnation_percent", "PF stagnation threshold as percent of DFG nodes (0=mode default)", 0)
 					.add_option<int>("", "--pf_debug_dumps", "write per-iteration mapping.csv/routeInfo.log/congestion.info dumps (1=on, 0=off)", 0)

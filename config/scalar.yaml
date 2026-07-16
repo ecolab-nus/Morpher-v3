@@ -10,8 +10,6 @@ validation_mode: functional
 spm_mode: 'off'
 layout_solver: false
 replicate_data: false
-source_template:
-  enabled: off
 auto_unroll:
   enabled: false
   factors: [1]

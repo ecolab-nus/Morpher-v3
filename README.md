@@ -108,7 +108,6 @@ Options:
 | `--run-tag <tag>` | Non-empty tag string; sanitized to `[A-Za-z0-9._-]` | timestamp if omitted | Reuse a stable tag under `workspace/morpher_runs/<tag>/`; batch runners use this to avoid collisions. |
 | `--output-root <path>` | Directory path | `generated` | For direct single-kernel C runs, write `result.csv` and copied `config.yaml` under `<root>/<suite>/<kernel>/<timestamp>/`. Ignored when `--run-tag` is supplied. |
 | `--mem-alloc <path>` | Existing file path | none | XML input mode only: explicit mapper memory-allocation file. |
-| `--source-template-report <path\|auto>` | Existing JSONL report or `auto` | none | Try source-bound systolic-template lowering before normal DFG generation. Accepted records stage synthesized XML; rejected/conditional records fall back. |
 
 `runmode` values (default: `runall`):
 
@@ -180,10 +179,9 @@ Default config: `config/default.yaml`. Provided configs include:
 | `max_test_samples` | Integer `>= 0` | required in provided configs | Trace-generation limit and simulator sample cap. |
 | `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
 | `dfg_pipeline.externalize_access` | `off`, `agi`, `agi_iter` | `off` | Trace-driven C++ access externalization. `agi` removes address-generation nodes before instrumentation. `agi_iter` additionally removes the iterator/control component only when it has no edge to surviving work; addresses are trace-driven and the iterator manifest remaps their final node indices. It rejects data, predicate, recurrence, or reduction boundaries. |
-| `dfg_pipeline.boundary_canonicalization` | `off`, `verified` | `off` | Recognize canonical `i32` scalar loop-carried accumulators, omit their PHI launch/exit scaffolding from the mapped graph, and emit a validated boundary manifest. Unsupported shapes remain unchanged. |
-| `dfg_pipeline.treg_reset_on_launch` | Boolean | `false` | Request reset-backed lowering. It is accepted only when the selected architecture declares `ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH: true`; with native `MAC`, a zero seed may then fuse to stateful MAC. A power-on-only reset is insufficient. |
+| `dfg_pipeline.boundary_canonicalization` | `off`, `verified` | `verified` | Recognize canonical `i32` scalar loop-carried accumulators, omit their PHI launch/exit scaffolding from the mapped graph, and emit a validated boundary manifest. Unsupported shapes remain unchanged. |
+| `dfg_pipeline.treg_reset_on_launch` | Boolean when specified | architecture capability | Omission automatically enables reset-backed stateful-MAC lowering when the architecture declares `ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH: true`; otherwise verified boundary lowering keeps an explicit recurrence. Explicit `true` still requires the declaration, and `false` disables reset-backed lowering. This is the current implementation of accumulator-epoch zero initialization. |
 | `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi` or `agi_iter`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
-| `source_template.enabled` | `off`, `auto`, Boolean | `off` | Source-bound template lowering. `auto` stages an accepted synthesized template or falls back to normal DFG generation. |
 | `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |
 | `replicate_data` | Boolean: `true` or `false` | `false` | With `layout_solver: true`, allow read-only array replication across banks. |
 
@@ -224,6 +222,38 @@ candidate before PathFinder only when its normalized lower bound is strictly
 worse than an already mapped incumbent. Interchanged candidates are tried first
 because they commonly expose a recurrence-free data-parallel inner loop.
 
+When automatic search is enabled, `SystolicCandidatePass` also examines the
+optimized IR. A supported canonical GEMM-like nest contributes two-axis
+`systolic_jam` candidates whose factors are exact trip-count divisors bounded
+by the architecture dimensions. These candidates are transformed entirely in
+LLVM IR, then use the normal DFG generation, instrumentation, mapper, and
+artifact-simulation paths. The original scalar candidate is always retained.
+The mapper's general starting-II utilization headroom is disabled for these
+structured candidates, allowing a legal full-occupancy systolic II to be tried.
+For supported two-dimensional contractions, the transformed DFG preserves a
+lane index on each input stream and a `(row,column)` coordinate on each MAC. On
+the first PathFinder attempt, row stream `r` is placed on the left memory PE
+aligned with compute row `r`, column stream `c` on the bottom memory PE aligned
+with compute column `c`, and MAC `(r,c)` at that compute coordinate. Existing
+adaptive multicast routing may branch from previously routed tree points,
+providing forwarding-style east/west or north/south reuse without extra DFG
+nodes. A failed structured attempt is retried unrestricted at the same II;
+output memory operations and non-systolic candidates remain unrestricted.
+
+For memory-resident output recurrences, the transform recognizes the exact
+single-block `C += product` form and moves the initial `C` value and final update
+to the unscheduled loop boundary, leaving a zero-seeded steady-state
+accumulator. This is always valid for the supported integer form. Floating-point
+reassociation is enabled by default for systolic candidates; set
+`auto_unroll.fp_nondeterminism: false` to retain the original C-seeded operation
+order instead.
+
+The initial implementation deliberately accepts only a function whose sole loop
+nest is a perfect three-level nest with two outer parallel output dimensions
+and one innermost rolled reduction containing `please_map_me()`. Dynamic bounds,
+remainders, imperfect or multiple nests, and loop orders requiring interchange
+remain detector results but are not transformed.
+
 All valid candidates are generated before mapping, then exact duplicate DFGs
 are removed and the remainder are ranked by normalized recurrence bound,
 iterator-externalization success, memory-node pressure, total graph size, and
@@ -250,6 +280,11 @@ pruned before PathFinder.
 | `auto_unroll.fuse_innermost_loops` | Boolean: `true` or `false` | `true` | Before unrolling, attempt a conservative fusion/flattening of the annotated innermost loop with its direct parent when the nest is canonical and constant-trip. |
 | `auto_unroll.try_loop_interchange` | Boolean: `true` or `false` | `true` | For each factor, also map a candidate produced by LLVM loop interchange after temporarily removing the map marker. This requires the marker to identify the unique deepest loop in a single-child nest; a rejected interchanged candidate does not discard the original candidate. |
 | `auto_unroll.stop_on_degradation` | Boolean: `true` or `false` | `false` | Optional search-budget override: after the initial preset beam finds an incumbent, do not adaptively expand to lower-ranked candidates. Failure still expands the beam. |
+| `auto_unroll.fp_nondeterminism` | Boolean: `true` or `false` | `true` | For systolic JAM candidates, permit a floating-point memory recurrence `C += product` to become a zero-seeded temporary reduction followed by one boundary `C += temporary` update. Set `false` to preserve the original floating-point operation order. |
+
+`auto_unroll_results.csv` records `candidate_kind`, systolic recipe ID, and the
+two selected factors. Systolic candidates are scored by `II / (factor0 ×
+factor1)`; scalar candidates retain `II / unroll_factor`.
 
 RecMin has no normal configuration policy. The mapper normalizes explicit
 `nextiter` edges and reversed `RecParents` memory constraints from the final

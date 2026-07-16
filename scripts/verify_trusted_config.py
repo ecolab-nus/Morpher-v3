@@ -44,14 +44,13 @@ def validate(path: Path) -> list[str]:
     expected_equal = {
         "mapper_preset": (cfg.mapper_preset, "trusted_pf"),
         "mapping_method": (cfg.mapping_method, 0),
-        "ii_restarts": (cfg.ii_restarts, 0),
+        "ii_restarts": (cfg.ii_restarts, 1),
         "off_spm_mem_candidate_topk": (cfg.off_spm_mem_candidate_topk, 0),
         "pf_candidate_topk": (cfg.pf_candidate_topk, 0),
         "pf_frontier_stall_repeats": (cfg.pf_frontier_stall_repeats, 8),
         "pf_frontier_stall_min_mapped": (cfg.pf_frontier_stall_min_mapped, 3),
         "rut_recovery_seed": (cfg.rut_recovery_seed, 0),
         "sa_stall_min_unmapped": (cfg.sa_stall_min_unmapped, 1),
-        "source_template_mode": (cfg.source_template_mode, "off"),
     }
     for key, (actual, expected) in expected_equal.items():
         if actual != expected:

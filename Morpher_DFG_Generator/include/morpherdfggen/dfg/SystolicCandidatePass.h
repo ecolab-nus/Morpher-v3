@@ -4,5 +4,6 @@
 #include "llvm/IR/PassManager.h"
 
 llvm::FunctionPassManager createMorpherSystolicCandidatePipeline();
+llvm::FunctionPassManager createMorpherSystolicUnrollJamPipeline();
 
 #endif

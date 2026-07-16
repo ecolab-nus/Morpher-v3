@@ -138,7 +138,7 @@ def resolve_pf_node_order(context):
   return "mem_first" if use_mem_first else "default"
 
 
-def build_mapper_commands(context):
+def build_mapper_commands(context, pf_util_headroom=None):
   config = context.config
   kernel = context.kernel
   mode = config.memory_mode
@@ -149,6 +149,10 @@ def build_mapper_commands(context):
   mem_alloc = mem_alloc_path(context)
   emit_binary = False
   pf_node_order = resolve_pf_node_order(context)
+  if pf_util_headroom is not None:
+    pf_util_headroom = int(pf_util_headroom)
+    if pf_util_headroom < 1 or pf_util_headroom > 100:
+      raise RuntimeError("pf_util_headroom override must be in [1, 100].")
   mapper_common_args = [
     "-d",
     "%s_PartPredDFG.xml" % kernel,
@@ -215,6 +219,8 @@ def build_mapper_commands(context):
     "--proximity_sort",
     "1" if getattr(config, "proximity_sort", True) else "0",
   ]
+  if pf_util_headroom is not None:
+    mapper_common_args += ["--pf_util_headroom", str(pf_util_headroom)]
 
   node_pin = getattr(config, "node_pin", "")
   if node_pin:
@@ -275,7 +281,7 @@ def build_mapper_commands(context):
   return commands, mapper_arch
 
 
-def run_mapper(context):
+def run_mapper(context, pf_util_headroom=None):
   config = context.config
   verbose_cmds = os.getenv("MORPHER_VERBOSE_CMDS", "").strip().lower() not in ("", "0", "false", "off", "no")
 
@@ -284,8 +290,12 @@ def run_mapper(context):
   if config.memory_mode == "auto":
     print("\nUpdating memory allocation..\n")
 
-  commands, mapper_arch = build_mapper_commands(context)
+  commands, mapper_arch = build_mapper_commands(context, pf_util_headroom)
   print("Arch used by mapper: %s\n" % mapper_arch)
+  if pf_util_headroom is not None:
+    print(
+      "Starting-II utilization cap override: %d%%.\n" % pf_util_headroom
+    )
   print("Mapper binary emission is disabled; artifact simulation consumes the mapped DFG.\n")
   total = len(commands)
   for idx, cmd in enumerate(commands, start=1):

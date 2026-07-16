@@ -16,9 +16,6 @@ dfg_pipeline:
 layout_solver: false
 replicate_data: false
 
-source_template:
-  enabled: off
-
 auto_unroll:
   enabled: false
   factors: [1]

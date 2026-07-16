@@ -1,5 +1,5 @@
 # Regression-gate config: pins a stable, reproducible single run per kernel.
-# Auto-unroll and source templates are disabled so the DFG (and therefore the
+# Automatic candidate search is disabled so the DFG (and therefore the
 # achieved II) does not drift when mapper II-search heuristics change. The gate
 # asserts II does not regress and simulation validation stays clean.
 memory_mode: auto
@@ -19,9 +19,6 @@ dfg_pipeline:
   externalize_access: agi_iter
 layout_solver: false
 replicate_data: false
-
-source_template:
-  enabled: off
 
 auto_unroll:
   enabled: false

@@ -1659,6 +1659,18 @@ void DFGPartPred::printNewDFGXML() {
 				<< (node->isStatefulTreg() ? "treg" : "explicit_recurrence")
 				<< "\"";
 		}
+		if(!node->getSystolicMemStream().empty()){
+			xmlFile << " systolic_mem_stream=\""
+				<< node->getSystolicMemStream() << "\"";
+			if(node->getSystolicMemStreamIndex() >= 0)
+				xmlFile << " systolic_mem_stream_index=\""
+					<< node->getSystolicMemStreamIndex() << "\"";
+		}
+		if(node->getSystolicMacRow() >= 0 && node->getSystolicMacColumn() >= 0){
+			xmlFile << " systolic_mac_row=\"" << node->getSystolicMacRow()
+				<< "\" systolic_mac_column=\""
+				<< node->getSystolicMacColumn() << "\"";
+		}
 		xmlFile << ">\n";
 
 		std::string opName = HyCUBEInsStrings[node->getFinalIns()];

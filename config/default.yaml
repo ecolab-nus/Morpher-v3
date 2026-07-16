@@ -10,14 +10,9 @@ validation_mode: functional
 spm_mode: 'off'
 
 dfg_pipeline:
-  # Conservative C++ removal: skip iterator removal if control still reaches
-  # mapped work; AGI externalization remains applied.
   externalize_access: agi_iter
 layout_solver: false
 replicate_data: false
-
-source_template:
-  enabled: off
 
 auto_unroll:
   enabled: true

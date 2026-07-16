@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from morpher_runner.context import RunnerConfig
 from morpher_runner.dfg_generator import build_dfg_pass_command
 from morpher_runner.dfg_generator import build_loop_interchange_command
+from morpher_runner.dfg_generator import build_systolic_unroll_jam_command
 from morpher_runner.dfg_generator import build_unroll_command
 from morpher_runner.dfg_generator import validate_iter_manifest
 from morpher_runner.dfg_generator import validate_simd_manifest
@@ -20,6 +21,7 @@ from morpher_runner.simd_packer import SimdMapping
 from run_morpher import _final_graph_recurrence_lower_bound
 from run_morpher import _mapping_beam_width
 from run_morpher import _candidate_can_improve
+from run_morpher import _systolic_jam_variants
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +79,10 @@ class ExternalizeAccessConfigTests(unittest.TestCase):
 
   def test_scalar_boundary_mode_requires_a_boolean_reset_contract(self):
     self.assertEqual(
+      RunnerConfig._parse_boundary_canonicalization({}),
+      ("verified", None),
+    )
+    self.assertEqual(
       RunnerConfig._parse_boundary_canonicalization(
         {
           "dfg_pipeline": {
@@ -122,6 +128,10 @@ class TraceDrivenCommandTests(unittest.TestCase):
     )
     command = build_dfg_pass_command(context)
     self.assertIn("--externalize-access=agi_iter", command)
+    self.assertIn("--canonicalize-loop-boundaries", command)
+    self.assertIn("--native-stateful-mac", command)
+    self.assertIn("--treg-reset-on-launch", command)
+    self.assertTrue(config.treg_reset_on_launch)
 
   def test_scalar_boundary_config_passes_mac_and_launch_reset_contract(self):
     config = RunnerConfig.from_yaml(
@@ -152,6 +162,28 @@ class TraceDrivenCommandTests(unittest.TestCase):
       with self.assertRaisesRegex(RuntimeError, "does not declare"):
         RunnerConfig.from_yaml(str(config_path))
 
+  def test_omitted_reset_falls_back_on_architecture_without_capability(self):
+    source = (REPO_ROOT / "config" / "scalar_boundary_verified.yaml").read_text(
+      encoding="utf-8"
+    )
+    source = source.replace(
+      "edge_mem_4x4/scalar_3side.json",
+      "edge_mem_4x4/scalar_4side.json",
+    ).replace("  treg_reset_on_launch: true\n", "")
+    with tempfile.TemporaryDirectory() as directory:
+      config_path = Path(directory) / "automatic_reset.yaml"
+      config_path.write_text(source, encoding="utf-8")
+      config = RunnerConfig.from_yaml(str(config_path))
+    self.assertEqual(config.boundary_canonicalization, "verified")
+    self.assertFalse(config.treg_reset_on_launch)
+    command = build_dfg_pass_command(SimpleNamespace(
+      config=config,
+      kernel="probe",
+      dfg_gen_home=str(REPO_ROOT / "Morpher_DFG_Generator"),
+    ))
+    self.assertIn("--canonicalize-loop-boundaries", command)
+    self.assertNotIn("--treg-reset-on-launch", command)
+
   def test_loop_interchange_command_uses_target_scoped_marker_pipeline(self):
     context = SimpleNamespace(
       kernel="probe",
@@ -166,11 +198,44 @@ class TraceDrivenCommandTests(unittest.TestCase):
     self.assertIn("probe_opt.ll", command.argv)
     self.assertIn("probe_li_opt.ll", command.argv)
 
+  def test_systolic_unroll_jam_command_is_target_and_recipe_scoped(self):
+    context = SimpleNamespace(
+      kernel="probe",
+      dfg_gen_home=str(REPO_ROOT / "Morpher_DFG_Generator"),
+      dfg_gen_kernel="/tmp/probe/",
+    )
+    command = build_systolic_unroll_jam_command(context, 2, 3, 4)
+    self.assertIn("-passes=morpher-systolic-unroll-jam", command.argv)
+    self.assertIn("-morpher-systolic-fn", command.argv)
+    self.assertIn("-morpher-systolic-candidate-index", command.argv)
+    self.assertIn("probe_sj_c2_3x4_opt.ll", command.argv)
+    self.assertIn("-morpher-systolic-fp-nondeterminism=true", command.argv)
+
+    context.config = SimpleNamespace(
+      auto_unroll_fp_nondeterminism=False,
+    )
+    deterministic = build_systolic_unroll_jam_command(context, 2, 3, 4)
+    self.assertIn(
+      "-morpher-systolic-fp-nondeterminism=false", deterministic.argv
+    )
+
   def test_auto_unroll_parses_loop_interchange_search(self):
     parsed = RunnerConfig._parse_auto_unroll(
       {"auto_unroll": {"enabled": True, "try_loop_interchange": True}}
     )
     self.assertTrue(parsed[3])
+
+  def test_systolic_fp_nondeterminism_defaults_true_and_is_boolean(self):
+    default = RunnerConfig._parse_auto_unroll({"auto_unroll": {}})
+    disabled = RunnerConfig._parse_auto_unroll({
+      "auto_unroll": {"fp_nondeterminism": False}
+    })
+    self.assertTrue(default[7])
+    self.assertFalse(disabled[7])
+    with self.assertRaisesRegex(RuntimeError, "must be boolean"):
+      RunnerConfig._parse_auto_unroll({
+        "auto_unroll": {"fp_nondeterminism": "true"}
+      })
 
   def test_internal_unroll_defaults_and_explicit_factor_override(self):
     defaults = RunnerConfig._parse_auto_unroll({"auto_unroll": {"enabled": True}})
@@ -181,6 +246,47 @@ class TraceDrivenCommandTests(unittest.TestCase):
     self.assertEqual(explicit[1], [3, 6])
     self.assertTrue(defaults[3])
     self.assertFalse(defaults[4])
+
+  def test_systolic_variants_intersect_recipe_factors_with_arch_dimensions(self):
+    records = [{
+      "function": "probe",
+      "candidate_index": 3,
+      "transform_recipe": {
+        "candidate_id": "probe#3",
+        "transform_supported": True,
+        "parallel_dimensions": [
+          {"level": 0, "legal_factors": [2, 4, 8]},
+          {"level": 1, "legal_factors": [2, 3, 4]},
+        ],
+      },
+    }]
+    variants = _systolic_jam_variants(records, "probe", 4, 3)
+    self.assertEqual(
+      [(v["factor0"], v["factor1"], v["factor"]) for v in variants],
+      [(4, 3, 12), (4, 2, 8), (2, 3, 6), (2, 2, 4)],
+    )
+    self.assertTrue(all(v["candidate_index"] == 3 for v in variants))
+
+  def test_systolic_variants_ignore_unsupported_or_other_functions(self):
+    records = [
+      {
+        "function": "probe",
+        "candidate_index": 0,
+        "transform_recipe": {"transform_supported": False},
+      },
+      {
+        "function": "other",
+        "candidate_index": 0,
+        "transform_recipe": {
+          "transform_supported": True,
+          "parallel_dimensions": [
+            {"level": 0, "legal_factors": [2]},
+            {"level": 1, "legal_factors": [2]},
+          ],
+        },
+      },
+    ]
+    self.assertEqual(_systolic_jam_variants(records, "probe", 4, 4), [])
 
   def test_final_graph_recurrence_bound_ignores_stale_asap_levels(self):
     with tempfile.TemporaryDirectory() as directory:
@@ -252,6 +358,24 @@ class TraceDrivenCommandTests(unittest.TestCase):
     self.assertEqual(mapper_command[emit_binary_index + 1], "0")
     guard_index = mapper_command.index("--pf_guard_mode")
     self.assertEqual(mapper_command[guard_index + 1], "balanced")
+
+  def test_systolic_mapper_override_disables_utilization_headroom(self):
+    context = SimpleNamespace(
+      config=self.config,
+      kernel="probe",
+      morpher_home=str(REPO_ROOT),
+      mapper_home=str(REPO_ROOT / "Morpher_CGRA_Mapper"),
+      mapper_kernel="/tmp",
+    )
+    default_commands, _ = build_mapper_commands(context)
+    self.assertNotIn("--pf_util_headroom", default_commands[-1].argv)
+
+    systolic_commands, _ = build_mapper_commands(
+      context, pf_util_headroom=100
+    )
+    mapper_command = systolic_commands[-1].argv
+    headroom_index = mapper_command.index("--pf_util_headroom")
+    self.assertEqual(mapper_command[headroom_index + 1], "100")
 
   def test_fast_mapper_preset_selects_fast_progress_guard(self):
     config = RunnerConfig.from_yaml(

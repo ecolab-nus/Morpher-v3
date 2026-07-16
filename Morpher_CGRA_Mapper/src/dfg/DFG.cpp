@@ -111,6 +111,32 @@ bool DFG::parseXML(std::string fileName)
 		{
 			currDFGNode.simd_lanes = simdLanes;
 		}
+		const char *systolicMemStream = nullptr;
+		if (node->QueryStringAttribute("systolic_mem_stream", &systolicMemStream) == XML_SUCCESS &&
+			systolicMemStream)
+		{
+			currDFGNode.systolic_mem_stream = systolicMemStream;
+			if (currDFGNode.systolic_mem_stream != "row" &&
+				currDFGNode.systolic_mem_stream != "column")
+			{
+				throw std::runtime_error("Unsupported systolic memory stream on DFG node " +
+					std::to_string(idx) + ": " + currDFGNode.systolic_mem_stream);
+			}
+		}
+		node->QueryIntAttribute("systolic_mem_stream_index",
+			&currDFGNode.systolic_mem_stream_index);
+		node->QueryIntAttribute("systolic_mac_row",
+			&currDFGNode.systolic_mac_row);
+		node->QueryIntAttribute("systolic_mac_column",
+			&currDFGNode.systolic_mac_column);
+		if ((!currDFGNode.systolic_mem_stream.empty() &&
+			 currDFGNode.systolic_mem_stream_index < 0) ||
+			 ((currDFGNode.systolic_mac_row < 0) !=
+			  (currDFGNode.systolic_mac_column < 0)))
+		{
+			throw std::runtime_error("Incomplete systolic placement metadata on DFG node " +
+				std::to_string(idx));
+		}
 		const char *loopCarriedState = nullptr;
 		if (node->QueryStringAttribute("loop_carried_state", &loopCarriedState) == XML_SUCCESS &&
 			loopCarriedState && std::string(loopCarriedState) == "true")

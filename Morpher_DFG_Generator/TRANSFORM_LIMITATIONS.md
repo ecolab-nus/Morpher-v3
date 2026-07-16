@@ -59,5 +59,17 @@ can prove its restricted single-block, no-conflicting-access contract. Patterns
 outside that contract are left unchanged rather than speculatively rewritten.
 
 The mapper schedules the steady-state DFG. Separate scheduled preheader and exit
-DFGs, broader control predication, arbitrary recurrence packing, and proof of
-source equivalence for source-template lowering remain outside this contract.
+DFGs, broader control predication, and arbitrary recurrence packing remain
+outside this contract. Automatic systolic unroll-and-jam currently requires the
+function's only loop nest to be a perfect constant-trip three-level nest with
+two outer parallel dimensions, one innermost reduction containing the
+`please_map_me()` marker, and exact-divisor factors. It does not yet normalize
+imperfect PolyBench-style nests, isolate one nest from a multi-nest function,
+interchange a non-innermost reduction, or emit remainder tiles.
+
+Before systolic jamming, an invariant memory-resident `C += product` recurrence
+may be rewritten to a zero-seeded steady-state accumulator plus one exit update.
+This is limited to the exact canonical single-block shape. Integer rewriting is
+enabled normally. Floating-point `fadd` and `llvm.fmuladd` rewriting is also
+enabled by default for systolic candidates because `auto_unroll.fp_nondeterminism`
+defaults to true. Set it false to preserve the original C-seeded operation order.

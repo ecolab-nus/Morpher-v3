@@ -20,6 +20,7 @@
 
 #include <morpher/mapper/PathFinderMapper.h>
 #include <morpher/mapper/BankAffinity.h>
+#include <morpher/mapper/SystolicMemoryAffinity.h>
 #include <queue>
 #include <assert.h>
 #include <math.h>
@@ -38,6 +39,7 @@
 #include <unordered_map>
 #include <memory>
 #include <bitset>
+#include <limits>
 
 namespace CGRAXMLCompile
 {
@@ -859,6 +861,8 @@ bool CGRAXMLCompile::PathFinderMapper::estimateRouting(DFGNode *node,
 				[&](DataPath *dp) { return !isStatefulTregDestinationAvailable(node, dp); }),
 			candidateDests.end());
 	}
+
+	applySystolicMemorySideConstraint(node, candidateDests);
 
 	LOG(ROUTE)<< "Candidate Dests = " << candidateDests.size() << "\n";
 	if (candidateDests.empty())
@@ -2063,7 +2067,7 @@ bool CGRAXMLCompile::PathFinderMapper::Map(CGRA *cgra, DFG *dfg)
 					}
 					if (enableBackTracking)
 					{
-						if (backTrackCredits == 0 || failedNode == NULL)
+						if (backTrackCredits == 0 || failedNode == NULL || mappedNodes.empty())
 						{
 							std::cout << "route estimation failed...\n";
 							std::cout << "Map Failed!.\n";
@@ -2763,6 +2767,85 @@ void CGRAXMLCompile::PathFinderMapper::addBankAffinityPenalty(DFGNode *node,
 		dpPenaltyMap[dp] += bankAffinityPenalty(
 			homeBankCounts, CGRA::canonicalBankKey(bit->second), bankAffinityCost);
 	}
+}
+
+void CGRAXMLCompile::PathFinderMapper::applySystolicMemorySideConstraint(
+	DFGNode *node, std::vector<DataPath *> &candidateDests) const
+{
+	const bool isStream = !node->systolic_mem_stream.empty();
+	const bool isMac = node->systolic_mac_row >= 0 &&
+		node->systolic_mac_column >= 0;
+	if (!enforceSystolicMemorySides || (!isStream && !isMac))
+		return;
+
+	int minComputeX = std::numeric_limits<int>::max();
+	int minComputeY = std::numeric_limits<int>::max();
+	int maxComputeX = std::numeric_limits<int>::min();
+	int maxComputeY = std::numeric_limits<int>::min();
+	for (PE *pe : cgra->getAllPEListDeterministic())
+	{
+		if (pe->isMemPE)
+			continue;
+		bool supportsCompute = false;
+		for (Module *submod : pe->subModules)
+		{
+			FU *fu = dynamic_cast<FU *>(submod);
+			if (!fu)
+				continue;
+			for (const auto &supported : fu->supportedOPs)
+			{
+				if (supported.first != "NOP")
+				{
+					supportsCompute = true;
+					break;
+				}
+			}
+			if (supportsCompute)
+				break;
+		}
+		if (!supportsCompute)
+			continue;
+		minComputeX = std::min(minComputeX, pe->X);
+		minComputeY = std::min(minComputeY, pe->Y);
+		maxComputeX = std::max(maxComputeX, pe->X);
+		maxComputeY = std::max(maxComputeY, pe->Y);
+	}
+
+	const size_t before = candidateDests.size();
+	if (minComputeX == std::numeric_limits<int>::max())
+	{
+		candidateDests.clear();
+	}
+	else
+	{
+		candidateDests.erase(
+			std::remove_if(candidateDests.begin(), candidateDests.end(),
+				[&](DataPath *dp) {
+					PE *pe = dp->getPE();
+					if (isMac)
+					{
+						return pe->isMemPE || !matchesSystolicMacCoordinate(
+							node->systolic_mac_row, node->systolic_mac_column,
+							pe->X, pe->Y, minComputeX, minComputeY,
+							maxComputeX, maxComputeY);
+					}
+					return !pe->isMemPE || !matchesIndexedSystolicStream(
+						node->systolic_mem_stream,
+						node->systolic_mem_stream_index,
+						pe->X, pe->Y, minComputeX, minComputeY, maxComputeY);
+				}),
+			candidateDests.end());
+	}
+	std::cout << "PF structured systolic constraint: node = " << node->idx;
+	if (isMac)
+		std::cout << ", mac = (" << node->systolic_mac_row << ","
+		          << node->systolic_mac_column << ")";
+	else
+		std::cout << ", stream = " << node->systolic_mem_stream << "["
+		          << node->systolic_mem_stream_index << "]";
+	std::cout
+	          << ", candidates = " << before << " -> " << candidateDests.size()
+	          << "\n";
 }
 
 bool CGRAXMLCompile::PathFinderMapper::checkDPFree(DataPath *dp, DFGNode *node, int &penalty)

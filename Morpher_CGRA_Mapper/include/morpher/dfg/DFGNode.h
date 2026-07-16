@@ -34,6 +34,13 @@ public:
 	bool negated=false;
 	std::string op;
 	std::string base_pointer_name;
+	// Present only on input loads from an explicitly transformed systolic
+	// candidate. "row" streams prefer the left boundary; "column" streams
+	// prefer the bottom boundary during the constrained PF attempt.
+	std::string systolic_mem_stream;
+	int systolic_mem_stream_index = -1;
+	int systolic_mac_row = -1;
+	int systolic_mac_column = -1;
 	int gep_offset = -1;
 	bool simd_packed = false;
 	int simd_lanes = 1;

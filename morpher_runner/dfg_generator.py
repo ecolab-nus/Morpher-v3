@@ -204,6 +204,47 @@ def build_unroll_command(context, unroll_factor, input_ir=None):
   return command
 
 
+def build_systolic_unroll_jam_command(
+  context, candidate_index, factor0, factor1, input_ir=None
+):
+  kernel = context.kernel
+  if input_ir is None:
+    input_ir = "%s_opt.ll" % kernel
+  output_ir = "%s_sj_c%d_%dx%d_opt.ll" % (
+    kernel, candidate_index, factor0, factor1
+  )
+  argv = [
+      resolve_llvm_tool("opt"),
+      "-load-pass-plugin",
+      "%s/build/src/libdfggenPass.so" % context.dfg_gen_home,
+      "-passes=morpher-systolic-unroll-jam",
+      "-morpher-systolic-fn",
+      kernel,
+      "-morpher-systolic-candidate-index",
+      str(candidate_index),
+      "-morpher-systolic-factor0",
+      str(factor0),
+      "-morpher-systolic-factor1",
+      str(factor1),
+      input_ir,
+      "-S",
+      "-o",
+      output_ir,
+    ]
+  config = getattr(context, "config", None)
+  fp_nondeterminism = getattr(config, "auto_unroll_fp_nondeterminism", True)
+  argv.insert(
+    len(argv) - 4,
+    "-morpher-systolic-fp-nondeterminism=%s"
+    % ("true" if fp_nondeterminism else "false"),
+  )
+  return Command(
+    argv=argv,
+    cwd=context.dfg_gen_kernel,
+    env=build_llvm_tool_env(),
+  )
+
+
 def build_dfg_pass_command(context, skeleton_ir=None):
   config = context.config
   kernel = context.kernel
@@ -235,7 +276,7 @@ def build_dfg_pass_command(context, skeleton_ir=None):
     cmd.append("--canonicalize-loop-boundaries")
     if config.arch_native_mac:
       cmd.append("--native-stateful-mac")
-    if config.treg_reset_on_launch and config.arch_treg_reset_on_launch:
+    if config.treg_reset_on_launch:
       cmd.append("--treg-reset-on-launch")
   if config.suppress_dfg_dot:
     cmd.append("--suppress-dfg-dot")
@@ -921,12 +962,24 @@ def _unroll_pass_required(config, unroll_factor):
   return unroll_factor > 1
 
 
-def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
+def run_dfg_generator(
+  context, unroll_factor=None, interchange_loops=False, systolic_jam=None
+):
   config = context.config
   kernel = context.kernel
   dfg_kernel = context.dfg_gen_kernel
   if unroll_factor is None:
     unroll_factor = _default_unroll_factor(config)
+  if systolic_jam is not None:
+    if unroll_factor != 1 or interchange_loops:
+      raise RuntimeError(
+        "Systolic unroll-and-jam cannot be combined with scalar unroll or "
+        "loop-interchange candidates."
+      )
+    if len(systolic_jam) != 3:
+      raise RuntimeError(
+        "systolic_jam must be (candidate_index, factor0, factor1)."
+      )
   simd_active = simd_packing_active_for_factor(config, unroll_factor)
   verified_simd_active = simd_active and config.simd_pack == "verified"
   context.selected_simd_enabled = simd_active
@@ -957,6 +1010,12 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
     print(
       "Requested LLVM loop interchange candidate for the uniquely annotated perfect nest.\n"
     )
+  if systolic_jam is not None:
+    candidate_index, factor0, factor1 = systolic_jam
+    print(
+      "Requested systolic unroll-and-jam: candidate=%d factors=%dx%d.\n"
+      % (candidate_index, factor0, factor1)
+    )
   if (
       unroll_factor > 1
       and not simd_active
@@ -986,6 +1045,16 @@ def run_dfg_generator(context, unroll_factor=None, interchange_loops=False):
     print("Trying legal/profitable loop interchange before unrolling..\n")
     run_command(build_loop_interchange_command(context))
     skeleton_ir = "%s_li_opt.ll" % kernel
+  if systolic_jam is not None:
+    candidate_index, factor0, factor1 = systolic_jam
+    print("Applying detected systolic unroll-and-jam recipe..\n")
+    command = build_systolic_unroll_jam_command(
+      context, candidate_index, factor0, factor1, skeleton_ir
+    )
+    run_command(command)
+    skeleton_ir = "%s_sj_c%d_%dx%d_opt.ll" % (
+      kernel, candidate_index, factor0, factor1
+    )
   if _unroll_pass_required(config, unroll_factor):
     print("Unrolling annotated loop for DFG candidate..\n")
     run_command(build_unroll_command(context, unroll_factor, skeleton_ir))
