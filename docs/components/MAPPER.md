@@ -55,7 +55,7 @@ Behavior knobs:
 
 Runner config exposes `max_hops` as YAML key `multihop`, which is forwarded to the mapper's `--hops` flag. The current default is `4`.
 Runner config can also omit `xdim` and `ydim`; the runner infers them from the selected architecture JSON.
-Runner config now prefers a high-level `mapper_preset` (`fast`, `balanced`, `quality`, `exhaust`) instead of exposing most low-level SA / search knobs in every YAML.
+Runner config prefers a high-level `mapper_preset` (`trusted_pf` (default), `fast`, `balanced`, `quality`, `exhaust`) instead of exposing most low-level SA / search knobs in every YAML. See the README "Mapper effort" section for what each preset trades off.
 
 ## Heuristic Layer (`HeuristicMapper.cpp`)
 

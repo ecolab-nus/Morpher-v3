@@ -18,13 +18,14 @@ Important groups:
   - for non-SPM architectures, keep them explicit in config
   - if DFG bank allocation still overflows, the runner can auto-grow the effective `banksize` during the run when doing so will not make the architecture model inconsistent
 - mapper behavior:
-  - `mapper_preset`: one of `fast`, `balanced`, `quality`, `exhaust`
+  - `mapper_preset`: one of `trusted_pf`, `fast`, `balanced`, `quality`, `exhaust`
   - `init_II`, `multihop`
   - presets expand to the low-level mapper search knobs internally
+  - `trusted_pf`: deterministic PathFinder-only baseline; the default in `config/default.yaml`
   - `fast`: quicker answer, less search
-  - `balanced`: current general-purpose default
+  - `balanced`: moderate search with SA/hybrid fallback
   - `quality`: tries harder for better mappings / lower II
-  - `exhaust`: deepest search, highest runtime cost; disables proximity bias by default to broaden exploration
+  - `exhaust`: deepest search, highest runtime cost; disables proximity bias and starting-II headroom by default to broaden exploration
   - `node_pin`: optional advanced override, passed through to the mapper as `--node_pin`
   - `node_pin` syntax: `node_idx:X:Y` (example: `17:0:0`)
 - architecture dimensions:
@@ -35,9 +36,9 @@ Important groups:
   - `enable_simulation`
   - `max_test_samples`
 
-## `xml_mapper_static.yaml`
+## `xml_arch.yaml`
 
-Convenience config for XML-only mapping with static architecture JSON (no mem-alloc rewrite required).
+Convenience config for XML-only mapping with static architecture JSON (no mem-alloc rewrite required). `config/README.md` lists the remaining provided configs.
 
 ## `scripts/run_all_benchmarks.py`
 
@@ -62,16 +63,24 @@ Main behavior:
    - match/mismatch counts
 6. write `benchmark_run_results.csv`
 
-## `scripts/clean_generated.sh`
+## `scripts/clean_workspace.sh`
 
 Purpose:
 
-- remove generated artifacts in benchmark trees while preserving expected placeholders
+- remove generated artifacts in benchmark trees and `workspace/morpher_runs` while preserving expected placeholders
 
 Supports:
 
 - normal mode
 - `--dry-run` preview mode
+
+## Other Runner Scripts
+
+- `scripts/regression_gate.py`: one-command build + end-to-end guard over a few fast kernels; fails on II regression, validation mismatch, or mapper-time blowup. Run after any mapper/DFG/simulator change.
+- `scripts/run_regression_benchmarks.py`: curated suites with per-benchmark `max_ii` bounds (`scripts/regression_benchmarks.yaml`).
+- `scripts/run_arch_sweeps.py`: expands an architecture/config manifest (`scripts/arch_sweeps.yaml`) into experiments and emits combined CSVs.
+
+See the README for full flag documentation; each script also takes `--help`.
 
 ## `scripts/check_no_generated_tracked.sh`
 

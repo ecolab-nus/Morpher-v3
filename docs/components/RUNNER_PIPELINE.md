@@ -8,7 +8,7 @@ This document explains the Python control flow that glues all Morpher stages tog
 - `morpher_runner/context.py`
 - `morpher_runner/dfg_generator.py`
 - `morpher_runner/mapper.py`
-- `morpher_runner/simulator.py`
+- `morpher_runner/artifact_simulator.py`
 - shared helpers in `morpher_runner/utils.py`, `exec.py`, `fs_ops.py`
 
 ## Pipeline at a Glance

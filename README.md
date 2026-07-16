@@ -1,79 +1,52 @@
 # Morpher
 
-Morpher is an open-source CGRA compilation and simulation framework. It takes a C kernel, generates a dataflow graph (DFG), maps it onto a configurable CGRA architecture, and optionally validates the mapping with cycle-accurate simulation.
+Morpher is an open-source CGRA compilation and simulation framework. It takes a C kernel, generates a dataflow graph (DFG), maps it onto a configurable CGRA architecture, and validates the mapping with a trace-driven simulator.
 
-## Supported Platform
+Supported platform: Linux.
 
-Linux
-
-## Features
-
-- End-to-end flow from C kernel to mapped DFG (`run_morpher.py`)
-- XML input mode: skip DFG generation and feed a pre-generated DFG directly to the mapper
-- Two memory modes: `auto` (generate architecture JSON at runtime) or `static` (use a pre-authored JSON)
-- Auto-unroll and loop-order search: sweeps candidate unroll factors and can compare the original perfect nest with LLVM-legal loop interchange (`auto_unroll`)
-- Architecture-driven SIMD packing: SIMD width and vector ops are inferred from the architecture JSON; the verified mode packs closed lane-isomorphic DFG subgraphs in C++ before mapping
-- Trace-driven access externalization: removes AGI before instrumentation and, for verified data-parallel loops, removes the disconnected iterator component (`dfg_pipeline.externalize_access: agi_iter`)
-- Conservative C++ iterator/control externalization (`dfg_pipeline.externalize_access: agi_iter`)
-- Optional post-mapping data-layout solver with read-only data replication (`layout_solver`, `replicate_data`)
-- Artifact simulator with functional and event-driven validation of mappings (including SIMD-packed) against instrumented memory traces (`validation_mode`)
-- Parallel benchmark automation with auto-discovery (`scripts/run_all_benchmarks.py`)
-- Mapper regression suite runner with per-benchmark II bounds (`scripts/run_regression_benchmarks.py`)
-- Architecture/config sweep runner (`scripts/run_arch_sweeps.py`)
-
-## Repository Layout
+## How a run works
 
 ```
-run_morpher.py                    # single benchmark entry point
-morpher_runner/                   # Python pipeline (DFG gen, mapper, simulator)
-config/                           # run configurations
-scripts/                          # batch runner and maintenance utilities
-Morpher_DFG_Generator/            # LLVM-based DFG generator
-  benchmarks/                     # benchmark source tree (auto-discovered)
-    <suite>/<kernel>/<kernel>.c
-Morpher_CGRA_Mapper/              # CGRA mapper (PathFinder + SA)
-simulator/artifact_simulator/     # functional / cycle-accurate validation simulator
-dfgPartition/                     # experimental DFG partitioning (optional)
+C kernel ──► DFG generation ──► DFG transforms ──► mapping ──► validation
+             (LLVM pass)        (unroll search,     (PathFinder   (functional or
+                                 AGI/iterator        + SA)         cycle-accurate,
+                                 removal, SIMD,                    against recorded
+                                 systolic, ...)                    memory traces)
 ```
 
-Additional documentation:
+The number that matters at the end is the **initiation interval (II)**: a new loop iteration starts every II cycles, so lower is better. When the unroll search is on, candidates are scored by **`II / unroll_factor`** — useful source iterations per cycle — because an unrolled graph does more work per II. Validation then confirms the mapped graph still computes the right values (`Mismatches::0`).
 
-- [`docs/FEATURES_AND_CODE_GUIDE.md`](docs/FEATURES_AND_CODE_GUIDE.md) — full feature and code walkthrough
-- [`docs/DIRECTORY_LOGIC_GUIDE.md`](docs/DIRECTORY_LOGIC_GUIDE.md) — directory-by-directory logic
-- [`docs/components/`](docs/components/) — component-level docs (runner pipeline, DFG generator, mapper, simulator)
+Everything you configure pulls on one of four levers:
 
-## Requirements
+1. **The architecture** — what hardware exists to map onto (grid size, memory PEs, SIMD width, special capabilities). Sets the floor on achievable II.
+2. **Mapper effort** — how hard the search tries before giving up and raising II. Trades compile time for mapping quality.
+3. **The graph that gets mapped** — transforms that shrink or reshape the DFG before mapping. Usually the biggest II wins come from here, not from mapper effort.
+4. **Validation** — how thoroughly the result is checked.
 
-- LLVM/Clang 18 toolchain with `clang`, `opt`, `llvm-link`, `llc`
-- This branch targets LLVM 18 and is no longer treated as a multi-version compatibility branch
-- CMake + Make
-- Python 3 + pip
+Each lever has a section under [What you control](#what-you-control).
+
+## Setup
+
+Requirements:
+
+- LLVM/Clang 18 toolchain with `clang`, `opt`, `llvm-link`, `llc` (this branch targets LLVM 18 only)
+- CMake + Make, Python 3 + pip
 - `gcc-multilib` / `g++-multilib` (32-bit instrumentation path)
 - Graphviz (`dot`) for DFG PDF generation
 
-Example install on Ubuntu:
-
 ```bash
-  sudo apt-get update
-  sudo apt-get install -y \
+sudo apt-get update
+sudo apt-get install -y \
   build-essential cmake git python3 python3-pip \
   clang-18 llvm-18 llvm-18-dev llvm-18-tools lld-18 \
   gcc-multilib g++-multilib graphviz
 ```
 
-If your distro exposes versioned binaries, you can either place them on `PATH` or use:
-
-- `MORPHER_LLVM_BIN_DIR=/path/to/llvm/bin`
-- `MORPHER_LLVM_LIB_DIR=/path/to/llvm/lib` when the host has conflicting LLVM installs
-- `MORPHER_LLVM_DIR=/path/to/lib/cmake/llvm` for `build_all.sh`
-- `MORPHER_CMAKE_ARGS="..."` for extra CMake configure flags
-
-## Setup
+Build:
 
 ```bash
 git clone https://github.com/pruhnuhv/Dataflow-arch-mapper.git
 cd Dataflow-arch-mapper
-python3 -m pip install --upgrade pip
 python3 -m pip install -r python_requirements.txt
 export MORPHER_LLVM_BIN_DIR=/usr/lib/llvm-18/bin
 export MORPHER_LLVM_LIB_DIR=/usr/lib/llvm-18/lib
@@ -81,15 +54,17 @@ export MORPHER_LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
 bash build_all.sh
 ```
 
-Sanity check:
+Sanity check that all three binaries exist:
 
 ```bash
-ls Morpher_DFG_Generator/build/src/libdfggenPass.so
-ls Morpher_CGRA_Mapper/build/src/cgra_xml_mapper
-ls simulator/artifact_simulator/build/src/artifact_simulator
+ls Morpher_DFG_Generator/build/src/libdfggenPass.so \
+   Morpher_CGRA_Mapper/build/src/cgra_xml_mapper \
+   simulator/artifact_simulator/build/src/artifact_simulator
 ```
 
-## Quick Start
+If your distro exposes only versioned LLVM binaries, `MORPHER_LLVM_SUFFIX=-18` resolves suffixed tools from `PATH`; `MORPHER_CMAKE_ARGS` passes extra CMake flags to `build_all.sh`.
+
+## Quick start
 
 ```bash
 python3 -u run_morpher.py morpher_benchmarks/array_add/array_add.c array_add
@@ -101,522 +76,213 @@ General form:
 python3 -u run_morpher.py <suite/kernel/kernel.c> <function> [config_path] [runmode] [options]
 ```
 
-Options:
+- `config_path` defaults to `config/default.yaml`
+- `runmode` (default `runall`): `runall` = DFG gen → map → simulate; `dfg_gen_only`, `mapper_only`, `sim_only` run one stage against existing artifacts
+- `--run-tag <tag>` reuses a stable workspace folder instead of a timestamp; `--output-root <path>` redirects the `result.csv` summary folder (default `generated/`)
 
-| Option | Accepted values | Default | Description |
-|--------|-----------------|---------|-------------|
-| `--run-tag <tag>` | Non-empty tag string; sanitized to `[A-Za-z0-9._-]` | timestamp if omitted | Reuse a stable tag under `workspace/morpher_runs/<tag>/`; batch runners use this to avoid collisions. |
-| `--output-root <path>` | Directory path | `generated` | For direct single-kernel C runs, write `result.csv` and copied `config.yaml` under `<root>/<suite>/<kernel>/<timestamp>/`. Ignored when `--run-tag` is supplied. |
-| `--mem-alloc <path>` | Existing file path | none | XML input mode only: explicit mapper memory-allocation file. |
+Where results land:
 
-`runmode` values (default: `runall`):
+```text
+generated/<suite>/<kernel>/<timestamp>/result.csv     # II, status, timings — read this first
+workspace/morpher_runs/<tag>/dfg/...                  # DFG XML, .pdf, memory traces
+workspace/morpher_runs/<tag>/mapper/...               # result.txt, *.mappingwithlatency.txt, runtime arch JSON
+workspace/morpher_runs/<tag>/simulator/...            # validation output
+```
 
-| Mode | What runs |
-|------|-----------|
-| `runall` | DFG generation → mapper → simulator (if enabled) |
-| `dfg_gen_only` | DFG generation only |
-| `mapper_only` | Mapper only (requires existing DFG) |
-| `sim_only` | Artifact simulator only, regardless of `enable_simulation` (requires existing mapping + traces) |
+When the unroll search runs, `auto_unroll_results.csv` (next to `result.csv`) lists every candidate tried with its factors, kind, and score — useful for seeing *why* the winner won.
 
-## XML Input Mode
+## What you control
+
+### 1. The architecture (`arch_template_json`)
+
+The architecture JSON defines the PE grid, which PEs can access memory, per-PE supported ops, SIMD width, and declared capabilities. It is the strongest determinant of what II is achievable. Names resolve against `Morpher_CGRA_Mapper/json_arch/` first, then the repo root; browse that directory for the full set. Notable options:
+
+| Architecture | What it gives you |
+|---|---|
+| `edge_mem_4x4/scalar_3side.json` (default) | 4×4 scalar grid, memory PEs on three edges, declares `TREG_RESET_ON_LAUNCH` (enables native stateful-MAC lowering) |
+| `hycube_original.json` / `hycube_original_updatemem8x8.json` | Classic HyCUBE 4×4 / 8×8 |
+| `hycube_edgePEMEMs*.json` | Edge-memory variants (1/2/3 sides, with/without router) |
+| `hycube_edgePEMEMs_3sides_vec4_vred.json` (and `vec8`, non-`vred` variants) | SIMD architectures: `SIMD_WIDTH` > 1 enables vector packing; `VRED` enables vector-reduction lowering |
+
+Effects worth knowing:
+
+- `xdim`/`ydim`, `numberofbanks`/`banksize` are **inferred from the JSON**; setting them explicitly only validates against it.
+- SIMD is **architecture-driven**: there are no `simd.*` config keys. Packing activates when the architecture declares a SIMD width and the unroll factor reaches it.
+- `ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH: true` lets zero-seeded accumulators lower to a single stateful MAC node instead of an explicit recurrence — fewer nodes, easier mapping.
+
+### 2. Mapper effort (`mapper_preset`)
+
+| Preset | What it means for you |
+|---|---|
+| `trusted_pf` (default) | Deterministic PathFinder-only baseline: no SA fallback, no candidate pruning. Reproducible runs; the reference for comparisons. |
+| `fast` | Smoke tests. Low backtracking and iteration budgets; may settle for a higher II. |
+| `balanced` | Moderate search effort with SA/hybrid fallback. |
+| `quality` | More SA restarts/moves, larger II search range. Slower, sometimes lower II. |
+| `exhaust` | Largest budget, no starting-II headroom cap. For difficult kernels; slow. |
+
+The unroll search's initial candidate beam also comes from the preset: `fast` fully maps 1 candidate, `trusted_pf`/`balanced` 2, `quality` 4, `exhaust` all — see [Auto-unroll](#3-the-graph-that-gets-mapped).
+
+Per-II-attempt PathFinder guards are progress-aware (progress = a new minimum unmapped-node count): `fast` allows 60 s without progress / 300 s absolute, `trusted_pf` and `balanced` 120/600, `quality` 180/1200, `exhaust` 300/3600. A failed or stagnating attempt retries the same II with a perturbed node order (`ii_restarts` times) before escalating to II+1.
+
+Any preset value can be overridden by an explicit config key (with a warning): `mapping_method` (0 = PathFinder, 1 = SA, 2 = hybrid), `init_II`/`max_II`, `ii_restarts`, `skip_ii_estimation`, `backtrack_limit`, `max_mapper_iter`, `proximity_sort`, `pf_candidate_topk` / `off_spm_mem_candidate_topk` (`0` uncapped, `auto_fast`, `auto_balanced`), and the `sa_*` family (`sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_temp_max`, `sa_temp_min`, `sa_candidate_topk`).
+
+### 3. The graph that gets mapped
+
+These transforms typically matter more for II than mapper effort does. All of them are validated: an unsupported shape falls back to the untransformed graph rather than mapping something unverified.
+
+**Auto-unroll search (`auto_unroll.enabled`, on by default).** Evaluates bounded unroll factors (internally `[1, 2, 4, 8]`, override with `auto_unroll.factors`), original vs LLVM-legal interchanged loop orders (`try_loop_interchange`, default on), linear/tree scalar reduction forms, and — for a supported perfect three-level GEMM-like nest — two-axis `systolic_jam` candidates whose exact-divisor factors are bounded by the architecture dimensions. Duplicate DFGs are removed, candidates are ranked by an optimistic recurrence/resource bound, the preset beam is fully mapped, and remaining candidates run only if their bound can still beat the incumbent's `II / unroll_factor` (systolic: `II / (factor0 × factor1)`). More candidates = more compile time; `auto_unroll.stop_on_degradation: true` stops the adaptive beam expansion once an incumbent exists.
+
+Systolic candidates get an explicit first-attempt placement (row streams on left memory PEs, column streams on bottom, MAC `(r,c)` at that compute coordinate) and start at full-occupancy II; a failed structured attempt retries unrestricted at the same II. `auto_unroll.fp_nondeterminism` (default `true`) permits reassociating a floating-point `C += product` memory recurrence into a zero-seeded steady-state accumulator plus one boundary update; set `false` to preserve the original FP operation order at the cost of losing the systolic form. The supported nest contract lives in `Morpher_DFG_Generator/TRANSFORM_LIMITATIONS.md`.
+
+**Access externalization (`dfg_pipeline.externalize_access`, default `agi_iter` in `config/default.yaml`).** `agi` removes address-generation (AGI) nodes before instrumentation — addresses are supplied from recorded traces instead of computed on the fabric. `agi_iter` additionally removes the iterator/control component when it has no edge into surviving work. The mapped DFG becomes the steady-state compute body: often dramatically smaller, hence lower II. The transform refuses (with an identity manifest) whenever iterator-derived predicates, data, recurrences, or reductions still reach surviving work. `off` keeps everything on the fabric.
+
+**Accumulator boundary canonicalization (`dfg_pipeline.boundary_canonicalization`, default `verified`).** Recognizes canonical `i32` scalar loop-carried accumulators (constant seed, direct ADD update, exact CMERGE/SELECT lifecycle, one scalar live-out), strips their PHI launch/exit scaffolding from the mapped graph, and emits a validated boundary manifest that the simulator checks. Zero seeds fuse MUL+ADD into a native stateful MAC when the architecture declares MAC + `TREG_RESET_ON_LAUNCH` (`dfg_pipeline.treg_reset_on_launch` is auto-enabled by that declaration; explicit `false` disables it, explicit `true` still requires the declaration). Unsupported accumulator shapes pass through unchanged.
+
+**SIMD packing (`dfg_pipeline.simd_pack: verified`, default `off`).** Packs a complete lane-isomorphic scalar subgraph into vector ops after instrumentation, when the architecture declares a SIMD width and the unroll factor reaches it. Requires `externalize_access: agi` or `agi_iter`. Supports lane-isomorphic recurrences and (with `SCALAR_BROADCAST: true`) one shared scalar input; on a `VRED` architecture, integer ADD/AND/OR/XOR reductions lower to per-lane partial sums with a single exit-only horizontal reduction that the simulator checks against traced values. Partial or unsupported groups remain scalar.
+
+**Data layout (`layout_solver`, `replicate_data`, both default `false`).** Post-mapping memory-layout solving with trace remapping; `replicate_data` additionally allows read-only arrays to be replicated across banks. Note the current simulator does not model bank contention, so layout differences do not yet show up in cycle counts.
+
+### 4. Memory model
+
+| Key | Effect |
+|---|---|
+| `memory_mode: auto` (default) | Generates a runtime architecture JSON from the kernel's actual memory allocation. Bank sizes can grow to fit. |
+| `memory_mode: static` | Maps directly against the pre-authored `arch_template_json`. Required when there is no mem-alloc information; noticeably slower in practice. |
+| `spm_mode` | `on`/`off` scratchpad modeling in DFG generator and mapper. Static mode cannot auto-grow banks. |
+
+### 5. Validation
+
+| Key | Effect |
+|---|---|
+| `enable_simulation` (default `true`) | Generate instrumented memory traces and validate the mapping against them. Turn off only for mapping-speed experiments. |
+| `validation_mode` | `functional` (default): golden-reference value check. `event_driven`: cycle-accurate simulation of the mapped configuration — slower, but exercises timing. |
+| `max_test_samples` | How many trace samples to validate. More samples = more confidence, more runtime. |
+
+A clean run prints `Matches::N, Mismatches::0`. Boundary/SIMD manifests extend what the simulator checks (seeds, exit-only reductions, live-outs) so removed scaffolding is still verified, not just dropped.
+
+## Config reference
+
+Default config: `config/default.yaml` (4×4 edge-memory scalar arch, `trusted_pf`, auto-unroll on, `agi_iter` externalization, functional validation). `config/README.md` describes the other provided configs (scalar baselines, SIMD-4 variants, XML mapping).
+
+Keys not covered above:
+
+| Key | Values | Default | Meaning |
+|---|---|---|---|
+| `mapper_subfolder` | string | required | Output grouping under `workspace/.../mapper/<subfolder>/` |
+| `multihop` | int ≥ 1 | `4` | Max routing hop budget |
+| `print_dfg` | bool | preset | Print DFG details in mapper logs |
+| `node_pin` | `node_idx:X:Y` | empty | Debug: force one DFG node onto one PE |
+| `bank_affinity_cost` | int ≥ 0 | `0` (off) | Experimental soft mapper cost toward the dominant bank of an array's placed accesses; never excludes candidates |
+
+Removed keys that now raise errors: `auto_unroll.remainder_policy`, `auto_unroll.outer_factor` (remainders are always preserved — size trip counts as valid multiples of the target factor). Legacy `json_arch` / `json_arch_before_memupdate` still parse with a warning. Deprecated top-level `simd.*` data is ignored.
+
+RecMin (the recurrence-based II lower bound) has no configuration: the mapper measures it from the final transformed DFG's `nextiter`/`RecParents` return paths, starting conservatively at II 1 when paths are missing.
+
+### Environment toggles
+
+| Variable | Effect |
+|---|---|
+| `MORPHER_LLVM_BIN_DIR` / `MORPHER_LLVM_LIB_DIR` / `MORPHER_LLVM_SUFFIX` / `MORPHER_LLVM_DIR` | LLVM toolchain resolution (see Setup) |
+| `MORPHER_CMAKE_ARGS` | Extra CMake flags for `build_all.sh` |
+| `MORPHER_VERBOSE_CMDS=1` | Print underlying shell commands per stage |
+| `MORPHER_DUMP_VERBOSE_JSON=1` | Dump expanded mapper architecture JSON |
+| `MORPHER_PRINT_DFG=1` | Force mapper-side DFG printing |
+| `MORPHER_MAX_TRACES=<N>` | Cap trace generation (normally set internally from `max_test_samples`) |
+| `ARTIFACT_SIM_DEBUG=1` | Artifact simulator debug output |
+
+## XML input mode
 
 Pass a `.xml` file as the first argument to skip DFG generation and map a pre-generated DFG:
 
 ```bash
-python3 -u run_morpher.py <dfg.xml> [function] [config_path] [runmode] [--mem-alloc <path>]
-```
-
-Defaults in XML mode: function derived from filename, config `config/default.yaml`, runmode `mapper_only`.
-
-Notes:
-- XML mode supports `mapper_only`, `runall`, and `sim_only`.
-- In `memory_mode: auto`, a mem-alloc file is required: place `<kernel>_mem_alloc.txt` or `<xml-stem>_mem_alloc.txt` beside the XML, or pass `--mem-alloc <path>`.
-- Without a mem-alloc file, use a static config such as `config/xml_arch.yaml`.
-
-```bash
-python3 -u run_morpher.py gemm_systolic.xml
+python3 -u run_morpher.py gemm_systolic.xml                                  # mapper_only, config/default.yaml
 python3 -u run_morpher.py gemm_systolic.xml gemm_systolic config/xml_arch.yaml
 ```
 
-## Configuration
+- Supports `mapper_only` (default), `runall`, and `sim_only`; the function name defaults to the filename stem.
+- In `memory_mode: auto` a mem-alloc file is required: place `<kernel>_mem_alloc.txt` (or `<xml-stem>_mem_alloc.txt`) beside the XML, or pass `--mem-alloc <path>`. Otherwise use a static config such as `config/xml_arch.yaml`.
 
-Default config: `config/default.yaml`. Provided configs include:
+## Regression gate (run this after mapper/DFG/simulator changes)
 
-| Config | Description |
-|--------|-------------|
-| `config/default.yaml` | Default scalar architecture with automatic bounded unroll and original/interchanged loop-order search, plus conservative C++ AGI/iterator externalization. |
-| `config/scalar.yaml` | Baseline retaining AGI and iterator/control nodes. |
-| `config/scalar_agi_pruned.yaml` | Explicit opt-in scalar config that enables C++ DFG-side AGI removal only. |
-| `config/scalar_boundary_verified.yaml` | Scalar steady-state mapping with verified accumulator boundary removal and zero-reset native MAC state. |
-| `config/simd4_verified_agi_iter.yaml` | 4-lane verified SIMD plus restricted iterator externalization; also compares original and LLVM-interchanged perfect-nest candidates. |
-| `config/simd4_verified_vred.yaml` | 4-lane reduction-axis SIMD with a vector partial-sum recurrence and an exit-only VRED contract. |
-| `config/simd4_verified_vred_u8.yaml` | Same reduction-axis path at factor 8: two SIMD-4 product groups are combined before one vector recurrence. |
-| `config/xml_arch.yaml` | Static architecture config useful for XML-only mapping. |
-
-### Core knobs
-
-| Key | Accepted values | Default | Description |
-|-----|-----------------|---------|-------------|
-| `memory_mode` | `auto`, `static` | inferred from legacy keys if omitted | `auto` generates a runtime architecture JSON from DFG memory allocation; `static` maps against `arch_template_json` directly. Legacy `json_arch` / `json_arch_before_memupdate` still parse with a warning. |
-| `arch_template_json` | Bundled JSON filename, repo-relative path, or absolute path | required | Architecture JSON filename resolved from `Morpher_CGRA_Mapper/json_arch/` first, then repo root, unless absolute. |
-| `mapper_subfolder` | Non-empty string | required | Output grouping under `workspace/morpher_runs/<tag>/mapper/<mapper_subfolder>/...`. |
-| `mapper_preset` | `trusted_pf`, `fast`, `balanced`, `quality`, `exhaust` | `trusted_pf` in `config/default.yaml` | Mapper tuning preset. Explicit tuning keys override the preset with a warning. |
-| `xdim`, `ydim` | Integers `>= 1` | inferred from architecture JSON | CGRA dimensions. Explicit values must match the JSON when dimensions are inferable. |
-| `numberofbanks`, `banksize` | Integers `>= 1` | inferred from architecture JSON | SPM bank count and bank size. Explicit values must match architecture SPM metadata when present. In `memory_mode: auto`, DFG-time sizing can increase `banksize` for the runtime JSON. |
-| `init_II`, `max_II` | Positive integers | preset/config dependent | Mapper II search bounds. |
-| `ii_restarts` | Integer `>= 0` | preset dependent | Number of II restart attempts. |
-| `skip_ii_estimation` | Boolean: `true` or `false` | preset dependent | Skip II bound analysis and start from `init_II`. |
-| `multihop` | Integer `>= 1` | `4` | Maximum routing hop budget forwarded to the mapper. |
-| `mapping_method` | Mapper integer mode; `0` = PathFinder, `1` = SA, `2` = hybrid | preset dependent | Mapper algorithm selection flag. Trusted configs use `0`; hybrid/SA are experimental search strategies. |
-| `backtrack_limit`, `max_mapper_iter` | Integers `>= 0` | preset dependent | Mapper search effort limits. |
-| `print_dfg` | Boolean: `true` or `false` | preset dependent | Ask the mapper to print DFG details in logs. |
-| `sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_candidate_topk` | Integers; restart/move/top-k values should be `>= 0` | preset dependent | Simulated-annealing mapper controls. |
-| `sa_temp_max`, `sa_temp_min` | Numbers | preset dependent | Simulated-annealing temperature range. |
-| `proximity_sort` | Boolean: `true` or `false` | preset dependent | Sort candidate PE placements by Manhattan distance to parent centroid; usually reduces routing pressure. |
-| `node_pin` | Empty string or `node_idx:X:Y` with integer fields | empty | Debug override forcing one DFG node to one PE. |
-| `enable_simulation` | Boolean: `true` or `false` | `true` | Generate traces and run validation in modes that include simulation. |
-| `validation_mode` | `functional`, `event_driven`, `event-driven` | `functional` | Simulation check strategy. `event-driven` is normalized internally to `event_driven`. |
-| `max_test_samples` | Integer `>= 0` | required in provided configs | Trace-generation limit and simulator sample cap. |
-| `spm_mode` | `off`, `on` | `on` if omitted | Scratchpad memory mode passed to DFG generator/mapper. Static `spm_mode: on` cannot auto-grow banks. |
-| `dfg_pipeline.externalize_access` | `off`, `agi`, `agi_iter` | `off` | Trace-driven C++ access externalization. `agi` removes address-generation nodes before instrumentation. `agi_iter` additionally removes the iterator/control component only when it has no edge to surviving work; addresses are trace-driven and the iterator manifest remaps their final node indices. It rejects data, predicate, recurrence, or reduction boundaries. |
-| `dfg_pipeline.boundary_canonicalization` | `off`, `verified` | `verified` | Recognize canonical `i32` scalar loop-carried accumulators, omit their PHI launch/exit scaffolding from the mapped graph, and emit a validated boundary manifest. Unsupported shapes remain unchanged. |
-| `dfg_pipeline.treg_reset_on_launch` | Boolean when specified | architecture capability | Omission automatically enables reset-backed stateful-MAC lowering when the architecture declares `ARCH.CAPABILITIES.TREG_RESET_ON_LAUNCH: true`; otherwise verified boundary lowering keeps an explicit recurrence. Explicit `true` still requires the declaration, and `false` disables reset-backed lowering. This is the current implementation of accumulator-epoch zero initialization. |
-| `dfg_pipeline.simd_pack` | `off`, `verified` | `off` | `verified` runs C++ post-instrumentation SIMD packing and validates its manifest before mapping. It requires `externalize_access: agi` or `agi_iter`, the architecture SIMD width, and a complete closed lane-isomorphic subgraph. Unsupported groups remain scalar. |
-| `layout_solver` | Boolean: `true` or `false` | `false` | Enable post-mapping memory-layout solving and trace remapping. |
-| `replicate_data` | Boolean: `true` or `false` | `false` | With `layout_solver: true`, allow read-only array replication across banks. |
-
-Bundled architecture JSON options currently include:
-
-```text
-hycube_4regf.json
-hycube_5x5_memedge_updatemem.json
-hycube_8x8.json
-hycube_edgePEMEMs.json
-hycube_edgePEMEMs_2sides.json
-hycube_edgePEMEMs_3sides.json
-hycube_edgePEMEMs_3sides_noRouter.json
-hycube_edgePEMEMs_4regf.json
-hycube_edgePEMEMs_noRouter.json
-hycube_original.json
-hycube_original_RC.json
-hycube_original_updatemem.json
-hycube_original_updatemem8x8.json
-hycube_original_updatemem_RC.json
-hycube_vectorized.json
-n2n.json
-n2n_new.json
-n2n_verbose.json
-stdnoc.json
-stdnoc_allmem.json
-stdnoc_original.json
-stdnoc_verbose.json
+```bash
+python3 scripts/regression_gate.py
 ```
 
-### Auto-unroll (`auto_unroll.*`)
+Builds the mapper, runs a small set of fast kernels end-to-end with `config/regression.yaml`, and fails on any II regression, validation mismatch, or >3× mapper-time blowup against `scripts/regression_expectations.yaml`. Flags: `--filter`, `--no-build`, `--strict`, `--timeout-sec`.
 
-For `runall` C-source runs, the default search evaluates bounded unroll factors,
-original and legal interchanged loop orders, and linear/tree scalar reduction
-forms where applicable. It keeps the candidate with the best
-`II / unroll_factor` score. A final-graph recurrence bound can discard a
-candidate before PathFinder only when its normalized lower bound is strictly
-worse than an already mapped incumbent. Interchanged candidates are tried first
-because they commonly expose a recurrence-free data-parallel inner loop.
+## Batch runs, regression suites, and sweeps
 
-When automatic search is enabled, `SystolicCandidatePass` also examines the
-optimized IR. A supported canonical GEMM-like nest contributes two-axis
-`systolic_jam` candidates whose factors are exact trip-count divisors bounded
-by the architecture dimensions. These candidates are transformed entirely in
-LLVM IR, then use the normal DFG generation, instrumentation, mapper, and
-artifact-simulation paths. The original scalar candidate is always retained.
-The mapper's general starting-II utilization headroom is disabled for these
-structured candidates, allowing a legal full-occupancy systolic II to be tried.
-For supported two-dimensional contractions, the transformed DFG preserves a
-lane index on each input stream and a `(row,column)` coordinate on each MAC. On
-the first PathFinder attempt, row stream `r` is placed on the left memory PE
-aligned with compute row `r`, column stream `c` on the bottom memory PE aligned
-with compute column `c`, and MAC `(r,c)` at that compute coordinate. Existing
-adaptive multicast routing may branch from previously routed tree points,
-providing forwarding-style east/west or north/south reuse without extra DFG
-nodes. A failed structured attempt is retried unrestricted at the same II;
-output memory operations and non-systolic candidates remain unrestricted.
+All three runners take `--help` for their full flag lists.
 
-For memory-resident output recurrences, the transform recognizes the exact
-single-block `C += product` form and moves the initial `C` value and final update
-to the unscheduled loop boundary, leaving a zero-seeded steady-state
-accumulator. This is always valid for the supported integer form. Floating-point
-reassociation is enabled by default for systolic candidates; set
-`auto_unroll.fp_nondeterminism: false` to retain the original C-seeded operation
-order instead.
-
-The initial implementation deliberately accepts only a function whose sole loop
-nest is a perfect three-level nest with two outer parallel output dimensions
-and one innermost rolled reduction containing `please_map_me()`. Dynamic bounds,
-remainders, imperfect or multiple nests, and loop orders requiring interchange
-remain detector results but are not transformed.
-
-All valid candidates are generated before mapping, then exact duplicate DFGs
-are removed and the remainder are ranked by normalized recurrence bound,
-iterator-externalization success, memory-node pressure, total graph size, and
-loop order. The initial full-mapping beam comes from the mapper preset:
-
-| Preset | Initial fully mapped candidates |
-|--------|---------------------------------:|
-| `fast` | 1 |
-| `trusted_pf`, `balanced` | 2 |
-| `quality` | 4 |
-| `exhaust` | all unique candidates |
-
-If the initial beam produces no mapping, the runner expands it. Once an
-incumbent exists, a remaining candidate is mapped only if its optimistic bound
-can strictly improve `II / unroll_factor`, or can tie while improving the
-larger-factor tie-breaker. A candidate that can only reproduce the incumbent is
-pruned before PathFinder.
-
-| Key | Accepted values | Default | Description |
-|-----|-----------------|---------|-------------|
-| `auto_unroll` | Mapping or boolean | `{}` | A bare boolean is accepted as shorthand for `auto_unroll.enabled`. |
-| `auto_unroll.enabled` | Boolean: `true` or `false` | `false` | Enable the search. |
-| `auto_unroll.factors` | Non-empty list of integers `>= 1` | internal `[1, 2, 4, 8]` | Optional exact override for the internally selected candidate factors; duplicate factors are ignored and candidates are run high-to-low. |
-| `auto_unroll.fuse_innermost_loops` | Boolean: `true` or `false` | `true` | Before unrolling, attempt a conservative fusion/flattening of the annotated innermost loop with its direct parent when the nest is canonical and constant-trip. |
-| `auto_unroll.try_loop_interchange` | Boolean: `true` or `false` | `true` | For each factor, also map a candidate produced by LLVM loop interchange after temporarily removing the map marker. This requires the marker to identify the unique deepest loop in a single-child nest; a rejected interchanged candidate does not discard the original candidate. |
-| `auto_unroll.stop_on_degradation` | Boolean: `true` or `false` | `false` | Optional search-budget override: after the initial preset beam finds an incumbent, do not adaptively expand to lower-ranked candidates. Failure still expands the beam. |
-| `auto_unroll.fp_nondeterminism` | Boolean: `true` or `false` | `true` | For systolic JAM candidates, permit a floating-point memory recurrence `C += product` to become a zero-seeded temporary reduction followed by one boundary `C += temporary` update. Set `false` to preserve the original floating-point operation order. |
-
-`auto_unroll_results.csv` records `candidate_kind`, systolic recipe ID, and the
-two selected factors. Systolic candidates are scored by `II / (factor0 ×
-factor1)`; scalar candidates retain `II / unroll_factor`.
-
-RecMin has no normal configuration policy. The mapper normalizes explicit
-`nextiter` edges and reversed `RecParents` memory constraints from the final
-transformed DFG, then measures their same-iteration return paths. Missing paths
-start conservatively at II 1 so PathFinder can raise II on failure; stale
-serialized ASAP levels never skip a potentially valid mapping.
-
-Removed keys: `auto_unroll.remainder_policy` and `auto_unroll.outer_factor` now raise errors. Remainders are always preserved; size benchmarks so the mapped trip counts are valid multiples of the desired unroll/SIMD factor.
-
-### Architecture-Driven SIMD
-
-SIMD is no longer configured through top-level `simd.*` YAML knobs. The runner infers SIMD capability from `arch_template_json`:
-
-- Compute PE descriptions with `SIMD_WIDTH > 1` and vector FU ops enable SIMD packing.
-- All SIMD compute PEs must expose one uniform SIMD width.
-- The packer activates only when `unroll_factor >= inferred SIMD width`; narrower unroll candidates map as scalar DFGs on the same architecture.
-- `SCALAR_BROADCAST` and vector op names are also inferred from the architecture JSON.
-- Deprecated top-level `simd` config data is ignored by the current runner except for the deprecation warning.
-
-`dfg_pipeline.simd_pack: verified` is the trace-driven path. The C++ DFG pass first instruments scalar IR, then packs a complete lane-isomorphic subgraph and writes `*_SIMD_manifest.json`. The runner validates that manifest and uses it only to remap/collapse trace rows; it does not rewrite the packed XML. It supports lane-isomorphic recurrence edges and one shared scalar input only when the architecture declares `SCALAR_BROADCAST: true`; unsupported or partial groups remain scalar.
-
-On an architecture exposing `VRED`, integer `ADD`, `AND`, `OR`, and `XOR` reductions use the `vector-psum` lowering. LLVM creates one identity-initialized partial accumulator per SIMD lane, updates those partials in the loop, and combines the original scalar initializer only after the loop. An unroll factor may contain multiple complete SIMD-width chunks: each chunk becomes its own vector load/compute group, lane-wise local vector ops combine the chunks, and only the final vector update carries the loop recurrence. Verified packing removes the scalar PHI/select/merge scaffolding and emits that direct self-recurrent vector update.
-
-The manifest records the vector identity initialization as preheader work and records `VRED`, the scalar-initializer combine, and the final store as exit-only work. Both boundary phases are explicitly `scheduled: false`: the runner maps only the steady-state XML and prints this scope during DFG generation and simulation. When source traces are available, the artifact simulator does not ignore the omitted work. It seeds the first recurrence from traced per-lane preheader values (and checks that they equal the manifest identity), checks every final vector lane against retained live-out trace variables, performs the horizontal reduction and scalar combine in the host model, and checks the result against a traced scalar exit value. The final store is still not cycle-scheduled or applied to simulated memory; separate CGRA preheader/exit DFGs remain future work.
-
-Verified SIMD can compose with C++ `agi_iter`. Packing runs first so a vector accumulator can replace its scalar PHI control path; restricted iterator externalization then removes only the newly disconnected control component. The two manifests are emitted in the final XML index space and validated together.
-
-With `auto_unroll.try_loop_interchange: true`, the search maps both loop orders for each factor. Morpher removes `please_map_me()` only while LLVM checks and applies interchange, then restores it in the unique deepest loop. For GEMM this can move the reduction loop outward and expose an output-parallel inner loop; `agi_iter` can then remove all iterator/control nodes, while verified SIMD retains only essential memory and compute operations. This is enabled by the default config, but legality does not guarantee a better CGRA mapping, and ambiguous or branched nests retain only the original candidate.
-
-Automatic selection minimizes `II / unroll_factor`, equivalently maximizing
-useful source-iteration throughput and, for a fixed kernel and architecture,
-useful compute utilization. After the preset's initial mapping beam, a candidate
-is sent to PathFinder only when its optimistic recurrence bound can strictly
-improve that objective, or can tie it while improving the explicit larger-factor
-tie-breaker. Raw DFG-node occupancy is diagnostic only because retained control
-work must not be rewarded as useful computation.
-
-`dfg_pipeline.externalize_access: agi_iter` removes the remaining loop-start/end, PHI/control, and synthetic iterator live-out component only when every edge stays within that component. Without verified SIMD it runs immediately after AGI externalization. With verified SIMD it runs after packing, which is necessary for vector partial sums whose scalar PHI scaffolding initially connects control to computation. The mapped DFG is then the steady-state body, while address-trace exhaustion determines artifact-simulation completion. If iterator-derived predicates, data, recurrences, or reductions still reach surviving work, iterator removal is skipped with an identity manifest while AGI removal remains applied.
-
-The legacy Python XML iterator and SIMD rewrites have been removed. See `Morpher_DFG_Generator/TRANSFORM_LIMITATIONS.md` for the supported C++ transform contract.
-
-### Mapper Presets
-
-| Preset | Use case |
-|--------|----------|
-| `trusted_pf` | Deterministic scalar baseline: PathFinder only, no SA/hybrid fallback, no adaptive top-k pruning, no restart perturbation. |
-| `fast` | Short runs and smoke tests. Lower backtracking, mapper iterations, and SA effort. |
-| `balanced` | Default starting point. Moderate search effort and DFG logging. |
-| `quality` | Higher mapping effort, more SA restarts/moves, larger II search range. |
-| `exhaust` | Largest built-in search budget; useful for difficult kernels, but slow. |
-
-PathFinder guards are progress-aware. Progress means reaching a new minimum
-unmapped-node count, not merely performing more A* work. `fast` allows 60
-seconds without progress and 300 seconds absolute per PF iteration;
-`trusted_pf` and `balanced` use 120/600 seconds, `quality` uses 180/1200,
-and `exhaust` uses 300/3600. Exact repeated partial placements are also detected
-using the frontier plus a stable placement hash. Guarded retries still clear
-the attempt, perturb node order, and apply local routing pressure.
-
-Advanced tuning keys available for overriding presets: `mapping_method`, `backtrack_limit`, `max_mapper_iter`, `max_II`, `ii_restarts`, `skip_ii_estimation`, `print_dfg`, `sa_seed`, `sa_restarts`, `sa_moves_per_temp`, `sa_temp_max`, `sa_temp_min`, `sa_candidate_topk`, `off_spm_mem_candidate_topk` (`0` uncapped, `auto_fast` aggressive adaptive, `auto_balanced` moderate adaptive), `pf_candidate_topk` (`0` uncapped, `auto_fast` aggressive adaptive, `auto_balanced` moderate adaptive), and `proximity_sort`.
-
-### Environment toggles
-
-| Variable | Accepted values | Description |
-|----------|-----------------|-------------|
-| `MORPHER_LLVM_BIN_DIR` | Directory path | Resolve `clang`, `opt`, `llvm-link`, and `llc` from a specific LLVM install. |
-| `MORPHER_LLVM_LIB_DIR` | Directory path | Make LLVM runtime libraries visible to LLVM tools and plugins. |
-| `MORPHER_LLVM_SUFFIX` | Tool suffix string, such as `-18` | Append a suffix when resolving LLVM tools from `PATH`. |
-| `MORPHER_LLVM_DIR` | CMake LLVM package directory path | CMake LLVM package path for `build_all.sh`. |
-| `MORPHER_CMAKE_ARGS` | Space-separated CMake flags | Extra CMake configure flags for `build_all.sh`. |
-| `MORPHER_VERBOSE_CMDS` | Truthy unless empty, `0`, `false`, `off`, or `no` | Print underlying shell commands in mapper/simulator stages. |
-| `MORPHER_DUMP_VERBOSE_JSON` | Any non-empty value | Dump expanded mapper architecture JSON for debugging. |
-| `MORPHER_PRINT_DFG` | Any non-empty value | Force mapper-side DFG printing. |
-| `MORPHER_MAX_TRACES` | Integer trace cap | Cap instrumented trace generation; normally set internally from `max_test_samples`. |
-| `ARTIFACT_SIM_DEBUG` | Any non-empty value | Enable artifact simulator debug output. |
-
-Additional code-oriented docs: [`docs/FEATURES_AND_CODE_GUIDE.md`](docs/FEATURES_AND_CODE_GUIDE.md).
-
-## Outputs
-
-Stage artifacts live under tagged workspaces:
-
-```text
-workspace/morpher_runs/<tag>/
-  dfg/<suite>/<kernel>/
-  mapper/<mapper_subfolder>/<suite>/<kernel>/
-  simulator/<suite>/<kernel>/
-```
-
-Direct single-kernel C runs without `--run-tag` also create a summary folder:
-
-```text
-generated/<suite>/<kernel>/<timestamp>/
-  result.csv
-  config.yaml
-```
-
-Batch, regression, and sweep scripts also write user-facing summaries under `generated/` unless configured otherwise. Mapper outputs include `result.txt`, `*.mappingwithlatency.txt`, and `<kernel>_arch_runtime.json` in `memory_mode: auto`. Hardware binary emission is disabled; artifact simulation consumes the mapped DFG and latency mapping directly.
-
-## Batch Benchmark Runs
-
-Run all auto-discovered benchmarks in parallel:
+**All benchmarks in parallel** (`scripts/run_all_benchmarks.py`) — auto-discovers everything under `Morpher_DFG_Generator/benchmarks/`, writes per-kernel logs plus a summary CSV (default `benchmark_run_results.csv`):
 
 ```bash
 python3 scripts/run_all_benchmarks.py --jobs 8
+python3 scripts/run_all_benchmarks.py --filter '^polybench/' --timeout-sec 120 --output-csv results.csv
+python3 scripts/run_all_benchmarks.py --config config/scalar.yaml --dry-run
 ```
 
-Useful flags:
-
-```bash
-# Select config and run mode
-python3 scripts/run_all_benchmarks.py --config config/scalar.yaml --runmode runall
-
-# Preview what would run without executing
-python3 scripts/run_all_benchmarks.py --dry-run
-
-# Filter by regex on the benchmark path (repeatable, OR semantics)
-python3 scripts/run_all_benchmarks.py --filter '^polybench/' --jobs 8
-python3 scripts/run_all_benchmarks.py --filter 'fir' --filter 'conv2'
-
-# Limit to the first N benchmarks after filtering
-python3 scripts/run_all_benchmarks.py --max-benches 10
-
-# Per-benchmark timeout and custom output path
-python3 scripts/run_all_benchmarks.py --timeout-sec 120 --output-csv results.csv
-
-# Change where per-kernel run folders are written
-python3 scripts/run_all_benchmarks.py --output-root generated/my_batch
-
-# Prefix workspace run tags when multiple batches may run concurrently
-python3 scripts/run_all_benchmarks.py --run-tag-prefix experiment_a
-```
-
-By default the summary CSV is `benchmark_run_results.csv`. Per-kernel logs and per-kernel `result.csv` files are written under `<output-root>/<suite>/<kernel>/<timestamp>/`, where `--output-root` defaults to `generated`.
-
-Batch runner options:
-
-| Option | Accepted values | Default |
-|--------|-----------------|---------|
-| `--repo-root` | Repository directory path | Parent of `scripts/run_all_benchmarks.py` |
-| `--config` | YAML config path relative to `--repo-root` | `config/default.yaml` |
-| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` | `runall` |
-| `--jobs` | Integer `>= 1` | `min(8, CPU count)` |
-| `--timeout-sec` | Integer seconds; `0` means no timeout | `0` |
-| `--output-root` | Directory path relative to `--repo-root`, unless absolute | `generated` |
-| `--filter` | Python regex on benchmark source path; repeatable with OR semantics | none |
-| `--max-benches` | Integer; `0` means all selected benchmarks | `0` |
-| `--output-csv` | CSV path relative to `--repo-root`, unless absolute | `benchmark_run_results.csv` |
-| `--dry-run` | Flag | off |
-| `--run-tag-prefix` | String prefix sanitized to `[A-Za-z0-9._-]` | empty |
-
-## Adding New Benchmarks
-
-Benchmarks are auto-discovered — no registration step required. Drop a source file following this layout:
-
-```
-Morpher_DFG_Generator/benchmarks/<suite>/<kernel>/<kernel>.c
-```
-
-Rules enforced at discovery time:
-
-- The `.c` filename must exactly match its containing folder name.
-- `<kernel>` must be a valid C identifier (`[A-Za-z_][A-Za-z0-9_]*`).
-- The path must be exactly three levels deep relative to `benchmarks/`: `<suite>/<kernel>/<kernel>.c`. Extra nesting or files at wrong depths are rejected with a clear error.
-- No duplicate entries are allowed.
-
-The function name passed to the DFG generator is derived from the file stem, so the top-level C function in `<kernel>.c` must be named `<kernel>`.
-
-**Example** — add a new `gemv` kernel to the `polybench` suite:
-
-```
-Morpher_DFG_Generator/benchmarks/polybench/gemv/gemv.c
-```
-
-Verify discovery before running:
-
-```bash
-python3 scripts/run_all_benchmarks.py --dry-run --filter 'gemv'
-```
-
-Run just the new kernel:
-
-```bash
-python3 scripts/run_all_benchmarks.py --filter 'polybench/gemv' --jobs 1
-# or directly:
-python3 -u run_morpher.py polybench/gemv/gemv.c gemv
-```
-
-To include it in a regression suite, add an entry under the relevant suite in `scripts/regression_benchmarks.yaml`:
-
-```yaml
-- benchmark: polybench/gemv/gemv.c
-  function: gemv
-  max_ii: 6
-```
-
-## Mapper Regression Suites
-
-Run the default 4×4 regression suite (used for pre-commit checks):
+**Curated suites with II bounds** (`scripts/run_regression_benchmarks.py`) — suite definitions and per-benchmark `max_ii` live in `scripts/regression_benchmarks.yaml`; the runner fails if any benchmark exceeds its bound:
 
 ```bash
 python3 scripts/run_regression_benchmarks.py --suite ci_4x4
+# other suites: ci_4x4_scalar_agi, ci_4x4_scalar_agi_pruned, ci_4x4_gemm_simd4_unroll
 ```
 
-Run the focused 4×4 configuration suites:
-
-```bash
-python3 scripts/run_regression_benchmarks.py --suite ci_4x4_scalar_agi
-python3 scripts/run_regression_benchmarks.py --suite ci_4x4_scalar_agi_pruned
-python3 scripts/run_regression_benchmarks.py --suite ci_4x4_gemm_simd4_unroll
-```
-
-Suite definitions, per-suite configs, and per-benchmark maximum II bounds live in `scripts/regression_benchmarks.yaml`. Regression outputs are written under `generated/morpher_runs/regression/<suite>/`. The runner fails if any benchmark exceeds its `max_ii` bound.
-
-Useful regression flags:
-
-```bash
-python3 scripts/run_regression_benchmarks.py --dry-run
-python3 scripts/run_regression_benchmarks.py --config config/scalar.yaml
-python3 scripts/run_regression_benchmarks.py --runmode mapper_only
-python3 scripts/run_regression_benchmarks.py --jobs 1 --timeout-sec 300
-python3 scripts/run_regression_benchmarks.py --output-dir generated/morpher_runs/regression/custom
-```
-
-Available regression suites from `scripts/regression_benchmarks.yaml`:
-
-```text
-ci_4x4
-ci_4x4_scalar_agi
-ci_4x4_scalar_agi_pruned
-ci_4x4_gemm_simd4_unroll
-```
-
-Regression runner options:
-
-| Option | Accepted values | Default |
-|--------|-----------------|---------|
-| `--repo-root` | Repository directory path | Parent of `scripts/run_regression_benchmarks.py` |
-| `--manifest` | Regression manifest YAML path | `scripts/regression_benchmarks.yaml` |
-| `--suite` | Suite name from the manifest | `ci_4x4` |
-| `--config` | YAML config path | Suite `config` |
-| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` | Suite `runmode`, usually `runall` |
-| `--jobs` | Integer `>= 1` | Suite `jobs` |
-| `--timeout-sec` | Integer seconds; `0` means no timeout | Suite `timeout_sec` |
-| `--output-dir` | Directory path relative to `--repo-root`, unless absolute | `generated/morpher_runs/regression/<suite>` |
-| `--dry-run` | Flag | off |
-
-## Architecture Sweeps
-
-`scripts/run_arch_sweeps.py` expands a YAML manifest suite into architecture/config experiments, writes temporary configs, runs each experiment through `scripts/run_all_benchmarks.py`, and emits `summary.csv` plus `combined_results.csv`.
+**Architecture/config sweeps** (`scripts/run_arch_sweeps.py`) — expands a manifest suite (`scripts/arch_sweeps.yaml`: arches × variants × config overrides) into experiments and emits `summary.csv` + `combined_results.csv`:
 
 ```bash
 python3 scripts/run_arch_sweeps.py --suite edge_mem_arch_sweep --dry-run
 python3 scripts/run_arch_sweeps.py --suite edge_mem_arch_sweep --experiment-jobs 2
 ```
 
-Useful sweep flags:
+## Adding new benchmarks
+
+Benchmarks are auto-discovered — drop a source file at exactly:
+
+```
+Morpher_DFG_Generator/benchmarks/<suite>/<kernel>/<kernel>.c
+```
+
+Rules: the `.c` filename must match its folder, `<kernel>` must be a valid C identifier, the path must be exactly three levels deep, and the top-level function in the file must be named `<kernel>`. Mark the loop to map with `please_map_me()`.
 
 ```bash
-python3 scripts/run_arch_sweeps.py --manifest scripts/arch_sweeps.yaml
-python3 scripts/run_arch_sweeps.py --experiment-filter 'simd4_vred'
-python3 scripts/run_arch_sweeps.py --benchmark-filter '^polybench/' --max-benches 5
-python3 scripts/run_arch_sweeps.py --jobs 4 --timeout-sec 900 --runmode runall
-python3 scripts/run_arch_sweeps.py --output-dir generated/morpher_runs/arch_sweeps/custom
+python3 scripts/run_all_benchmarks.py --dry-run --filter 'gemv'   # verify discovery
+python3 -u run_morpher.py polybench/gemv/gemv.c gemv              # run it
 ```
 
-Manifest knobs live in `scripts/arch_sweeps.yaml`: suite-level `base_config`, `runmode`, `jobs`, `timeout_sec`, `filters`, `max_benches`, `common_overrides`, `arches`, and per-variant `name`, `description`, `base_config`, `arch_filter`, `overrides`. The sweep script deep-merges config overrides and sets `arch_template_json` for each architecture. SIMD is inferred from the selected architecture JSON; do not use legacy top-level `simd.*` overrides in sweep variants.
-
-Available sweep suites from `scripts/arch_sweeps.yaml`:
-
-```text
-edge_mem_arch_sweep
-```
-
-Sweep runner options:
-
-| Option | Accepted values | Default |
-|--------|-----------------|---------|
-| `--repo-root` | Repository directory path | Parent of `scripts/run_arch_sweeps.py` |
-| `--manifest` | Sweep manifest YAML path | `scripts/arch_sweeps.yaml` |
-| `--suite` | Suite name from the manifest | `edge_mem_arch_sweep` |
-| `--output-dir` | Directory path relative to `--repo-root`, unless absolute | `generated/morpher_runs/arch_sweeps/<suite>` |
-| `--experiment-filter` | Python regex on expanded experiment names; repeatable with OR semantics | none |
-| `--benchmark-filter` | Python regex passed to `run_all_benchmarks.py`; repeatable with OR semantics | Suite `filters` |
-| `--max-benches` | Integer; overrides suite `max_benches` | Suite `max_benches`, or `0` |
-| `--jobs` | Integer `>= 1`; benchmark workers per experiment | Suite `jobs` |
-| `--experiment-jobs` | Integer `>= 1`; concurrent experiments | `1` |
-| `--timeout-sec` | Integer seconds; overrides suite `timeout_sec` | Suite `timeout_sec`, or `0` |
-| `--runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` | Suite `runmode`, or `mapper_only` |
-| `--dry-run` | Flag | off |
-
-Sweep manifest fields:
-
-| Field | Accepted values |
-|-------|-----------------|
-| `suites.<name>.base_config` | YAML config path |
-| `suites.<name>.runmode` | `runall`, `dfg_gen_only`, `mapper_only`, `sim_only` |
-| `suites.<name>.jobs` | Integer `>= 1` |
-| `suites.<name>.timeout_sec` | Integer seconds; `0` means no timeout |
-| `suites.<name>.filters` | List of Python regex strings |
-| `suites.<name>.max_benches` | Integer; `0` means all selected benchmarks |
-| `suites.<name>.common_overrides` | YAML mapping merged into every generated config |
-| `suites.<name>.arches` | Non-empty list of architecture JSON filenames or paths |
-| `suites.<name>.variants[].name` | Non-empty unique string |
-| `suites.<name>.variants[].description` | String |
-| `suites.<name>.variants[].base_config` | YAML config path, optional |
-| `suites.<name>.variants[].overrides` | YAML mapping merged over the selected base config |
+To include it in a regression suite, add it under the suite in `scripts/regression_benchmarks.yaml` with a `max_ii` bound.
 
 ## Maintenance
 
-Clean workspace outputs:
-
 ```bash
-bash scripts/clean_workspace.sh
-bash scripts/clean_workspace.sh --dry-run
+bash scripts/clean_workspace.sh              # remove generated artifacts (add --dry-run to preview)
+bash scripts/check_no_generated_tracked.sh   # verify no generated files are tracked by git
 ```
 
-This removes generated non-`.c` files from `Morpher_DFG_Generator/benchmarks`, clears `Morpher_CGRA_Mapper/benchmarks` while preserving `.gitkeep`, and removes `workspace/morpher_runs`.
+## Repository layout and further documentation
 
-Verify that no generated artifacts are tracked by git:
-
-```bash
-bash scripts/check_no_generated_tracked.sh
 ```
+run_morpher.py                    # single-benchmark entry point
+morpher_runner/                   # Python pipeline (DFG gen, mapper, simulator stages)
+config/                           # run configurations
+scripts/                          # regression gate, batch/sweep runners, maintenance
+Morpher_DFG_Generator/            # LLVM-based DFG generator + benchmarks/<suite>/<kernel>/
+Morpher_CGRA_Mapper/              # CGRA mapper (PathFinder + SA) + json_arch/
+simulator/artifact_simulator/     # functional / cycle-accurate validation simulator
+```
+
+- [`docs/CODE_GUIDE.md`](docs/CODE_GUIDE.md) — code map, data flow, and where to make changes
+- [`docs/components/`](docs/components/) — per-component detail (runner pipeline, DFG generator, mapper, simulator, scripts/config)
+- [`Morpher_DFG_Generator/TRANSFORM_LIMITATIONS.md`](Morpher_DFG_Generator/TRANSFORM_LIMITATIONS.md) — supported C++ transform contracts
 
 ## Cite
 
-**Reference Publication**
+**Reference publication**
 
 - ICCAD 2025: [Building an Open CGRA Ecosystem for Agile Innovation](https://arxiv.org/abs/2508.19090)
 
-**Additional Publications**
+**Additional publications**
 
 - HotChips 2024: [PACE: A Scalable and Energy Efficient CGRA in a RISC-V SoC for Edge Computing Applications](https://ieeexplore.ieee.org/abstract/document/10665106)
 - WOSET 2022: [Morpher: An Open-Source Integrated Compilation and Simulation Framework for CGRA](https://www.comp.nus.edu.sg/~tulika/WOSET_MORPHER_2022.pdf)
@@ -625,4 +291,4 @@ bash scripts/check_no_generated_tracked.sh
 - ASPLOS 2022: [REVAMP: A Systematic Framework for Heterogeneous CGRA Realization](https://www.comp.nus.edu.sg/~tulika/asplos22.pdf)
 - TCAD 2022: [HiMap: Fast and Scalable High-Quality Mapping on CGRA via Hierarchical Abstraction](https://www.comp.nus.edu.sg/~tulika/HiMap-TCAD.pdf)
 - TCAD 2022: [ChordMap: Automated Mapping of Streaming Applications onto CGRA](https://ieeexplore.ieee.org/document/9351547)
-- Book Chapter: [Coarse-Grained Reconfigurable Array (CGRA)](https://www.comp.nus.edu.sg/~tulika/CGRA-Survey.pdf)
+- Book chapter: [Coarse-Grained Reconfigurable Array (CGRA)](https://www.comp.nus.edu.sg/~tulika/CGRA-Survey.pdf)

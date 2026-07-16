@@ -25,9 +25,6 @@ from morpher_runner.dfg_generator import simd_packing_active_for_factor
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_commands
 from morpher_runner.mapper import run_mapper
-from morpher_runner.systolic_binding import read_arch_facts
-from morpher_runner.template_lowering import lower_template_record
-from morpher_runner.template_lowering import write_lowering_artifacts
 from morpher_runner.utilization import estimate_utilization
 from morpher_runner.utils import build_llvm_tool_env
 from morpher_runner.utils import resolve_llvm_tool
@@ -59,14 +56,6 @@ def _usage():
     "                         Each run writes to <root>/<suite>/<kernel>/<timestamp>/.\n"
     "                         Ignored when --run-tag is provided (batch mode).\n"
     "  --mem-alloc <path>     Mem-alloc file for XML input mode.\n\n"
-    "  --source-template-report <path>\n"
-    "                         Try source-bound template lowering from a SystolicCandidatePass JSONL report.\n"
-    "                         Use 'auto' to generate the report first in the run directory.\n"
-    "                         Accepted records stage XML for the mapper; conditional/rejected records fall back.\n"
-    "  --source-template-record <index>\n"
-    "                         Report record index to try first (default: first record for the function, else 0).\n"
-    "  --source-template-active-cell-limit <n>\n"
-    "                         Optional active-cell cap for source-bound template lowering.\n\n"
     "Run modes: runall, dfg_gen_only, mapper_only, sim_only\n"
     "XML mode defaults: function=<derived-from-xml>, config_path=%s, runmode=mapper_only\n"
     % DEFAULT_CONFIG_PATH
@@ -78,9 +67,6 @@ def _parse_cli(argv):
   mem_alloc_path = None
   run_tag = ""
   output_root = "generated"
-  source_template_report = None
-  source_template_record = None
-  source_template_active_cell_limit = None
 
   i = 0
   while i < len(argv):
@@ -103,34 +89,6 @@ def _parse_cli(argv):
       mem_alloc_path = argv[i + 1]
       i += 2
       continue
-    if token == "--source-template-report":
-      if i + 1 >= len(argv):
-        raise RuntimeError("Missing value for --source-template-report.\n\n%s" % _usage())
-      source_template_report = argv[i + 1]
-      i += 2
-      continue
-    if token == "--source-template-record":
-      if i + 1 >= len(argv):
-        raise RuntimeError("Missing value for --source-template-record.\n\n%s" % _usage())
-      try:
-        source_template_record = int(argv[i + 1])
-      except ValueError:
-        raise RuntimeError("--source-template-record must be an integer.")
-      if source_template_record < 0:
-        raise RuntimeError("--source-template-record must be non-negative.")
-      i += 2
-      continue
-    if token == "--source-template-active-cell-limit":
-      if i + 1 >= len(argv):
-        raise RuntimeError("Missing value for --source-template-active-cell-limit.\n\n%s" % _usage())
-      try:
-        source_template_active_cell_limit = int(argv[i + 1])
-      except ValueError:
-        raise RuntimeError("--source-template-active-cell-limit must be an integer.")
-      if source_template_active_cell_limit <= 0:
-        raise RuntimeError("--source-template-active-cell-limit must be positive.")
-      i += 2
-      continue
     if token.startswith("--"):
       raise RuntimeError("Unknown option: %s\n\n%s" % (token, _usage()))
     positional.append(token)
@@ -143,8 +101,6 @@ def _parse_cli(argv):
   is_xml_mode = first.lower().endswith(".xml")
 
   if is_xml_mode:
-    if source_template_report:
-      raise RuntimeError("--source-template-report cannot be combined with XML input mode.")
     if len(positional) > 4:
       raise RuntimeError("Too many positional arguments for XML mode.\n\n%s" % _usage())
 
@@ -161,8 +117,7 @@ def _parse_cli(argv):
     csource = "xml_inputs/%s/%s.c" % (function, function)
     return (
       csource, function, config, runmode, xml_path, mem_alloc_path, run_tag,
-      output_root, source_template_report, source_template_record,
-      source_template_active_cell_limit,
+      output_root,
     )
 
   if len(positional) < 2 or len(positional) > 4:
@@ -176,8 +131,6 @@ def _parse_cli(argv):
   runmode = positional[3] if len(positional) >= 4 else "runall"
   return (
     csource, function, config, runmode, None, None, run_tag, output_root,
-    source_template_report, source_template_record,
-    source_template_active_cell_limit,
   )
 
 
@@ -227,10 +180,10 @@ def _stage_mapper_inputs_from_xml(context, xml_path, mem_alloc_path=None):
   print("Staged mapper mem-alloc: %s" % mem_dst)
 
 
-def _load_template_report_records(report_path):
+def _load_systolic_candidate_records(report_path):
   path = Path(report_path)
   if not path.is_file():
-    raise RuntimeError("Source-template report not found: %s" % report_path)
+    raise RuntimeError("Systolic candidate report not found: %s" % report_path)
   records = []
   with path.open("r", encoding="utf-8") as report_file:
     for line_no, line in enumerate(report_file, 1):
@@ -249,32 +202,7 @@ def _load_template_report_records(report_path):
   ]
 
 
-def _select_template_record(records, function, record_index):
-  if record_index is not None:
-    for idx, record in records:
-      if idx == record_index:
-        return idx, record
-    raise RuntimeError("Source-template report has no record index %d." % record_index)
-
-  for idx, record in records:
-    if str(record.get("function") or "") == function:
-      return idx, record
-  if records:
-    return records[0]
-  raise RuntimeError("Source-template report contains no candidate records.")
-
-
-def _candidate_template_records(records, function, record_index):
-  if record_index is not None:
-    return [_select_template_record(records, function, record_index)]
-  matches = [
-    (idx, record) for idx, record in records
-    if str(record.get("function") or "") == function
-  ]
-  return matches if matches else records
-
-
-def _generate_source_template_report(context):
+def _generate_systolic_candidate_report(context):
   report_path = Path(context.dfg_gen_kernel) / ("%s_systolic_candidates.jsonl" % context.kernel)
   report_path.parent.mkdir(parents=True, exist_ok=True)
   if report_path.exists():
@@ -298,134 +226,6 @@ def _generate_source_template_report(context):
     )
   ])
   return str(report_path)
-
-
-def _source_template_dims(context, arch):
-  compute_pes = getattr(arch, "mac_pes", 0) or 0
-  side = int(compute_pes ** 0.5)
-  if side > 0 and side * side == compute_pes:
-    return side, side
-  return context.config.xdim, context.config.ydim
-
-
-def _write_template_fallback_metadata(context, result, report_path, record_index):
-  meta = dict(result.metadata)
-  meta["source_report"] = os.path.abspath(report_path)
-  meta["record_index"] = record_index
-  meta["runner_action"] = "normal_dfg_fallback"
-  path = Path(context.dfg_gen_kernel) / ("%s_source_template_metadata.json" % context.kernel)
-  path.parent.mkdir(parents=True, exist_ok=True)
-  path.write_text(
-    json.dumps(meta, indent=2, sort_keys=True) + "\n",
-    encoding="utf-8",
-  )
-  return path
-
-
-def _try_stage_source_template(
-  context,
-  report_path,
-  record_index=None,
-  active_cell_limit=None,
-  allow_empty_fallback=False,
-):
-  records = _load_template_report_records(report_path)
-  if not records and allow_empty_fallback:
-    print(
-      "Source-template report contains no candidate records; "
-      "continuing through normal DFG generation.\n"
-    )
-    return False
-  candidates = _candidate_template_records(records, context.kernel, record_index)
-  arch_path = resolve_arch_template_path(
-    context.morpher_home,
-    context.mapper_home,
-    context.config.arch_template_json,
-  )
-  arch = read_arch_facts(Path(arch_path))
-  template_dim_x, template_dim_y = _source_template_dims(context, arch)
-
-  first_result = None
-  first_index = None
-  selected_index = None
-  result = None
-  for candidate_index, record in candidates:
-    candidate_result = lower_template_record(
-      record,
-      candidate_index,
-      dim_x=template_dim_x,
-      dim_y=template_dim_y,
-      arch=arch,
-      source_report=os.path.abspath(report_path),
-      active_cell_limit=active_cell_limit,
-    )
-    if first_result is None:
-      first_result = candidate_result
-      first_index = candidate_index
-    if candidate_result.accepted:
-      result = candidate_result
-      selected_index = candidate_index
-      break
-
-  if result is None:
-    result = first_result
-    selected_index = first_index
-  if result is None or selected_index is None:
-    if allow_empty_fallback:
-      print(
-        "Source-template report has no selectable records; "
-        "continuing through normal DFG generation.\n"
-      )
-      return False
-    raise RuntimeError("Source-template report contains no candidate records.")
-
-  template_dir = Path(context.dfg_gen_kernel) / "source_template"
-  if not result.accepted:
-    meta_path = _write_template_fallback_metadata(context, result, report_path, selected_index)
-    print(
-      "Source-template lowering %s for record %d: %s" %
-      (result.status, selected_index, result.reason)
-    )
-    print("Fallback metadata: %s" % meta_path)
-    print("Continuing through normal DFG generation.\n")
-    return False
-
-  xml_path, mem_path, meta_path = write_lowering_artifacts(
-    result,
-    template_dir,
-    context.kernel,
-  )
-  _stage_mapper_inputs_from_xml(context, str(xml_path), str(mem_path))
-  print(
-    "Source-template lowering accepted for record %d: %s" %
-    (selected_index, result.reason)
-  )
-  template_name = result.metadata.get("template", "unknown")
-  print(
-    "Template mapping found and used: template=%s, record=%d, mapper_xml=%s\n"
-    % (
-      template_name,
-      selected_index,
-      os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel),
-    )
-  )
-  omitted_phases = []
-  if result.metadata.get("prologue_required"):
-    omitted_phases.append("prologue")
-  if result.metadata.get("epilogue_required"):
-    omitted_phases.append("epilogue")
-  if omitted_phases and not result.metadata.get(
-      "prologue_epilogue_functionally_chained", False
-  ):
-    print(
-      "Mapping scope: source-template steady-state main DFG only.\n"
-      "CGRA-unscheduled required boundary phase(s): %s.\n"
-      "These phases are not functionally chained into this mapping or its "
-      "simulation result.\n"
-      % ", ".join(omitted_phases)
-    )
-  print("Source-template metadata: %s" % meta_path)
-  return True
 
 
 def _latest_mapper_result(context, start_time):
@@ -628,6 +428,56 @@ def _candidate_auto_unroll_dirs(
   }
 
 
+def _candidate_systolic_jam_dirs(golden_dirs, candidate_index, factor0, factor1):
+  suffix = "_sj_c%d_%dx%d" % (candidate_index, factor0, factor1)
+  return {
+    label: "%s%s" % (path.rstrip("/"), suffix)
+    for label, path in golden_dirs.items()
+  }
+
+
+def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
+  variants = []
+  for record in records:
+    if str(record.get("function") or "") != function:
+      continue
+    recipe = record.get("transform_recipe")
+    if not isinstance(recipe, dict) or not recipe.get("transform_supported"):
+      continue
+    dimensions = recipe.get("parallel_dimensions")
+    if not isinstance(dimensions, list) or len(dimensions) != 2:
+      continue
+    if [item.get("level") for item in dimensions] != [0, 1]:
+      continue
+    factor0s = sorted({
+      int(factor) for factor in dimensions[0].get("legal_factors", [])
+      if int(factor) > 1 and int(factor) <= dim0_limit
+    }, reverse=True)
+    factor1s = sorted({
+      int(factor) for factor in dimensions[1].get("legal_factors", [])
+      if int(factor) > 1 and int(factor) <= dim1_limit
+    }, reverse=True)
+    candidate_index = int(record.get("candidate_index", -1))
+    if candidate_index < 0:
+      continue
+    for factor0 in factor0s:
+      for factor1 in factor1s:
+        variants.append({
+          "candidate_index": candidate_index,
+          "factor0": factor0,
+          "factor1": factor1,
+          "factor": factor0 * factor1,
+          "recipe_id": recipe.get("candidate_id", ""),
+        })
+  variants.sort(
+    key=lambda variant: (
+      -variant["factor"], -variant["factor0"], -variant["factor1"],
+      variant["candidate_index"],
+    )
+  )
+  return variants
+
+
 def _replace_dir(src, dst):
   if os.path.exists(dst):
     shutil.rmtree(dst)
@@ -637,11 +487,11 @@ def _replace_dir(src, dst):
     os.makedirs(dst, exist_ok=True)
 
 
-def _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs):
+def _prepare_auto_unroll_candidate_dirs(source_snapshot, candidate_dirs):
   for path in candidate_dirs.values():
     if os.path.exists(path):
       shutil.rmtree(path)
-  shutil.copytree(source_template, candidate_dirs["dfg"])
+  shutil.copytree(source_snapshot, candidate_dirs["dfg"])
   os.makedirs(candidate_dirs["mapper"], exist_ok=True)
   os.makedirs(candidate_dirs["simulator"], exist_ok=True)
   os.makedirs(os.path.join(candidate_dirs["dfg"], "memtraces"), exist_ok=True)
@@ -660,6 +510,10 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
     writer = csv.DictWriter(
       outfile,
       fieldnames=[
+        "candidate_kind",
+        "recipe_id",
+        "factor0",
+        "factor1",
         "factor",
         "loop_order",
         "reduction_form",
@@ -679,6 +533,7 @@ def _write_auto_unroll_results(golden_dirs, rows, best):
       out_row = dict(row)
       out_row["selected"] = "1" if (
         best and
+        row.get("candidate_kind") == best["candidate_kind"] and
         row.get("factor") == best["factor"] and
         row.get("loop_order") == best["loop_order"] and
         row.get("reduction_form") == best["reduction_form"]
@@ -696,14 +551,35 @@ def _run_auto_unroll(context):
   generated = []
   rows = []
   seen = {}
+  systolic_variants = []
+
+  try:
+    report_path = _generate_systolic_candidate_report(context)
+    report_records = [
+      record for _, record in _load_systolic_candidate_records(report_path)
+    ]
+    systolic_variants = _systolic_jam_variants(
+      report_records, context.kernel, config.ydim, config.xdim
+    )
+  except (subprocess.CalledProcessError, RuntimeError, OSError, ValueError) as exc:
+    print("Systolic candidate discovery unavailable; continuing scalar search: %s\n" % exc)
 
   print("\n-----Generating and ranking Morpher candidates-----\n")
   print("Factors: %s" % ", ".join(str(factor) for factor in factors))
+  if systolic_variants:
+    print(
+      "Systolic jam variants: %s" % ", ".join(
+        "c%d:%dx%d" % (
+          variant["candidate_index"], variant["factor0"], variant["factor1"]
+        )
+        for variant in systolic_variants
+      )
+    )
   print("Objective: minimum mapped II / represented source iterations\n")
 
   with tempfile.TemporaryDirectory(prefix="morpher_ranked_search_") as temp_root:
-    source_template = os.path.join(temp_root, "source_template")
-    shutil.copytree(golden_dirs["dfg"], source_template)
+    source_snapshot = os.path.join(temp_root, "source_snapshot")
+    shutil.copytree(golden_dirs["dfg"], source_snapshot)
     loop_orders = [("original", False)]
     if config.auto_unroll_try_loop_interchange:
       loop_orders.insert(0, ("interchanged", True))
@@ -729,7 +605,7 @@ def _run_auto_unroll(context):
             candidate_dirs = _candidate_auto_unroll_dirs(
               golden_dirs, factor, loop_order, reduction_form
             )
-            _prepare_auto_unroll_candidate_dirs(source_template, candidate_dirs)
+            _prepare_auto_unroll_candidate_dirs(source_snapshot, candidate_dirs)
             _set_auto_unroll_dirs(context, candidate_dirs)
             label = "factor=%d,loop_order=%s,reduction=%s" % (
               factor, loop_order, reduction_form
@@ -746,6 +622,8 @@ def _run_auto_unroll(context):
               )
             except (subprocess.CalledProcessError, RuntimeError) as exc:
               rows.append({
+                "candidate_kind": "scalar_unroll", "recipe_id": "",
+                "factor0": "", "factor1": "",
                 "factor": factor, "loop_order": loop_order,
                 "reduction_form": reduction_form,
                 "recurrence_lower_bound": "", "rank": "",
@@ -759,6 +637,8 @@ def _run_auto_unroll(context):
             duplicate = seen.get(metrics["fingerprint"])
             if duplicate is not None:
               rows.append({
+                "candidate_kind": "scalar_unroll", "recipe_id": "",
+                "factor0": "", "factor1": "",
                 "factor": factor, "loop_order": loop_order,
                 "reduction_form": reduction_form,
                 "recurrence_lower_bound": metrics["recurrence_lower_bound"],
@@ -770,11 +650,77 @@ def _run_auto_unroll(context):
               continue
             seen[metrics["fingerprint"]] = label
             generated.append({
+              "candidate_kind": "scalar_unroll",
+              "recipe_id": "", "factor0": "", "factor1": "",
               "factor": factor, "loop_order": loop_order,
               "interchange_loops": interchange_loops,
               "reduction_form": reduction_form,
               "dirs": candidate_dirs, **metrics,
             })
+
+      for variant in systolic_variants:
+        factor = variant["factor"]
+        candidate_dirs = _candidate_systolic_jam_dirs(
+          golden_dirs, variant["candidate_index"], variant["factor0"],
+          variant["factor1"]
+        )
+        _prepare_auto_unroll_candidate_dirs(source_snapshot, candidate_dirs)
+        _set_auto_unroll_dirs(context, candidate_dirs)
+        label = "systolic_jam,candidate=%d,factors=%dx%d" % (
+          variant["candidate_index"], variant["factor0"], variant["factor1"]
+        )
+        print("== Generate %s ==\n" % label)
+        try:
+          run_dfg_generator(
+            context, unroll_factor=1,
+            systolic_jam=(
+              variant["candidate_index"], variant["factor0"],
+              variant["factor1"],
+            ),
+          )
+          metrics = _candidate_graph_metrics(
+            candidate_dirs, context.kernel, factor, "systolic_jam",
+            arch_op_classes=context.config.arch_op_classes,
+          )
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+          rows.append({
+            "candidate_kind": "systolic_jam",
+            "recipe_id": variant["recipe_id"],
+            "factor0": variant["factor0"], "factor1": variant["factor1"],
+            "factor": factor, "loop_order": "systolic_jam",
+            "reduction_form": "rolled",
+            "recurrence_lower_bound": "", "rank": "",
+            "beam_decision": "generation_failed",
+            "status": "generation_failed", "ii": "", "score": "",
+            "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
+          })
+          print("Candidate generation failed: %s\n" % exc)
+          continue
+
+        duplicate = seen.get(metrics["fingerprint"])
+        if duplicate is not None:
+          rows.append({
+            "candidate_kind": "systolic_jam",
+            "recipe_id": variant["recipe_id"],
+            "factor0": variant["factor0"], "factor1": variant["factor1"],
+            "factor": factor, "loop_order": "systolic_jam",
+            "reduction_form": "rolled",
+            "recurrence_lower_bound": metrics["recurrence_lower_bound"],
+            "rank": "", "beam_decision": "duplicate_of_%s" % duplicate,
+            "status": "skipped_duplicate_dfg", "ii": "", "score": "",
+            "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
+          })
+          print("Duplicate final DFG; reuses %s.\n" % duplicate)
+          continue
+        seen[metrics["fingerprint"]] = label
+        generated.append({
+          "candidate_kind": "systolic_jam",
+          "recipe_id": variant["recipe_id"],
+          "factor0": variant["factor0"], "factor1": variant["factor1"],
+          "factor": factor, "loop_order": "systolic_jam",
+          "interchange_loops": False, "reduction_form": "rolled",
+          "dirs": candidate_dirs, **metrics,
+        })
     finally:
       config.auto_unroll_scalar_reduction_policy = configured_policy
       config.auto_unroll_scalar_reduction_terms = configured_terms
@@ -787,10 +733,10 @@ def _run_auto_unroll(context):
   for rank, candidate in enumerate(generated, 1):
     candidate["rank"] = rank
     print(
-      "Rank %d: factor=%d order=%s reduction=%s lower_score=%.4f "
+      "Rank %d: kind=%s factor=%d order=%s reduction=%s lower_score=%.4f "
       "(rec=%d res=%d) iter=%s memory=%d nodes=%d"
       % (
-        rank, candidate["factor"], candidate["loop_order"],
+        rank, candidate["candidate_kind"], candidate["factor"], candidate["loop_order"],
         candidate["reduction_form"], candidate["lower_score"],
         candidate["recurrence_lower_bound"], candidate["resource_lower_bound"],
         "applied" if candidate["iterator_applied"] else "retained",
@@ -817,7 +763,13 @@ def _run_auto_unroll(context):
       _set_auto_unroll_dirs(context, candidate["dirs"])
       start_time = time.time()
       try:
-        run_mapper(context)
+        # A detected systolic body deliberately fills the compute array. The
+        # general routing-headroom heuristic would otherwise skip its legal
+        # full-occupancy II before PathFinder gets a chance to map it.
+        pf_util_headroom = (
+          100 if candidate["candidate_kind"] == "systolic_jam" else None
+        )
+        run_mapper(context, pf_util_headroom=pf_util_headroom)
         ii, status = _latest_mapper_result(context, start_time)
       except subprocess.CalledProcessError as exc:
         ii, status = None, "failed_exit_%d" % exc.returncode
@@ -834,6 +786,9 @@ def _run_auto_unroll(context):
         score = None
 
     rows.append({
+      "candidate_kind": candidate["candidate_kind"],
+      "recipe_id": candidate["recipe_id"],
+      "factor0": candidate["factor0"], "factor1": candidate["factor1"],
       "factor": candidate["factor"], "loop_order": candidate["loop_order"],
       "reduction_form": candidate["reduction_form"],
       "recurrence_lower_bound": candidate["recurrence_lower_bound"],
@@ -851,9 +806,9 @@ def _run_auto_unroll(context):
       "Automatic search failed: none of %d unique candidates mapped." % mapped_attempts
     )
   print(
-    "Selected rank %d: factor=%d, loop_order=%s, reduction=%s, II=%d, score=%.4f.\n"
+    "Selected rank %d: kind=%s, factor=%d, loop_order=%s, reduction=%s, II=%d, score=%.4f.\n"
     % (
-      best["rank"], best["factor"], best["loop_order"],
+      best["rank"], best["candidate_kind"], best["factor"], best["loop_order"],
       best["reduction_form"], best["ii"], best["score"],
     )
   )
@@ -871,9 +826,6 @@ def main(
   dfg_xml_path=None,
   mem_alloc_path=None,
   run_tag="",
-  source_template_report=None,
-  source_template_record=None,
-  source_template_active_cell_limit=None,
 ):
   print(r"""
     __  ___                 __                 ________________  ___       ____            _                ______                                             __  
@@ -909,40 +861,10 @@ def main(
     _stage_mapper_inputs_from_xml(context, dfg_xml_path, mem_alloc_path)
     print("Skipping DFG generation stage (XML input mode).\n")
 
-  source_template_staged = False
-  source_template_from_config = False
-  if (
-    source_template_report is None
-    and not dfg_xml_path
-    and runmode in ("runall", "dfg_gen_only")
-    and context.config.source_template_mode == "auto"
-  ):
-    source_template_report = "auto"
-    source_template_from_config = True
-
-  if source_template_report:
-    if runmode not in ("runall", "dfg_gen_only"):
-      raise RuntimeError(
-        "--source-template-report supports runmode runall or dfg_gen_only (got: %s)."
-        % runmode
-      )
-    resolved_template_report = (
-      _generate_source_template_report(context)
-      if source_template_report == "auto" else source_template_report
-    )
-    source_template_staged = _try_stage_source_template(
-      context,
-      resolved_template_report,
-      source_template_record,
-      source_template_active_cell_limit,
-      allow_empty_fallback=source_template_from_config,
-    )
-
   if (
     context.config.auto_unroll_enabled
     and runmode == "runall"
     and not dfg_xml_path
-    and not source_template_staged
   ):
     _run_auto_unroll(context)
     return
@@ -950,7 +872,6 @@ def main(
   if (
     (runmode == "runall" or runmode == "dfg_gen_only")
     and not dfg_xml_path
-    and not source_template_staged
   ):
     run_dfg_generator(context)
 
@@ -1089,8 +1010,7 @@ if __name__ == "__main__":
   try:
     (
       csource, function, config, runmode, dfg_xml_path, mem_alloc_path,
-      run_tag, output_root, source_template_report, source_template_record,
-      source_template_active_cell_limit,
+      run_tag, output_root,
     ) = _parse_cli(sys.argv[1:])
     _csource, _function, _config = csource, function, config
 
@@ -1109,9 +1029,6 @@ if __name__ == "__main__":
       dfg_xml_path,
       mem_alloc_path,
       run_tag,
-      source_template_report,
-      source_template_record,
-      source_template_active_cell_limit,
     )
 
   except subprocess.CalledProcessError as e:
