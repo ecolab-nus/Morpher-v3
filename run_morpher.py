@@ -448,6 +448,8 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
     if str(record.get("function") or "") == function
   ]
   has_beta_sibling = any(
+    not record.get("contains_map_marker", False)
+    and
     int((record.get("arithmetic_summary") or {}).get("mac_pairs", 0)) == 0
     and any(
       access.get("kind") == "store"
@@ -457,6 +459,11 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
     for record in function_records
   )
   for record in function_records:
+    # Candidate indices are function-local.  Only the nest that owns the
+    # source marker may be transformed; otherwise a legal unmarked sibling
+    # could silently receive the restored please_map_me() call.
+    if not record.get("contains_map_marker", False):
+      continue
     recipe = record.get("transform_recipe")
     if not isinstance(recipe, dict):
       continue
@@ -469,6 +476,8 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
       is_distributable_beta_gemm = (
         has_beta_sibling
         and record.get("lowering_family") == "gemm_like_2d_reduction"
+        and int(record.get("triangular_loops", 0)) == 0
+        and float(record.get("kernel_shape_factor", 1.0)) == 1.0
         and isinstance(classes, list)
         and [item.get("kind") for item in classes]
             == ["PARALLEL", "REDUCTION", "PARALLEL"]
@@ -518,28 +527,6 @@ def _systolic_jam_variants(records, function, dim0_limit, dim1_limit):
           "schedule": schedule,
           "dataflow": "output_stationary",
         })
-    if (
-      schedule == "direct"
-      and len(dimensions) == 2
-      and "weight_stationary" in record.get("dataflow_hints", [])
-    ):
-      reduction = recipe.get("rolled_reduction")
-      if isinstance(reduction, dict):
-        reduction_trip = int(reduction.get("trip_count", 0))
-        column_trip = int(dimensions[1].get("trip_count", 0))
-        if (
-          reduction_trip > 1 and reduction_trip <= dim0_limit
-          and column_trip > 1 and column_trip <= dim1_limit
-        ):
-          variants.append({
-            "candidate_index": candidate_index,
-            "factor0": reduction_trip,
-            "factor1": column_trip,
-            "factor": reduction_trip * column_trip,
-            "recipe_id": recipe.get("candidate_id", ""),
-            "schedule": schedule,
-            "dataflow": "weight_stationary",
-          })
   variants.sort(
     key=lambda variant: (
       -variant["factor"], -variant["factor0"], -variant["factor1"],

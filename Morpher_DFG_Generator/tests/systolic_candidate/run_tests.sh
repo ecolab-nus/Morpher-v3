@@ -126,6 +126,115 @@ for fixture in "${!EXPECTED_VERDICT[@]}"; do
   PASS_COUNT=$((PASS_COUNT + 1))
 done
 
+multi_src="${SCRIPT_DIR}/gemm_two_nests.c"
+multi_ll="${TMP_DIR}/gemm_two_nests.transform.ll"
+multi_out="${TMP_DIR}/gemm_two_nests.transformed.ll"
+multi_err="${TMP_DIR}/gemm_two_nests.transform.err"
+clang -O1 -fno-unroll-loops -emit-llvm -S "${multi_src}" -o "${multi_ll}" 2>/dev/null
+opt -load-pass-plugin "${PLUGIN}" \
+    -passes='morpher-systolic-unroll-jam' \
+    -morpher-systolic-fn=gemm_two_nests \
+    -morpher-systolic-candidate-index=0 \
+    -morpher-systolic-factor0=4 \
+    -morpher-systolic-factor1=4 \
+    "${multi_ll}" -S -o "${multi_out}" 2>"${multi_err}"
+if [[ $? -ne 0 ]]; then
+  echo "FAIL gemm_two_nests transform: selected marked nest failed"
+  head -20 "${multi_err}"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c '!morpher.systolic.mac_coord' "${multi_out}") -ne 16 ]]; then
+  echo "FAIL gemm_two_nests transform: expected 16 MAC coordinates in selected nest"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+elif [[ $(grep -c 'call void @please_map_me' "${multi_out}") -ne 1 ]]; then
+  echo "FAIL gemm_two_nests transform: expected one restored marker"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  echo "PASS gemm_two_nests transform: selected marked nest transformed in multi-nest function"
+  PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
+if python3 -c \
+    'import subprocess, sys; result = subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); raise SystemExit(0 if result.returncode != 0 else 1)' \
+    opt -load-pass-plugin "${PLUGIN}" \
+    -passes='morpher-systolic-unroll-jam' \
+    -morpher-systolic-fn=gemm_two_nests \
+    -morpher-systolic-candidate-index=1 \
+    -morpher-systolic-factor0=4 \
+    -morpher-systolic-factor1=4 \
+    "${multi_ll}" -disable-output; then
+  echo "PASS gemm_two_nests marker binding: unmarked sibling rejected"
+  PASS_COUNT=$((PASS_COUNT + 1))
+else
+  echo "FAIL gemm_two_nests marker binding: unmarked sibling transformed"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+# Exercise the actual checked-in multi-nest PolyBench sources with the same
+# frontend shape used by the runner.  These are the first stock kernels, apart
+# from GEMM, that consume the selected-nest recipe contract.
+for benchmark in mvt mm2; do
+  poly_src="${SCRIPT_DIR}/../../benchmarks/polybench/${benchmark}/${benchmark}.c"
+  poly_ll="${TMP_DIR}/${benchmark}.polybench.ll"
+  poly_opt="${TMP_DIR}/${benchmark}.polybench.opt.ll"
+  poly_out="${TMP_DIR}/${benchmark}.polybench.transformed.ll"
+  poly_err="${TMP_DIR}/${benchmark}.polybench.transform.err"
+  if [[ "${benchmark}" == "mvt" ]]; then
+    function=mvt
+    factor0=4
+    factor1=1
+    expected_coords=4
+  else
+    function=mm2
+    factor0=4
+    factor1=4
+    expected_coords=16
+  fi
+  clang -target i386-unknown-linux-gnu -D CGRA_COMPILER \
+      -Wno-implicit-function-declaration -c -emit-llvm -O2 \
+      -ffp-contract=off -fno-inline -fno-vectorize -fno-slp-vectorize \
+      -fno-unroll-loops "${poly_src}" -S -o "${poly_ll}" 2>/dev/null
+  opt -passes='default<O2>' "${poly_ll}" -S -o "${poly_opt}" 2>/dev/null
+  opt -load-pass-plugin "${PLUGIN}" \
+      -passes='morpher-systolic-unroll-jam' \
+      "-morpher-systolic-fn=${function}" \
+      -morpher-systolic-candidate-index=0 \
+      "-morpher-systolic-factor0=${factor0}" \
+      "-morpher-systolic-factor1=${factor1}" \
+      "${poly_opt}" -S -o "${poly_out}" 2>"${poly_err}"
+  if [[ $? -ne 0 ]]; then
+    echo "FAIL ${benchmark} PolyBench transform: opt failed"
+    head -20 "${poly_err}"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  elif [[ $(grep -c '!morpher.systolic.mac_coord' "${poly_out}") -ne ${expected_coords} ]]; then
+    echo "FAIL ${benchmark} PolyBench transform: expected ${expected_coords} MAC coordinates"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  elif [[ $(grep -c 'call.*@please_map_me' "${poly_out}") -ne 1 ]]; then
+    echo "FAIL ${benchmark} PolyBench transform: expected one restored marker"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  else
+    echo "PASS ${benchmark} PolyBench transform: selected marked contraction lowered"
+    PASS_COUNT=$((PASS_COUNT + 1))
+    poly_dfg_dir="${TMP_DIR}/${benchmark}.polybench.dfg"
+    mkdir -p "${poly_dfg_dir}"
+    (cd "${poly_dfg_dir}" && opt -load-pass-plugin "${PLUGIN}" \
+        -passes=skeleton --fn "${function}" --nobanks 4 --banksize 65536 \
+        --externalize-access=agi_iter --suppress-dfg-dot -S "${poly_out}" \
+        -o instrumented.ll) >/dev/null 2>"${poly_dfg_dir}/dfg.err"
+    poly_xml="${poly_dfg_dir}/${function}_PartPredDFG.xml"
+    if [[ $? -ne 0 || ! -f "${poly_xml}" ]]; then
+      echo "FAIL ${benchmark} PolyBench DFG: generation failed"
+      head -20 "${poly_dfg_dir}/dfg.err"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    elif [[ $(grep -c 'systolic_mac_row' "${poly_xml}") -ne ${expected_coords} ]]; then
+      echo "FAIL ${benchmark} PolyBench DFG: expected ${expected_coords} spatial compute nodes"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    else
+      echo "PASS ${benchmark} PolyBench DFG: selected contraction reached final DFG"
+      PASS_COUNT=$((PASS_COUNT + 1))
+    fi
+  fi
+done
+
 marker_src="${SCRIPT_DIR}/gemm_ijk_marker.c"
 marker_ll="${TMP_DIR}/gemm_ijk_marker.transform.ll"
 marker_out="${TMP_DIR}/gemm_ijk_marker.transformed.ll"

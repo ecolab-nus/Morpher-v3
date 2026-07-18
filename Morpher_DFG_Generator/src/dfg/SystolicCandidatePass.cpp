@@ -45,6 +45,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -1033,8 +1034,6 @@ TransformRecipe buildTransformRecipe(
     return unsupported(isGemm
                            ? "v1 requires a canonical perfect three-level nest"
                            : "v1 requires a canonical perfect two-level nest");
-  if (LI.getLoopsInPreorder().size() != expectedLevels)
-    return unsupported("v1 requires the candidate to be the function's only loop nest");
   if (stores.size() != 1)
     return unsupported("v1 requires exactly one output base");
   if (reductionLoops.size() != 1)
@@ -1100,6 +1099,23 @@ bool sourceEquivalentCandidateFor(StringRef family, StringRef verdict,
   return verdict != "no" && rejectReason.empty() && family != "unsupported";
 }
 
+bool containsMapMarker(const Loop *outer) {
+  if (!outer)
+    return false;
+  for (BasicBlock *block : outer->blocks()) {
+    for (const Instruction &instruction : *block) {
+      const auto *call = dyn_cast<CallBase>(&instruction);
+      if (!call)
+        continue;
+      const Value *called = call->getCalledOperand()->stripPointerCasts();
+      const auto *function = dyn_cast<Function>(called);
+      if (function && function->getName() == "please_map_me")
+        return true;
+    }
+  }
+  return false;
+}
+
 void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
                ScalarEvolution &SE, unsigned candidateIndex,
                StringRef verdict, ArrayRef<std::string> hints,
@@ -1115,6 +1131,8 @@ void writeJSON(raw_ostream &OS, Function &F, NestRecord &rec,
   OS << "\"function\":";
   writeQuoted(OS, F.getName());
   OS << ",\"candidate_index\":" << candidateIndex;
+  OS << ",\"contains_map_marker\":"
+     << (containsMapMarker(rec.outer) ? "true" : "false");
   OS << ",\"loop_header\":";
   writeQuoted(OS, rec.outer->getHeader()->getName());
   OS << ",\"verdict\":";
@@ -1409,7 +1427,8 @@ struct SystolicCandidatePass : public PassInfoMixin<SystolicCandidatePass> {
         if (verdict != "no") {
           // The temporary binding attribute is an implementation detail of
           // the consuming transform and must not leak from report-only runs.
-          if (!emitJSONReport) {
+          if (!emitJSONReport &&
+              candidateIndex == MorpherSystolicCandidateIndex) {
             if (MorpherSystolicDataflow != "output_stationary" &&
                 MorpherSystolicDataflow != "weight_stationary" &&
                 MorpherSystolicDataflow != "input_stationary")
@@ -1682,6 +1701,33 @@ struct StripSystolicMapMarkerPass
     if (markers.empty())
       return PreservedAnalyses::all();
 
+    // Once the detector has attached recipes, bind the source marker to the
+    // explicitly selected candidate.  This replaces the old whole-function
+    // single-nest restriction without allowing an unmarked sibling nest to be
+    // transformed and receive the restored marker.
+    Loop *selectedOuter = nullptr;
+    for (Loop *candidate : loopInfo.getLoopsInPreorder()) {
+      MDNode *property = findLoopProperty(candidate, SystolicRecipeMetadata);
+      auto selected = metadataUnsigned(property, 2);
+      if (!selected || *selected != MorpherSystolicCandidateIndex)
+        continue;
+      if (selectedOuter)
+        report_fatal_error("systolic candidate index is ambiguous during marker binding");
+      selectedOuter = candidate;
+    }
+    if (selectedOuter) {
+      Loop *selectedReduction = selectedOuter;
+      while (!selectedReduction->getSubLoops().empty()) {
+        if (selectedReduction->getSubLoops().size() != 1)
+          report_fatal_error(
+              "selected systolic candidate is not a unique loop chain");
+        selectedReduction = selectedReduction->getSubLoops().front();
+      }
+      if (markerLoop != selectedReduction)
+        report_fatal_error(
+            "selected systolic candidate does not own please_map_me() in its rolled reduction");
+    }
+
     function.addFnAttr(SystolicStrippedMarkerAttr,
                        Twine(markerLoop->getLoopDepth()).str());
     for (CallBase *marker : markers)
@@ -1929,9 +1975,6 @@ struct ConfigureSystolicUnrollJamPass
     if ((dimensionCount == 1 && MorpherSystolicFactor1 != 1) ||
         (dimensionCount == 2 && MorpherSystolicFactor1 <= 1))
       report_fatal_error("systolic factor1 must be one for dot recipes and exceed one for 2-D recipes");
-    if (loopInfo.getLoopsInPreorder().size() != dimensionCount + 1)
-      report_fatal_error(
-          "systolic transform requires the candidate to be the function's only loop nest");
     Attribute markerDepth = function.getFnAttribute(SystolicStrippedMarkerAttr);
     if (!markerDepth.isStringAttribute())
       report_fatal_error(
@@ -2060,7 +2103,8 @@ struct RestoreSystolicMapMarkerPass
 
 struct RestoreSystolicMemoryStreamsPass
     : public PassInfoMixin<RestoreSystolicMemoryStreamsPass> {
-  PreservedAnalyses run(Function &function, FunctionAnalysisManager &) {
+  PreservedAnalyses run(Function &function,
+                        FunctionAnalysisManager &analysisManager) {
     Attribute bindingsAttr = function.getFnAttribute(SystolicMemStreamBindingsAttr);
     Attribute dataflowAttr = function.getFnAttribute(SystolicDataflowAttr);
     if (!bindingsAttr.isStringAttribute())
@@ -2068,6 +2112,31 @@ struct RestoreSystolicMemoryStreamsPass
     if (!dataflowAttr.isStringAttribute())
       report_fatal_error("systolic transform lost its selected dataflow");
     const StringRef selectedDataflow = dataflowAttr.getValueAsString();
+
+    LoopInfo &loopInfo = analysisManager.getResult<LoopAnalysis>(function);
+    Loop *selectedReduction = nullptr;
+    for (Loop *loop : loopInfo.getLoopsInPreorder()) {
+      if (!findLoopProperty(loop, SystolicReductionMetadata))
+        continue;
+      if (selectedReduction)
+        report_fatal_error(
+            "systolic transform produced multiple rolled reduction loops");
+      selectedReduction = loop;
+    }
+    if (!selectedReduction)
+      report_fatal_error(
+          "systolic transform lost its rolled reduction loop");
+    Loop *selectedRegion = selectedReduction;
+    while (selectedRegion->getParentLoop())
+      selectedRegion = selectedRegion->getParentLoop();
+    DenseSet<const BasicBlock *> selectedBlocks;
+    for (BasicBlock *block : selectedRegion->blocks())
+      selectedBlocks.insert(block);
+    // Exact WS fully unrolls the reduction and hoists its stationary loads to
+    // the surviving streamed loop's preheader.  That preheader is still part
+    // of the selected region; unrelated sibling nests remain excluded.
+    if (BasicBlock *preheader = selectedRegion->getLoopPreheader())
+      selectedBlocks.insert(preheader);
 
     auto baseKey = [](Value *base) -> std::string {
       if (auto *argument = dyn_cast<Argument>(base))
@@ -2091,6 +2160,7 @@ struct RestoreSystolicMemoryStreamsPass
     }
 
     unsigned taggedLoads = 0;
+    unsigned matchingLoadsOutsideRegion = 0;
     SmallVector<LoadInst *, 8> rowLoads;
     SmallVector<LoadInst *, 8> columnLoads;
     for (BasicBlock &block : function) {
@@ -2103,6 +2173,10 @@ struct RestoreSystolicMemoryStreamsPass
         for (const auto &binding : bindings) {
           if (binding.second != key)
             continue;
+          if (!selectedBlocks.count(&block)) {
+            ++matchingLoadsOutsideRegion;
+            break;
+          }
           LLVMContext &context = instruction.getContext();
           instruction.setMetadata(
               SystolicMemStreamMetadata,
@@ -2123,7 +2197,8 @@ struct RestoreSystolicMemoryStreamsPass
     function.removeFnAttr(SystolicDataflowAttr);
     if (taggedLoads == 0)
       report_fatal_error(
-          "systolic transform lost every classified input memory stream");
+          Twine("systolic transform lost every classified input memory stream; matching loads outside selected region=") +
+          Twine(matchingLoadsOutsideRegion));
     const bool weightStationary = selectedDataflow == "weight_stationary";
     const unsigned expectedRowLoads = MorpherSystolicFactor0;
     const unsigned expectedColumnLoads = weightStationary
@@ -2132,7 +2207,12 @@ struct RestoreSystolicMemoryStreamsPass
     if (rowLoads.size() != expectedRowLoads ||
         columnLoads.size() != expectedColumnLoads)
       report_fatal_error(
-          "systolic transform input stream count does not match jam factors");
+          Twine("systolic transform input stream count does not match jam factors: row=") +
+          Twine(rowLoads.size()) + "/" + Twine(expectedRowLoads) +
+          ", column=" + Twine(columnLoads.size()) + "/" +
+          Twine(expectedColumnLoads) + ", matching loads outside selected region=" +
+          Twine(matchingLoadsOutsideRegion) + ", bindings=" +
+          bindingsAttr.getValueAsString());
 
     DenseMap<LoadInst *, unsigned> rowIndex;
     DenseMap<LoadInst *, unsigned> columnIndex;
@@ -2153,13 +2233,32 @@ struct RestoreSystolicMemoryStreamsPass
     if (!weightStationary)
       attachIndices(columnLoads, columnIndex);
 
-    auto directLoad = [](Value *value) -> LoadInst * {
-      while (auto *cast = dyn_cast<CastInst>(value))
-        value = cast->getOperand(0);
-      return dyn_cast<LoadInst>(value);
+    SmallPtrSet<LoadInst *, 16> rowLoadSet;
+    SmallPtrSet<LoadInst *, 16> columnLoadSet;
+    rowLoadSet.insert(rowLoads.begin(), rowLoads.end());
+    columnLoadSet.insert(columnLoads.begin(), columnLoads.end());
+    auto classifiedLoad = [](Value *value,
+                             const SmallPtrSetImpl<LoadInst *> &members)
+        -> LoadInst * {
+      std::function<LoadInst *(Value *)> find = [&](Value *candidate)
+          -> LoadInst * {
+        while (auto *cast = dyn_cast<CastInst>(candidate))
+          candidate = cast->getOperand(0);
+        if (auto *load = dyn_cast<LoadInst>(candidate))
+          return members.count(load) ? load : nullptr;
+        auto *binary = dyn_cast<BinaryOperator>(candidate);
+        if (!binary || !isMulShape(binary->getOpcode()))
+          return nullptr;
+        LoadInst *lhs = find(binary->getOperand(0));
+        LoadInst *rhs = find(binary->getOperand(1));
+        return lhs && rhs ? nullptr : lhs ? lhs : rhs;
+      };
+      return find(value);
     };
     unsigned taggedMacs = 0;
     for (BasicBlock &block : function) {
+      if (!selectedBlocks.count(&block))
+        continue;
       for (Instruction &instruction : block) {
         Value *lhs = nullptr;
         Value *rhs = nullptr;
@@ -2198,22 +2297,12 @@ struct RestoreSystolicMemoryStreamsPass
           }
         }
 
-        LoadInst *first = directLoad(lhs);
-        LoadInst *second = directLoad(rhs);
-        if (!first || !second)
-          continue;
-        LoadInst *row = rowIndex.count(first) ? first
-                          : rowIndex.count(second) ? second : nullptr;
-        LoadInst *column = weightStationary
-            ? (std::find(columnLoads.begin(), columnLoads.end(), first) !=
-                       columnLoads.end()
-                   ? first
-                   : std::find(columnLoads.begin(), columnLoads.end(), second) !=
-                             columnLoads.end()
-                         ? second
-                         : nullptr)
-            : columnIndex.count(first) ? first
-                             : columnIndex.count(second) ? second : nullptr;
+        LoadInst *row = classifiedLoad(lhs, rowLoadSet);
+        if (!row)
+          row = classifiedLoad(rhs, rowLoadSet);
+        LoadInst *column = classifiedLoad(lhs, columnLoadSet);
+        if (!column)
+          column = classifiedLoad(rhs, columnLoadSet);
         if (!row || !column)
           continue;
         if (weightStationary && !columnIndex.count(column)) {

@@ -261,6 +261,7 @@ class TraceDrivenCommandTests(unittest.TestCase):
     records = [{
       "function": "probe",
       "candidate_index": 3,
+      "contains_map_marker": True,
       "transform_recipe": {
         "candidate_id": "probe#3",
         "transform_supported": True,
@@ -281,6 +282,7 @@ class TraceDrivenCommandTests(unittest.TestCase):
     records = [{
       "function": "probe",
       "candidate_index": 1,
+      "contains_map_marker": True,
       "transform_recipe": {
         "candidate_id": "probe#1",
         "transform_supported": True,
@@ -295,10 +297,11 @@ class TraceDrivenCommandTests(unittest.TestCase):
       [(4, 1, 4), (2, 1, 2)],
     )
 
-  def test_systolic_variants_add_exact_tile_weight_stationary_choice(self):
+  def test_systolic_variants_do_not_auto_select_experimental_weight_stationary(self):
     records = [{
       "function": "probe",
       "candidate_index": 2,
+      "contains_map_marker": True,
       "dataflow_hints": ["output_stationary", "weight_stationary"],
       "transform_recipe": {
         "candidate_id": "probe#2",
@@ -312,20 +315,21 @@ class TraceDrivenCommandTests(unittest.TestCase):
     }]
     variants = _systolic_jam_variants(records, "probe", 4, 4)
     ws = [v for v in variants if v["dataflow"] == "weight_stationary"]
-    self.assertEqual(len(ws), 1)
-    self.assertEqual((ws[0]["factor0"], ws[0]["factor1"]), (4, 4))
-    self.assertEqual(ws[0]["schedule"], "direct")
+    self.assertEqual(ws, [])
+    self.assertTrue(all(v["dataflow"] == "output_stationary" for v in variants))
 
   def test_systolic_variants_ignore_unsupported_or_other_functions(self):
     records = [
       {
         "function": "probe",
         "candidate_index": 0,
+        "contains_map_marker": True,
         "transform_recipe": {"transform_supported": False},
       },
       {
         "function": "other",
         "candidate_index": 0,
+        "contains_map_marker": True,
         "transform_recipe": {
           "transform_supported": True,
           "parallel_dimensions": [
@@ -342,6 +346,7 @@ class TraceDrivenCommandTests(unittest.TestCase):
       {
         "function": "probe",
         "candidate_index": 0,
+        "contains_map_marker": False,
         "arithmetic_summary": {"mac_pairs": 0},
         "affine_accesses": [{"kind": "store"}],
         "transform_recipe": {"transform_supported": False},
@@ -349,6 +354,9 @@ class TraceDrivenCommandTests(unittest.TestCase):
       {
         "function": "probe",
         "candidate_index": 1,
+        "contains_map_marker": True,
+        "triangular_loops": 0,
+        "kernel_shape_factor": 1.0,
         "lowering_family": "gemm_like_2d_reduction",
         "loop_classes": [
           {"kind": "PARALLEL"},
@@ -372,6 +380,38 @@ class TraceDrivenCommandTests(unittest.TestCase):
     self.assertTrue(
       all(v["schedule"] == "polly_distribute_beta" for v in variants)
     )
+
+  def test_systolic_variants_reject_triangular_beta_shape(self):
+    records = [
+      {
+        "function": "probe",
+        "candidate_index": 0,
+        "contains_map_marker": False,
+        "arithmetic_summary": {"mac_pairs": 0},
+        "affine_accesses": [{"kind": "store"}],
+        "transform_recipe": {"transform_supported": False},
+      },
+      {
+        "function": "probe",
+        "candidate_index": 1,
+        "contains_map_marker": True,
+        "triangular_loops": 1,
+        "kernel_shape_factor": 0.5,
+        "lowering_family": "gemm_like_2d_reduction",
+        "loop_classes": [
+          {"kind": "PARALLEL"},
+          {"kind": "REDUCTION"},
+          {"kind": "PARALLEL"},
+        ],
+        "trip_counts": [
+          {"trip_count": 16},
+          {"trip_count": 16},
+          {"trip_count": 16},
+        ],
+        "transform_recipe": {"transform_supported": False},
+      },
+    ]
+    self.assertEqual(_systolic_jam_variants(records, "probe", 4, 4), [])
 
   def test_final_graph_recurrence_bound_ignores_stale_asap_levels(self):
     with tempfile.TemporaryDirectory() as directory:

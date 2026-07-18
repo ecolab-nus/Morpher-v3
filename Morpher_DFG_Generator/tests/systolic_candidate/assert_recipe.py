@@ -16,13 +16,12 @@ def main() -> int:
   if fixture == "gemm_two_nests":
     assert len(records) == 2
     assert [record["candidate_index"] for record in records] == [0, 1]
+    assert [record["contains_map_marker"] for record in records] == [True, False]
     for record in records:
       recipe = record["transform_recipe"]
       assert recipe["schema_version"] == 1
-      assert recipe["transform_supported"] is False
-      assert recipe["unsupported_reason"] == (
-        "v1 requires the candidate to be the function's only loop nest"
-      )
+      assert recipe["transform_supported"] is True
+      assert recipe["unsupported_reason"] is None
     return 0
   if len(records) != 1:
     raise AssertionError(f"{fixture}: expected one record, got {len(records)}")
@@ -31,6 +30,7 @@ def main() -> int:
   recipe = record["transform_recipe"]
   assert recipe["schema_version"] == 1
   assert recipe["candidate_id"] == f"{fixture}#0"
+  assert record["contains_map_marker"] is fixture.endswith("_marker")
 
   if fixture == "gemm_ijk":
     assert recipe["transform_supported"] is True
