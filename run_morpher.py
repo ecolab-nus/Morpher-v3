@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import contextlib
 import csv
 import datetime
 import hashlib
@@ -249,6 +250,42 @@ def _latest_mapper_result(context, start_time):
 
 def _auto_unroll_score(ii, factor):
   return float(ii) / float(factor)
+
+
+@contextlib.contextmanager
+def _output_to_log(log_path, section):
+  """Send fd-level stdout/stderr (Python prints and subprocesses) to a log file.
+
+  fd duplication (not sys.stdout swapping) so that child-process output is
+  captured too; the log survives candidate-dir promotion because it lives
+  outside the replaced directories.
+  """
+  sys.stdout.flush()
+  sys.stderr.flush()
+  saved_out = os.dup(1)
+  saved_err = os.dup(2)
+  with open(log_path, "a", encoding="utf-8") as log:
+    log.write("\n===== %s =====\n" % section)
+    log.flush()
+    os.dup2(log.fileno(), 1)
+    os.dup2(log.fileno(), 2)
+    try:
+      yield
+    finally:
+      sys.stdout.flush()
+      sys.stderr.flush()
+      os.dup2(saved_out, 1)
+      os.dup2(saved_err, 2)
+      os.close(saved_out)
+      os.close(saved_err)
+
+
+def _brief_error(exc):
+  if isinstance(exc, subprocess.CalledProcessError):
+    cmd = exc.cmd[0] if isinstance(exc.cmd, (list, tuple)) else exc.cmd
+    return "exit %d from %s" % (exc.returncode, os.path.basename(str(cmd)))
+  message = str(exc).strip()
+  return message.splitlines()[0][:160] if message else exc.__class__.__name__
 
 
 def _candidate_can_improve(candidate, incumbent):
@@ -612,18 +649,26 @@ def _run_auto_unroll(context):
   seen = {}
   systolic_variants = []
 
+  search_log = golden_dirs["mapper"].rstrip("/") + "_auto_unroll_search.log"
+  open(search_log, "w").close()
+
+  print("\n-----Generating and ranking Morpher candidates-----\n")
+  print("Detailed tool output: %s" % search_log)
   try:
-    report_path = _generate_systolic_candidate_report(context)
-    report_records = [
-      record for _, record in _load_systolic_candidate_records(report_path)
-    ]
+    with _output_to_log(search_log, "systolic candidate discovery"):
+      report_path = _generate_systolic_candidate_report(context)
+      report_records = [
+        record for _, record in _load_systolic_candidate_records(report_path)
+      ]
     systolic_variants = _systolic_jam_variants(
       report_records, context.kernel, config.ydim, config.xdim
     )
   except (subprocess.CalledProcessError, RuntimeError, OSError, ValueError) as exc:
-    print("Systolic candidate discovery unavailable; continuing scalar search: %s\n" % exc)
+    print(
+      "Systolic candidate discovery unavailable; continuing scalar search: %s"
+      % _brief_error(exc)
+    )
 
-  print("\n-----Generating and ranking Morpher candidates-----\n")
   print("Factors: %s" % ", ".join(str(factor) for factor in factors))
   if systolic_variants:
     print(
@@ -670,12 +715,14 @@ def _run_auto_unroll(context):
             label = "factor=%d,loop_order=%s,reduction=%s" % (
               factor, loop_order, reduction_form
             )
-            print("== Generate %s ==\n" % label)
+            print("Generate %-48s " % label, end="", flush=True)
+            generate_start = time.time()
             try:
-              run_dfg_generator(
-                context, unroll_factor=factor,
-                interchange_loops=interchange_loops,
-              )
+              with _output_to_log(search_log, "generate %s" % label):
+                run_dfg_generator(
+                  context, unroll_factor=factor,
+                  interchange_loops=interchange_loops,
+                )
               metrics = _candidate_graph_metrics(
                 candidate_dirs, context.kernel, factor, loop_order,
                 arch_op_classes=context.config.arch_op_classes,
@@ -691,7 +738,10 @@ def _run_auto_unroll(context):
                 "status": "generation_failed", "ii": "", "score": "",
                 "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
               })
-              print("Candidate generation failed: %s\n" % exc)
+              print(
+                "failed (%.1fs): %s"
+                % (time.time() - generate_start, _brief_error(exc))
+              )
               continue
 
             duplicate = seen.get(metrics["fingerprint"])
@@ -706,15 +756,25 @@ def _run_auto_unroll(context):
                 "status": "skipped_duplicate_dfg", "ii": "", "score": "",
                 "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
               })
-              print("Duplicate final DFG; reuses %s.\n" % duplicate)
+              print(
+                "duplicate of %s (%.1fs)" % (duplicate, time.time() - generate_start)
+              )
               continue
             seen[metrics["fingerprint"]] = label
+            print(
+              "ok: nodes=%d lower_bound=%d (%.1fs)"
+              % (
+                metrics["total_nodes"],
+                max(metrics["recurrence_lower_bound"], metrics["resource_lower_bound"]),
+                time.time() - generate_start,
+              )
+            )
             generated.append({
               "candidate_kind": "scalar_unroll",
               "recipe_id": "", "factor0": "", "factor1": "",
               "factor": factor, "loop_order": loop_order,
               "interchange_loops": interchange_loops,
-              "reduction_form": reduction_form,
+              "reduction_form": reduction_form, "label": label,
               "dirs": candidate_dirs, **metrics,
             })
 
@@ -730,17 +790,19 @@ def _run_auto_unroll(context):
           variant["dataflow"], variant["candidate_index"],
           variant["factor0"], variant["factor1"]
         )
-        print("== Generate %s ==\n" % label)
+        print("Generate %-48s " % label, end="", flush=True)
+        generate_start = time.time()
         try:
-          run_dfg_generator(
-            context, unroll_factor=1,
-            systolic_jam=(
-              variant["candidate_index"], variant["factor0"],
-              variant["factor1"],
-            ),
-            systolic_schedule=variant["schedule"],
-            systolic_dataflow=variant["dataflow"],
-          )
+          with _output_to_log(search_log, "generate %s" % label):
+            run_dfg_generator(
+              context, unroll_factor=1,
+              systolic_jam=(
+                variant["candidate_index"], variant["factor0"],
+                variant["factor1"],
+              ),
+              systolic_schedule=variant["schedule"],
+              systolic_dataflow=variant["dataflow"],
+            )
           metrics = _candidate_graph_metrics(
             candidate_dirs, context.kernel, factor, "systolic_jam",
             arch_op_classes=context.config.arch_op_classes,
@@ -757,7 +819,10 @@ def _run_auto_unroll(context):
             "status": "generation_failed", "ii": "", "score": "",
             "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
           })
-          print("Candidate generation failed: %s\n" % exc)
+          print(
+            "failed (%.1fs): %s"
+            % (time.time() - generate_start, _brief_error(exc))
+          )
           continue
 
         duplicate = seen.get(metrics["fingerprint"])
@@ -773,15 +838,26 @@ def _run_auto_unroll(context):
             "status": "skipped_duplicate_dfg", "ii": "", "score": "",
             "promoted": "0", "candidate_mapper_dir": candidate_dirs["mapper"],
           })
-          print("Duplicate final DFG; reuses %s.\n" % duplicate)
+          print(
+            "duplicate of %s (%.1fs)" % (duplicate, time.time() - generate_start)
+          )
           continue
         seen[metrics["fingerprint"]] = label
+        print(
+          "ok: nodes=%d lower_bound=%d (%.1fs)"
+          % (
+            metrics["total_nodes"],
+            max(metrics["recurrence_lower_bound"], metrics["resource_lower_bound"]),
+            time.time() - generate_start,
+          )
+        )
         generated.append({
           "candidate_kind": "systolic_jam",
           "recipe_id": variant["recipe_id"],
           "factor0": variant["factor0"], "factor1": variant["factor1"],
           "factor": factor, "loop_order": "systolic_jam",
           "interchange_loops": False, "reduction_form": "rolled",
+          "label": label,
           "dirs": candidate_dirs, **metrics,
         })
     finally:
@@ -821,9 +897,17 @@ def _run_auto_unroll(context):
       decision = "pruned_no_objective_improvement"
       status = "pruned_no_objective_improvement"
       ii = None
+      print(
+        "Skip rank %d (%s): cannot beat incumbent score %.4f"
+        % (candidate["rank"], candidate["label"], best["score"])
+      )
     else:
       decision = "initial_beam" if in_initial_beam else "adaptive_expansion"
       _set_auto_unroll_dirs(context, candidate["dirs"])
+      print(
+        "Map rank %d (%s) ... " % (candidate["rank"], candidate["label"]),
+        end="", flush=True,
+      )
       start_time = time.time()
       try:
         # A detected systolic body deliberately fills the compute array. The
@@ -832,21 +916,31 @@ def _run_auto_unroll(context):
         pf_util_headroom = (
           100 if candidate["candidate_kind"] == "systolic_jam" else None
         )
-        run_mapper(context, pf_util_headroom=pf_util_headroom)
+        with _output_to_log(
+          search_log, "map rank %d %s" % (candidate["rank"], candidate["label"])
+        ):
+          run_mapper(context, pf_util_headroom=pf_util_headroom)
         ii, status = _latest_mapper_result(context, start_time)
       except subprocess.CalledProcessError as exc:
         ii, status = None, "failed_exit_%d" % exc.returncode
       mapped_attempts += 1
+      elapsed = time.time() - start_time
       if status == "success" and ii is not None:
         score = _auto_unroll_score(ii, candidate["factor"])
         choice = {**candidate, "ii": ii, "score": score}
-        if best is None or score < best["score"] or (
+        is_best = best is None or score < best["score"] or (
           score == best["score"] and candidate["factor"] > best["factor"]
-        ):
+        )
+        print(
+          "II=%d score=%.4f (%.1fs)%s"
+          % (ii, score, elapsed, "  <- new best" if is_best else "")
+        )
+        if is_best:
           best = choice
           _promote_auto_unroll_candidate(candidate["dirs"], golden_dirs)
       else:
         score = None
+        print("%s (%.1fs)" % (status or "no mapper result", elapsed))
 
     rows.append({
       "candidate_kind": candidate["candidate_kind"],
