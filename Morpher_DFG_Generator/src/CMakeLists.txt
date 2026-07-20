@@ -2,7 +2,11 @@ llvm_add_library(dfggenPass MODULE
     OUTPUT_NAME "libdfggenPass"
     PLUGIN_TOOL opt
     dfggenPass.cpp
-    morpherLoopUnrollPass.cpp
+    passes/unroll/UnrollInternal.h
+    passes/unroll/LoopUnroll.cpp
+    passes/unroll/MarkerPasses.cpp
+    passes/unroll/LoopInterchange.cpp
+    passes/unroll/SimdReductionExpansion.cpp
     ../include/morpherdfggen/arch/CGRANode.h
     arch/CGRANode.cpp
     ../include/morpherdfggen/arch/CGRA.h
