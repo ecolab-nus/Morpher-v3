@@ -1,7 +1,11 @@
 llvm_add_library(dfggenPass MODULE
     OUTPUT_NAME "libdfggenPass"
     PLUGIN_TOOL opt
-    dfggenPass.cpp
+    passes/dfggen/DfgGenInternal.h
+    passes/dfggen/IrPrep.cpp
+    passes/dfggen/MappingUnits.cpp
+    passes/dfggen/SpmBanks.cpp
+    passes/dfggen/DfgGenDriver.cpp
     passes/unroll/UnrollInternal.h
     passes/unroll/LoopUnroll.cpp
     passes/unroll/MarkerPasses.cpp
