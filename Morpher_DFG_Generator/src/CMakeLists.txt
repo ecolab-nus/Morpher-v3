@@ -27,8 +27,13 @@ llvm_add_library(dfggenPass MODULE
     ../include/morpherdfggen/dfg/DFGPartPred.h
     dfg/DFGPartPred.cpp
     ../include/morpherdfggen/dfg/SystolicCandidatePass.h
-    dfg/SystolicCandidatePass.cpp
-    dfg/SystolicPollySchedule.cpp
+    passes/systolic/SystolicInternal.h
+    passes/systolic/DetectPass.cpp
+    passes/systolic/MarkerPasses.cpp
+    passes/systolic/CanonicalizeOutput.cpp
+    passes/systolic/ConfigureUnrollJam.cpp
+    passes/systolic/RestoreStreams.cpp
+    passes/systolic/PollySchedule.cpp
 )
 
 find_path(POLLY_INCLUDE_DIR polly/ScopPass.h
