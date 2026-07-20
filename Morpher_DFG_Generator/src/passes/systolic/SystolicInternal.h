@@ -4,12 +4,14 @@
 // The original SystolicCandidatePass.cpp wrapped every helper, struct, cl::opt,
 // and pass in a single anonymous namespace; splitting it across translation
 // units requires the items used by more than one .cpp to gain external linkage
-// under a named namespace. Detector-only helpers and structs stay file-local in
-// DetectPass.cpp.
+// under a named namespace. Nest-analysis data and entry points are shared with
+// DetectPass.cpp; implementation-only helpers remain in NestAnalysis.cpp.
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
@@ -63,6 +65,50 @@ extern cl::opt<std::string> MorpherSystolicDataflow;
 // ----------------------------------------------------------------------------
 // Shared data structures
 // ----------------------------------------------------------------------------
+
+struct NestRecord {
+  Loop *outer = nullptr;
+  SmallVector<Loop *, 4> levels;
+  SmallVector<PHINode *, 4> ivs;
+  SmallVector<std::string, 4> ivNames;
+};
+
+struct MemopInfo {
+  Instruction *inst = nullptr;
+  bool isStore = false;
+  Value *basePtr = nullptr;
+  const SCEV *ptrSCEV = nullptr;
+  DenseSet<const Loop *> deps;
+};
+
+struct WeightedTerm {
+  const LoadInst *load = nullptr;
+  int64_t coefficient = 0;
+};
+
+SmallVector<NestRecord, 4> findNests(LoopInfo &LI);
+bool recoverIVs(NestRecord &rec, ScalarEvolution &SE);
+unsigned countTriangularLoops(const NestRecord &rec, ScalarEvolution &SE);
+bool collectMemops(NestRecord &rec, ScalarEvolution &SE,
+                   SmallVectorImpl<MemopInfo> &out,
+                   std::string &rejectReason);
+bool findReductionInLoop(Loop *loop);
+void countBodyOps(Loop *inner, unsigned &outMacs, unsigned &outStencil,
+                  unsigned &outTotal, unsigned &outMulOps,
+                  unsigned &outAddOps);
+bool collectIntegerWeightedTerms(Value *value, int64_t scale,
+                                 SmallVectorImpl<WeightedTerm> &terms,
+                                 unsigned depthBudget = 32);
+const MemopInfo *findMemopForInstruction(
+    const SmallVectorImpl<MemopInfo> &memops, const Instruction *instruction);
+bool hasImpureCalls(Loop *inner);
+bool hasUnsafeAliasing(SmallVectorImpl<MemopInfo> &memops, AAResults &AA);
+SmallVector<const MemopInfo *, 4>
+collectStores(const SmallVectorImpl<MemopInfo> &memops);
+SmallVector<std::string, 3>
+pickHints(NestRecord &rec, SmallVectorImpl<MemopInfo> &memops,
+          const MemopInfo *storeOp, const DenseSet<const Loop *> &outputDeps,
+          const DenseSet<const Loop *> &reductionLoops);
 
 struct TransformDimension {
   unsigned level = 0;

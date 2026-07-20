@@ -28,6 +28,7 @@ llvm_add_library(dfggenPass MODULE
     dfg/DFGPartPred.cpp
     ../include/morpherdfggen/dfg/SystolicCandidatePass.h
     passes/systolic/SystolicInternal.h
+    passes/systolic/NestAnalysis.cpp
     passes/systolic/DetectPass.cpp
     passes/systolic/MarkerPasses.cpp
     passes/systolic/CanonicalizeOutput.cpp
