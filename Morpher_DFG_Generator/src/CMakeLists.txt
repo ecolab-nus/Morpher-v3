@@ -20,7 +20,13 @@ llvm_add_library(dfggenPass MODULE
     ../include/morpherdfggen/common/dfgnode.h
     common/dfgnode.cpp
     ../include/morpherdfggen/common/dfg.h
-    common/dfg.cpp
+    dfg/core/DfgCoreInternal.h
+    dfg/core/Graph.cpp
+    dfg/core/SmartMapping.cpp
+    dfg/core/EmsMapping.cpp
+    dfg/core/IoAndDiagnostics.cpp
+    dfg/core/Transforms.cpp
+    dfg/core/SimdAndMemory.cpp
     ../include/morpherdfggen/common/astar.h
     common/astar.cpp
     llvm18PassPlugin.cpp
@@ -29,7 +35,13 @@ llvm_add_library(dfggenPass MODULE
     common/dfgmacro.cpp
     ../include/morpherdfggen/common/dfgmacro.h
     ../include/morpherdfggen/dfg/DFGPartPred.h
-    dfg/DFGPartPred.cpp
+    passes/dfgpartpred/DfgPartPredInternal.h
+    passes/dfgpartpred/PhiAndSelect.cpp
+    passes/dfgpartpred/TriggeredOutput.cpp
+    passes/dfgpartpred/Scheduling.cpp
+    passes/dfgpartpred/Boundaries.cpp
+    passes/dfgpartpred/PseudoEdgesAndDot.cpp
+    passes/dfgpartpred/ControlFlow.cpp
     ../include/morpherdfggen/dfg/SystolicCandidatePass.h
     passes/systolic/SystolicInternal.h
     passes/systolic/NestAnalysis.cpp
