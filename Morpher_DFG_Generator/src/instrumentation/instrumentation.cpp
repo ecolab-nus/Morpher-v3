@@ -806,10 +806,14 @@ void LiveOutReport(const char* varname, uint8_t* value, uint32_t size){
 void LiveInReportIntermediateVar(const char* varname, uint32_t value){
 	std::string varname_str(varname);
 	uint8_t* value_ptr = (uint8_t*)&value;
-	for(int i=0; i<4; i++){
-		data_morpher[varname_str].pre_data.push_back(value_ptr[i]);
-		data_morpher[varname_str].post_data.push_back(value_ptr[i]);
-	}
+	// Intermediate live-ins are scalar seeds, not an append-only sequence.
+	// Unrolled reductions report the same logical accumulator once per tree
+	// partial under one name; the DFG and mem_alloc model that accumulator as
+	// a single 4-byte scalar with one OSTORE, so repeated reports must
+	// overwrite the same four-byte slot. Appending manufactured expected
+	// slots (PartialCount*4 bytes) that no OSTORE ever writes.
+	data_morpher[varname_str].pre_data.assign(value_ptr, value_ptr + sizeof(value));
+	data_morpher[varname_str].post_data.assign(value_ptr, value_ptr + sizeof(value));
 }
 
 
