@@ -763,14 +763,28 @@ int CGRAXMLCompile::SAMapper::getPortUsage()
 	return usage_number;
 }
 
+int CGRAXMLCompile::SAMapper::getTotalRoutedWirelength()
+{
+	// Total routed wirelength in port-hops: unlike port_usage (which counts a
+	// port once per using node, so fanout edges sharing a prefix are free),
+	// this charges every hop of every edge's path.
+	int wirelength = 0;
+	for (const auto &route_entry : data_routing_path)
+	{
+		wirelength += route_entry.second.size();
+	}
+	return wirelength;
+}
+
 int CGRAXMLCompile::SAMapper::getCost()
 {
 	int unmapped_node_number = getNumberOfUnmappedNodes();
 	int port_usage = getPortUsage();
 	int congestion_number = getCongestionNumber();
 	int conflict_number = getConflictNumber();
-	int total_cost = unmapped_node_number * 100 + congestion_number * 10 + conflict_number * 10 + port_usage;
-	LOG(COST) << "unmapped node:" << unmapped_node_number << " port usage:" << port_usage << " congestion:" << congestion_number << " total cost:" << total_cost << "\n";
+	int wirelength = (sa_wirelength_weight > 0) ? getTotalRoutedWirelength() : 0;
+	int total_cost = unmapped_node_number * 100 + congestion_number * 10 + conflict_number * 10 + port_usage + sa_wirelength_weight * wirelength;
+	LOG(COST) << "unmapped node:" << unmapped_node_number << " port usage:" << port_usage << " congestion:" << congestion_number << " wirelength:" << wirelength << " total cost:" << total_cost << "\n";
 	return total_cost;
 }
 

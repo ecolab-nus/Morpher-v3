@@ -45,6 +45,7 @@ struct arguments
 	float sa_temp_max = 200.0f;
 	float sa_temp_min = 10.0f;
 	int sa_candidate_topk = 8;
+	int sa_wirelength_weight = 0; // per-port cost of total routed wirelength in the SA objective (0=off)
 	int sa_stall_temp_steps = 0; // 0=disabled; abort SA at current II after this many temp steps without unmapped-count improvement
 	int sa_stall_min_unmapped = 1;
 	int off_spm_mem_candidate_topk = 0; // 0=unbounded, -1=auto_fast, -2=auto_balanced; cap PF memory candidates when SPM modelling is off
@@ -103,6 +104,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 					.add_option<std::string>("", "--sa_temp_max", "SA maximum temperature", "200")
 					.add_option<std::string>("", "--sa_temp_min", "SA minimum temperature", "10")
 					.add_option<int>("", "--sa_candidate_topk", "SA top-K candidate DPs sampled stochastically", 8)
+					.add_option<int>("", "--sa_wirelength_weight", "SA cost weight per routed port of total wirelength (0=off)", 0)
 					.add_option<int>("", "--sa_stall_temp_steps", "abort SA after this many temperature steps without unmapped-count improvement (0=disabled)", 0)
 					.add_option<int>("", "--sa_stall_min_unmapped", "only apply SA stall abort when at least this many nodes remain unmapped", 1)
 					.add_option<std::string>("", "--off_spm_mem_candidate_topk", "cap PathFinder memory candidates when spm_mode=off (0=unbounded, auto_fast/aggressive, auto_balanced/moderate)", "0")
@@ -152,6 +154,7 @@ inline arguments parse_arguments(int argn, char *argc[]){
 	ret.sa_temp_max = std::stof(args.get_option<std::string>("--sa_temp_max"));
 	ret.sa_temp_min = std::stof(args.get_option<std::string>("--sa_temp_min"));
 	ret.sa_candidate_topk = args.get_option<int>("--sa_candidate_topk");
+	ret.sa_wirelength_weight = args.get_option<int>("--sa_wirelength_weight");
 	ret.sa_stall_temp_steps = args.get_option<int>("--sa_stall_temp_steps");
 	ret.sa_stall_min_unmapped = args.get_option<int>("--sa_stall_min_unmapped");
 	if (ret.sa_stall_temp_steps < 0 || ret.sa_stall_min_unmapped < 1)

@@ -77,6 +77,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 0.0,
     "sa_temp_min": 0.0,
     "sa_candidate_topk": 0,
+    "sa_wirelength_weight": 0,
     "sa_stall_temp_steps": 0,
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
@@ -101,6 +102,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 120.0,
     "sa_temp_min": 20.0,
     "sa_candidate_topk": 4,
+    "sa_wirelength_weight": 0,
     "sa_stall_temp_steps": 4,
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": "auto_fast",
@@ -125,6 +127,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 200.0,
     "sa_temp_min": 10.0,
     "sa_candidate_topk": 8,
+    "sa_wirelength_weight": 0,
     "sa_stall_temp_steps": 6,
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": "auto_balanced",
@@ -149,6 +152,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 250.0,
     "sa_temp_min": 5.0,
     "sa_candidate_topk": 12,
+    "sa_wirelength_weight": 0,
     "sa_stall_temp_steps": 0,
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
@@ -173,6 +177,7 @@ MAPPER_PRESETS = {
     "sa_temp_max": 300.0,
     "sa_temp_min": 3.0,
     "sa_candidate_topk": 16,
+    "sa_wirelength_weight": 0,
     "sa_stall_temp_steps": 0,
     "sa_stall_min_unmapped": 1,
     "off_spm_mem_candidate_topk": 0,
@@ -209,6 +214,7 @@ def _parse_mapper_preset(config_dict):
     "sa_temp_max",
     "sa_temp_min",
     "sa_candidate_topk",
+    "sa_wirelength_weight",
     "sa_stall_temp_steps",
     "sa_stall_min_unmapped",
     "off_spm_mem_candidate_topk",
@@ -781,6 +787,7 @@ class RunnerConfig:
   sa_temp_max: float
   sa_temp_min: float
   sa_candidate_topk: int
+  sa_wirelength_weight: int
   sa_stall_temp_steps: int
   sa_stall_min_unmapped: int
   off_spm_mem_candidate_topk: int
@@ -1141,6 +1148,7 @@ class RunnerConfig:
       sa_temp_max=mapper_tuning["sa_temp_max"],
       sa_temp_min=mapper_tuning["sa_temp_min"],
       sa_candidate_topk=mapper_tuning["sa_candidate_topk"],
+      sa_wirelength_weight=int(mapper_tuning.get("sa_wirelength_weight", 0)),
       sa_stall_temp_steps=int(mapper_tuning["sa_stall_temp_steps"]),
       sa_stall_min_unmapped=int(mapper_tuning["sa_stall_min_unmapped"]),
       off_spm_mem_candidate_topk=_resolve_off_spm_mem_candidate_topk(

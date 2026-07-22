@@ -31,12 +31,13 @@ public:
 		};
 
 		bool SAMap(CGRA *cgra, DFG *dfg);
-		void configureSAParams(int seed, int moves_per_temp, float temp_max, float temp_min, int candidate_topk){
+		void configureSAParams(int seed, int moves_per_temp, float temp_max, float temp_min, int candidate_topk, int wirelength_weight){
 			sa_seed = seed;
 			movement_in_each_temp = std::max(1, moves_per_temp);
 			maximum_temp = std::max(1.0f, temp_max);
 			minimim_temp = std::max(0.001f, std::min(temp_min, maximum_temp));
 			sa_candidate_topk = std::max(1, candidate_topk);
+			sa_wirelength_weight = std::max(0, wirelength_weight);
 		}
 		void configureSAStallPolicy(int temp_steps, int min_unmapped){
 			sa_stall_temp_steps = std::max(0, temp_steps);
@@ -70,6 +71,7 @@ public:
 		return getConflictNumber(ss);
 	};
 	int getPortUsage();
+	int getTotalRoutedWirelength();
 	int getNumberOfUnmappedNodes();
 	int checkAnyUnroutedEdge();
 	std::string mapStatus();
@@ -144,6 +146,7 @@ protected:
 		int curr_cost;
 		int sa_seed = 0;
 		int sa_candidate_topk = 8;
+		int sa_wirelength_weight = 0;
 		int sa_stall_temp_steps = 0;
 		int sa_stall_min_unmapped = 1;
 		unsigned long long rng_base_seed = 0;

@@ -192,6 +192,8 @@ def build_mapper_commands(context, pf_util_headroom=None):
     str(config.sa_temp_min),
     "--sa_candidate_topk",
     str(config.sa_candidate_topk),
+    "--sa_wirelength_weight",
+    str(config.sa_wirelength_weight),
     "--sa_stall_temp_steps",
     str(config.sa_stall_temp_steps),
     "--sa_stall_min_unmapped",

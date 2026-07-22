@@ -246,7 +246,8 @@ int main(int argn, char *argc[])
 	                            args.sa_moves_per_temp,
 	                            args.sa_temp_max,
 	                            args.sa_temp_min,
-	                            args.sa_candidate_topk);
+	                            args.sa_candidate_topk,
+	                            args.sa_wirelength_weight);
 	sa_mapper->configureSAStallPolicy(args.sa_stall_temp_steps,
 	                                  args.sa_stall_min_unmapped);
 
