@@ -6,6 +6,7 @@
  */
 
 #include <morpher/arch/CGRA.h>
+#include <morpher/arch/LayoutObservation.h>
 #include <morpher/arch/PE.h>
 #include <morpher/arch/Port.h>
 #include <morpher/arch/DataPath.h>
@@ -1497,7 +1498,14 @@ void CGRAXMLCompile::CGRA::EmitLayoutObservation(DFG *dfg, string fileName)
 		entry["idx"] = node.idx;
 		entry["op"] = node.op;
 		entry["base_pointer"] = node.base_pointer_name;
-		entry["gep_offset"] = node.gep_offset;
+		auto observed_base_it = Variable2SPMAddr.find(node.base_pointer_name);
+		const int *observed_base =
+			(observed_base_it != Variable2SPMAddr.end())
+				? &observed_base_it->second
+				: nullptr;
+		const int observed_gep_offset = layoutObservationGepOffset(
+			node.op, node.gep_offset, node.constant, observed_base);
+		entry["gep_offset"] = observed_gep_offset;
 
 		json mapped_pe = nullptr;
 		if (node.rootDP && node.rootDP->getPE())
@@ -1544,8 +1552,8 @@ void CGRAXMLCompile::CGRA::EmitLayoutObservation(DFG *dfg, string fileName)
 									  : std::string();
 				arr["memPEs_touched"].push_back(touched);
 			}
-			if (node.gep_offset >= 0)
-				arr["access_offsets"].push_back(node.gep_offset);
+			if (observed_gep_offset >= 0)
+				arr["access_offsets"].push_back(observed_gep_offset);
 			arr["ld_st_node_idxs"].push_back(node.idx);
 		}
 	}
