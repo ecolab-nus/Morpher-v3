@@ -8,6 +8,7 @@ import numpy as np
 
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
+from morpher_runner.memory_profile import combine_profiles
 
 
 def collect_trace_files(context):
@@ -95,7 +96,9 @@ def resolve_boundary_manifest(context):
   return matches[0] if matches else None
 
 
-def build_artifact_sim_command(context, trace_file, validation_mode):
+def build_artifact_sim_command(
+    context, trace_file, validation_mode, memory_profile_path=None
+):
   kernel = context.kernel
   argv = [
       resolve_artifact_simulator(context),
@@ -125,6 +128,8 @@ def build_artifact_sim_command(context, trace_file, validation_mode):
       "--result",
       os.path.join(context.mapper_kernel, "result.txt"),
     ])
+    if memory_profile_path is not None:
+      argv.extend(["--memory-profile-json", str(memory_profile_path)])
   return Command(
     argv=argv,
     cwd=context.mapper_kernel,
@@ -133,6 +138,15 @@ def build_artifact_sim_command(context, trace_file, validation_mode):
 
 def run_artifact_simulator(context, validation_mode="functional"):
   print("\n-----Running Morpher artifact_simulator (%s)-----\n" % validation_mode)
+  aggregate_path = None
+  if validation_mode == "event_driven":
+    aggregate_path = os.path.join(
+      context.simulator_kernel, "memory_profile.json"
+    )
+    try:
+      os.unlink(aggregate_path)
+    except FileNotFoundError:
+      pass
   files = collect_trace_files(context)
   if not files:
     print(
@@ -148,8 +162,18 @@ def run_artifact_simulator(context, validation_mode="functional"):
 
   matches = 0
   mismatches = 0
+  sample_profile_paths = []
+  sample_profile_labels = []
   for file in samplefiles:
-    command = build_artifact_sim_command(context, file, validation_mode)
+    sample_profile_path = None
+    if validation_mode == "event_driven":
+      sample_profile_path = os.path.join(
+        context.simulator_kernel,
+        ".memory_profile_%s.json" % os.path.splitext(file)[0],
+      )
+    command = build_artifact_sim_command(
+      context, file, validation_mode, sample_profile_path
+    )
     command.check = False
     command.capture_output = True
     command.text = True
@@ -163,6 +187,25 @@ def run_artifact_simulator(context, validation_mode="functional"):
     mismatches += parsed[1]
     if result.returncode not in (0, 2):
       raise RuntimeError("artifact_simulator failed with exit code %d." % result.returncode)
+    if sample_profile_path is not None:
+      if not os.path.isfile(sample_profile_path):
+        raise RuntimeError(
+          "artifact_simulator did not write memory profile %s."
+          % sample_profile_path
+        )
+      sample_profile_paths.append(sample_profile_path)
+      sample_profile_labels.append(file)
+
+  if sample_profile_paths:
+    combine_profiles(
+      sample_profile_paths, aggregate_path, labels=sample_profile_labels
+    )
+    for path in sample_profile_paths:
+      try:
+        os.unlink(path)
+      except OSError:
+        pass
+    print("Memory profile: %s" % aggregate_path)
 
   print("Matches: %d Mismatches: %d" % (matches, mismatches))
   if mismatches == 0:

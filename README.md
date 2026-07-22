@@ -160,6 +160,16 @@ Systolic candidates get an explicit first-attempt placement (row streams on left
 
 A clean run prints `Matches::N, Mismatches::0`. Boundary/SIMD manifests extend what the simulator checks (seeds, exit-only reductions, live-outs) so removed scaffolding is still verified, not just dropped.
 
+Event-driven runs also print an observational memory-access profile derived from the architecture's physical `PE_MEM → SPM bank/port` wiring: issued operations, bytes, peak concurrency, port oversubscription, and unbound/ambiguous endpoints. These counters do not currently stall the fixed modulo schedule or add conflict cycles. A versioned aggregate across selected trace samples is written to `workspace/morpher_runs/<tag>/simulator/<suite>/<kernel>/memory_profile.json`; its headline counters are copied into `result.csv` as `memory_*` columns.
+
+Compare individual profiles or recursively scan run directories:
+
+```bash
+python3 scripts/compare_memory_profiles.py \
+  workspace/morpher_runs/<tag-a> workspace/morpher_runs/<tag-b> \
+  --output-csv generated/memory_profile_comparison.csv
+```
+
 ## Config reference
 
 Default config: `config/default.yaml` (4×4 edge-memory scalar arch, `trusted_pf`, auto-unroll on, `agi_iter` externalization, functional validation). `config/README.md` describes the other provided configs (scalar baselines, SIMD-4 variants, XML mapping).

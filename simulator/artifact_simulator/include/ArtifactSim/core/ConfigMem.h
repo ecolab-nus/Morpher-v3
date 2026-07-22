@@ -15,6 +15,7 @@ namespace ArtifactSim {
 // One FU operation issue.
 struct FUInstr {
   int node = -1;            // frontend-defined operation id (DFG node)
+  int pe = -1;              // issuing physical PE index
   std::string op;           // opcode, resolved by the frontend
   int startCycle = 0;       // absolute cycle of first issue (pipeline fill)
   int latency = 1;          // cycles until the result appears on resultPort

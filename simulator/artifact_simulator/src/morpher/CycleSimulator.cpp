@@ -64,6 +64,7 @@ CycleSimulator::CycleSimulator(const Fabric &fabric, const ConfigMem &config,
       stationaryOperands_(boundary_.stationaryOperands(trace)),
       exec_(graph_, std::move(alloc), trace,
             boundary_.recurrenceSeeds(trace)),
+      memoryProfile_(fabric_),
       maxIterations_(maxIterations) {}
 
 SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
@@ -76,11 +77,18 @@ SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
   }
   EngineHooks hooks;
   hooks.execute = [&](const FUInstr &instr, const Value &i1, const Value &i2,
-                      const Value &p, int /*cycle*/) -> Value {
+                      const Value &p, int cycle) -> Value {
     const DFGNode &node = graph_.node(instr.node);
     const FabricPE &pe = fabric_.pes[static_cast<size_t>(
         fabric_.portPE[static_cast<size_t>(instr.i1Port)])];
     PortOperandSource operands(i1, i2, p, node.idx, stationaryOperands_);
+    if ((isLoadOp(node.op) || isStoreOp(node.op)) &&
+        predicateAllows(node, operands)) {
+      const uint64_t lanes =
+          node.simdPacked ? static_cast<uint64_t>(node.simdLanes) : 1;
+      memoryProfile_.recordIssue(
+          instr.pe, cycle, lanes * static_cast<uint64_t>(node.mem.sizeBytes));
+    }
     const bool isMac = node.op == "MAC" || node.op == "VMAC";
     Value *accumulator = isMac ? &macState[{pe.x, pe.y}] : nullptr;
     Value out = exec_.execute(node, operands, accumulator);
@@ -97,6 +105,7 @@ SimResult CycleSimulator::run(std::map<std::pair<int, int>, Value> &macState,
 
   Engine engine(fabric_, config_, hooks);
   engine.run(maxIterations_ * config_.II);
+  memoryProfile_.print(std::cout);
 
   SimResult result = compareAfter ? exec_.compare() : SimResult{};
   if (!boundary_.empty()) {

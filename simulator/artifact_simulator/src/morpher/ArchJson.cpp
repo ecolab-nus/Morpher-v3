@@ -3,6 +3,7 @@
 #include "morpher/arch/json.hpp"
 
 #include <fstream>
+#include <regex>
 #include <stdexcept>
 
 using json = nlohmann::json;
@@ -31,6 +32,28 @@ void addStringList(const json &module, const char *key,
   for (const auto &entry : module[key]) {
     out.push_back(entry.get<std::string>());
   }
+}
+
+bool parseMemoryPeRef(const std::string &ref, int &x, int &y) {
+  static const std::regex pattern(
+      R"(^PE_MEM_X(-?[0-9]+)_Y(-?[0-9]+)\.MEMPORT$)");
+  std::smatch match;
+  if (!std::regex_match(ref, match, pattern)) {
+    return false;
+  }
+  x = std::stoi(match[1].str());
+  y = std::stoi(match[2].str());
+  return true;
+}
+
+MemoryEndpoint parseMemoryEndpoint(const std::string &ref,
+                                   const std::string &jsonPath) {
+  const auto dot = ref.find('.');
+  if (dot == std::string::npos || dot == 0 || dot + 1 >= ref.size()) {
+    throw std::runtime_error("invalid SPM endpoint '" + ref + "' in " +
+                             jsonPath);
+  }
+  return MemoryEndpoint{ref.substr(0, dot), ref.substr(dot + 1)};
 }
 
 } // namespace
@@ -177,6 +200,30 @@ Fabric elaborateArchJson(const std::string &jsonPath) {
         throw std::runtime_error("expected exactly one FU in " +
                                  pe.moduleType + ", found " +
                                  std::to_string(pe.fus.size()));
+      }
+    }
+  }
+
+  // External memory wiring is not part of the value-routing fabric, but it
+  // determines which physical SPM bank/port services a memory PE. Preserve
+  // every destination: one means rigid wiring, more than one is a crossbar or
+  // otherwise ambiguous endpoint that the profiler must not guess between.
+  const json &cgra = arch.at("CGRA");
+  if (cgra.contains("CONNECTIONS")) {
+    for (auto it = cgra.at("CONNECTIONS").begin();
+         it != cgra.at("CONNECTIONS").end(); ++it) {
+      int x = 0, y = 0;
+      if (!parseMemoryPeRef(it.key(), x, y)) {
+        continue;
+      }
+      if (x < 0 || x >= fabric.xdim || y < 0 || y >= fabric.ydim) {
+        throw std::runtime_error("memory PE connection outside grid: " +
+                                 it.key() + " in " + jsonPath);
+      }
+      FabricPE &pe = fabric.pes[static_cast<size_t>(fabric.peIndex(x, y))];
+      for (const auto &dst : it.value()) {
+        pe.memoryEndpoints.push_back(
+            parseMemoryEndpoint(dst.get<std::string>(), jsonPath));
       }
     }
   }

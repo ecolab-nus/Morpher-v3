@@ -3,6 +3,8 @@
 #include "ArtifactSim/morpher/BoundaryContract.h"
 #include "ArtifactSim/morpher/CycleSimulator.h"
 #include "ArtifactSim/morpher/MappingCompiler.h"
+#include "ArtifactSim/morpher/MemoryAccessProfile.h"
+#include "morpher/arch/json.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -13,6 +15,7 @@
 #include <vector>
 
 using namespace ArtifactSim;
+using json = nlohmann::json;
 
 struct PhaseArg {
     std::string dfg;
@@ -32,6 +35,7 @@ struct Args {
     std::string result;      // optional: mapper result.txt (for II)
     std::string simdManifest; // optional: omitted-boundary simulation contract
     std::string boundaryManifest; // optional: scalar/vector state boundary contract
+    std::string memoryProfileJson; // optional: observational cycle-mode counters
     int maxIterations = 1024;
     std::vector<PhaseArg> extraPhases;
 };
@@ -44,6 +48,7 @@ static void usage() {
         << "[--arch <arch.json>] [--mapping-json <mapping.json>] "
         << "[--result <result.txt>] [--simd-manifest <manifest.json>] "
         << "[--boundary-manifest <manifest.json>] "
+        << "[--memory-profile-json <profile.json>] "
         << "[--phase <dfg:mapping:mem_alloc>]...\n"
         << "Without --arch: functional golden checker (arch-unaware).\n"
         << "With --arch: cycle-accurate simulation on the elaborated fabric.\n";
@@ -83,6 +88,7 @@ static Args parseArgs(int argc, char **argv) {
         else if (opt == "--result")     args.result         = needValue(opt);
         else if (opt == "--simd-manifest") args.simdManifest = needValue(opt);
         else if (opt == "--boundary-manifest") args.boundaryManifest = needValue(opt);
+        else if (opt == "--memory-profile-json") args.memoryProfileJson = needValue(opt);
         else if (opt == "--phase")      args.extraPhases.push_back(parsePhaseSpec(needValue(opt)));
         else if (opt == "--max-iters")  args.maxIterations  = std::stoi(needValue(opt));
         else if (opt == "--help") {
@@ -98,6 +104,57 @@ static Args parseArgs(int argc, char **argv) {
         throw std::runtime_error("missing required arguments");
     }
     return args;
+}
+
+static json memoryStatsJson(const MemoryAccessStats &stats) {
+    json out;
+    out["issues"] = stats.issues;
+    out["bytes"] = stats.bytes;
+    out["unbound_issues"] = stats.unboundIssues;
+    out["ambiguous_issues"] = stats.ambiguousIssues;
+    out["port_conflict_cycles"] = stats.portConflictCycles;
+    out["excess_transactions"] = stats.excessTransactions;
+    out["bank_capacity_excess_transactions"] =
+        stats.bankCapacityExcessTransactions;
+    out["banks"] = json::array();
+    for (const BankAccessStats &bank : stats.banks) {
+        out["banks"].push_back({
+            {"bank", bank.bank},
+            {"physical_ports", bank.physicalPorts},
+            {"issues", bank.issues},
+            {"bytes", bank.bytes},
+            {"peak_concurrent", bank.peakConcurrent},
+            {"port_conflict_cycles", bank.portConflictCycles},
+            {"excess_transactions", bank.excessTransactions},
+            {"bank_capacity_excess_transactions",
+             bank.bankCapacityExcessTransactions},
+        });
+    }
+    return out;
+}
+
+static void writeMemoryProfile(
+    const std::string &path,
+    const std::vector<MemoryAccessStats> &phaseProfiles) {
+    json doc;
+    doc["schema_version"] = 1;
+    doc["kind"] = "morpher_memory_access_profile";
+    doc["timing_effect"] = "observational_only";
+    doc["phases"] = json::array();
+    for (size_t i = 0; i < phaseProfiles.size(); ++i) {
+        doc["phases"].push_back({
+            {"phase", i},
+            {"stats", memoryStatsJson(phaseProfiles[i])},
+        });
+    }
+    doc["aggregate"] =
+        memoryStatsJson(mergeMemoryAccessStats(phaseProfiles));
+
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("cannot write memory profile JSON: " + path);
+    }
+    out << doc.dump(2) << "\n";
 }
 
 static int parseIIFromFilename(const std::string &path) {
@@ -163,6 +220,7 @@ int main(int argc, char **argv) {
         }
 
         SimResult result;
+        std::vector<MemoryAccessStats> phaseMemoryProfiles;
 
         if (!args.arch.empty()) {
             // Cycle-accurate mode: elaborate the fabric from the arch JSON and
@@ -197,9 +255,14 @@ int main(int argc, char **argv) {
                     sim.run(macState, idx + 1 == phases.size());
                 result.matches += phaseResult.matches;
                 result.mismatches += phaseResult.mismatches;
+                phaseMemoryProfiles.push_back(sim.memoryAccessStats());
                 trace = sim.traceImage();
             }
         } else {
+            if (!args.memoryProfileJson.empty()) {
+                throw std::runtime_error(
+                    "--memory-profile-json requires cycle-accurate mode (--arch)");
+            }
             if (phases.size() != 1) {
                 throw std::runtime_error(
                     "--phase requires --arch so PE-local state is defined");
@@ -209,6 +272,10 @@ int main(int argc, char **argv) {
                                     std::move(trace), args.maxIterations,
                                     boundary);
             result = sim.run();
+        }
+
+        if (!args.memoryProfileJson.empty()) {
+            writeMemoryProfile(args.memoryProfileJson, phaseMemoryProfiles);
         }
 
         std::cout << "Simulation Result: Matches::" << result.matches

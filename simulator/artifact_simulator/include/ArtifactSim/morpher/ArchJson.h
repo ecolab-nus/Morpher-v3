@@ -12,6 +12,9 @@ namespace ArtifactSim {
 //   ARCH.CGRA.SUBMODS[PATTERN=="GRID"] with DIMS.X/Y and per-tile MODS
 //   overrides; PE-like modules with INPUTS/OUTPUTS/INTERNALS/REGS/SUBMODS/
 //   CONNECTIONS; FU-like submodules with INPUTS/OUTPUTS/OPS (op -> latency).
+//   ARCH.CGRA.CONNECTIONS entries of the form
+//   PE_MEM_Xx_Yy.MEMPORT -> SPM_bank.MEMPORT_Pn are retained as physical
+//   memory endpoints for access profiling.
 //   Faulty archs (PE_Fault_*/FU_Fault_*) need no special handling: they are
 //   ordinary module types whose CONNECTIONS simply lack some edges.
 //

@@ -268,6 +268,7 @@ ConfigMem compileMapping(const Fabric &fabric, const DFGGraph &graph,
       }
       FUInstr instr;
       instr.node = nodeId;
+      instr.pe = peIdx;
       instr.op = node.op;
       instr.latency = latIt->second;
       instr.i1Port = fu.i1;

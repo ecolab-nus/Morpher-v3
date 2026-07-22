@@ -26,6 +26,8 @@ from morpher_runner.dfg_generator import simd_packing_active_for_factor
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_commands
 from morpher_runner.mapper import run_mapper
+from morpher_runner.memory_profile import CSV_FIELDS as MEMORY_PROFILE_CSV_FIELDS
+from morpher_runner.memory_profile import profile_csv_fields
 from morpher_runner.utilization import estimate_utilization
 from morpher_runner.utils import build_llvm_tool_env
 from morpher_runner.utils import resolve_llvm_tool
@@ -1128,12 +1130,26 @@ def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag
   util_fields = _estimate_result_utilization(
       csource, function, config_path, run_tag, achieved_ii
   )
+  memory_fields = {field: "" for field in MEMORY_PROFILE_CSV_FIELDS}
+  try:
+    with open(config_path, "r", encoding="utf-8") as f:
+      cfg = yaml.safe_load(f)
+    validation_mode = str(cfg.get("validation_mode", "functional")).replace("-", "_")
+    if validation_mode == "event_driven":
+      appfolder = "/".join(csource.replace("\\", "/").split("/")[:2])
+      profile_path = (
+        Path.cwd() / "workspace" / "morpher_runs" / run_tag
+        / "simulator" / appfolder / "memory_profile.json"
+      )
+      memory_fields = profile_csv_fields(profile_path)
+  except (OSError, RuntimeError, ValueError):
+    pass
   fields = [
       "benchmark", "function", "status", "return_code", "achieved_ii",
       "ii_mapper_status", "compute_nodes", "memory_nodes", "compute_pes",
       "memory_pes", "total_pes", "compute_util_percent",
       "memory_util_percent", "total_util_percent", "elapsed_sec", "run_dir",
-  ]
+  ] + MEMORY_PROFILE_CSV_FIELDS
   with (kernel_run_dir / "result.csv").open("w", newline="", encoding="utf-8") as f:
     w = csv.DictWriter(f, fieldnames=fields)
     w.writeheader()
@@ -1148,6 +1164,7 @@ def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag
       "run_dir": str(kernel_run_dir),
     }
     row.update(util_fields)
+    row.update(memory_fields)
     w.writerow(row)
 
   try:

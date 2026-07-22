@@ -27,6 +27,13 @@ from pathlib import Path
 
 import yaml
 
+_REPO_IMPORT_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_IMPORT_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_IMPORT_ROOT)
+
+from morpher_runner.memory_profile import CSV_FIELDS as MEMORY_PROFILE_CSV_FIELDS
+from morpher_runner.memory_profile import profile_csv_fields
+
 
 @dataclass(frozen=True)
 class BenchmarkSpec:
@@ -60,6 +67,7 @@ class RunResult:
     result_file: Path | None
     matches: int | None
     mismatches: int | None
+    memory_profile_fields: dict[str, object]
     recovered_from_timeout: bool = False
     recovery_reason: str = ""
 
@@ -513,6 +521,7 @@ class RunMetadata:
     auto_unroll_results_file: Path | None
     mapping_file: Path | None
     result_file: Path | None
+    memory_profile_fields: dict[str, object]
 
 
 def collect_run_metadata(
@@ -537,6 +546,14 @@ def collect_run_metadata(
     )
     result_file = mapper_kernel_dir / "result.txt"
     auto_unroll_results_file = mapper_kernel_dir / "auto_unroll_results.csv"
+    try:
+        memory_profile_fields = profile_csv_fields(
+            sim_kernel_dir / "memory_profile.json"
+        )
+    except (OSError, RuntimeError, ValueError):
+        memory_profile_fields = {
+            field: "" for field in MEMORY_PROFILE_CSV_FIELDS
+        }
 
     achieved_ii = None
     ii_source = None
@@ -585,6 +602,7 @@ def collect_run_metadata(
         auto_unroll_results_file=(auto_unroll_results_file if auto_unroll_results_file.exists() else None),
         mapping_file=mapping_file,
         result_file=(result_file if result_file.exists() else None),
+        memory_profile_fields=memory_profile_fields,
     )
 
 
@@ -1012,6 +1030,7 @@ def run_one(
         result_file=metadata.result_file,
         matches=metadata.matches,
         mismatches=metadata.mismatches,
+        memory_profile_fields=metadata.memory_profile_fields,
         recovered_from_timeout=recovered_from_timeout,
         recovery_reason=recovery_reason,
     )
@@ -1049,11 +1068,11 @@ CSV_FIELDS = [
     "mapping_file",
     "result_file",
     "auto_unroll_results_file",
-]
+] + MEMORY_PROFILE_CSV_FIELDS
 
 
 def run_result_to_row(r: RunResult) -> dict[str, object]:
-    return {
+    row = {
         "benchmark": r.rel_source,
         "function": r.function,
         "status": r.status,
@@ -1080,6 +1099,8 @@ def run_result_to_row(r: RunResult) -> dict[str, object]:
             str(r.auto_unroll_results_file) if r.auto_unroll_results_file else ""
         ),
     }
+    row.update(r.memory_profile_fields)
+    return row
 
 
 def write_csv(results: list[RunResult], out_csv: Path) -> None:

@@ -33,6 +33,11 @@ struct FabricFU {
   std::map<std::string, int> opLatency;
 };
 
+struct MemoryEndpoint {
+  std::string bank;              // physical SPM wrapper instance
+  std::string port;              // physical wrapper port, e.g. MEMPORT_P0
+};
+
 struct FabricPE {
   int x = 0, y = 0;
   std::string moduleType;      // "PE", "PE_MEM", "PE_Fault_20", ...
@@ -40,6 +45,10 @@ struct FabricPE {
   bool scalarBroadcast = false;
   std::vector<int> fus;        // indices into Fabric::fus
   std::map<std::string, int> ports; // local port name -> global port id
+  // Usually exactly one endpoint for a rigidly wired PE_MEM. A vector keeps
+  // crossbar/multi-bank architectures representable without pretending that
+  // the selected bank can be inferred before address-based arbitration exists.
+  std::vector<MemoryEndpoint> memoryEndpoints;
 };
 
 class Fabric {

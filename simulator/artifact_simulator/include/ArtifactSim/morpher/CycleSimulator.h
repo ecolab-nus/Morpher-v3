@@ -6,6 +6,7 @@
 #include "ArtifactSim/morpher/BoundaryContract.h"
 #include "ArtifactSim/morpher/DFG.h"
 #include "ArtifactSim/morpher/Memory.h"
+#include "ArtifactSim/morpher/MemoryAccessProfile.h"
 #include "ArtifactSim/morpher/NodeSemantics.h"
 #include "ArtifactSim/morpher/Trace.h"
 
@@ -32,6 +33,9 @@ public:
                 bool compareAfter);
 
   const TraceImage &traceImage() const { return exec_.traceImage(); }
+  MemoryAccessStats memoryAccessStats() const {
+    return memoryProfile_.summarize();
+  }
 
 private:
   const Fabric &fabric_;
@@ -40,6 +44,7 @@ private:
   BoundaryContract boundary_;
   std::map<std::pair<int, int>, Value> stationaryOperands_;
   NodeExecutor exec_;
+  MemoryAccessProfiler memoryProfile_;
   int maxIterations_;
   std::map<int, Value> finalValues_;
 };
