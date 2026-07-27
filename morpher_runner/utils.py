@@ -180,10 +180,12 @@ def run_dfg_opt_with_diagnostics(opt_cmd_argv, kernel, banksize, numberofbanks, 
         required_banksize=suggested_banksize,
       )
 
+    # The log handler always appends a newline, so strip one trailing newline
+    # to reproduce the original print(..., end=...) behaviour exactly.
     if result.stdout:
-      _LOG.info(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+      _LOG.info(result.stdout[:-1] if result.stdout.endswith("\n") else result.stdout)
     if result.stderr:
-      _LOG.info(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+      _LOG.info(result.stderr[:-1] if result.stderr.endswith("\n") else result.stderr)
     raise subprocess.CalledProcessError(result.returncode, opt_cmd_argv)
 
   required_banksize = None

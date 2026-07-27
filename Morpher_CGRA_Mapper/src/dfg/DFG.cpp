@@ -22,7 +22,6 @@ namespace CGRAXMLCompile
 
 DFG::DFG()
 {
-	// TODO Auto-generated constructor stub
 }
 
 bool DFG::parseXML(std::string fileName)

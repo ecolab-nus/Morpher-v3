@@ -566,7 +566,6 @@ void DFG::printOP(dfgNode *node, int depth)
 	printFooterTag("ID", depth + 1);
 
 	printHeaderTag("OP-type", depth + 1);
-	//	xmlFile << "NORMAL"; //TODO :: Hardcoded to be Normal, fix the hardcoding
 
 	if (node->getNode() != NULL)
 	{
@@ -602,8 +601,12 @@ void DFG::printOP(dfgNode *node, int depth)
 
 	printFooterTag("OP-type", depth + 1);
 
+	// <Cycles> is vestigial: the mapper's DFG parser (Morpher_CGRA_Mapper/src/dfg/DFG.cpp)
+	// never reads this tag. Op latency in the mapper comes from FU::supportedOPs, populated
+	// by PE::getMEMIns/getNonMEMIns. Emitting a real per-op count here changes nothing until
+	// the mapper is taught to consume it; see REFERENCE.md.
 	printHeaderTag("Cycles", depth + 1);
-	xmlFile << 1; //TODO :: Remove the hardcoding
+	xmlFile << 1;
 	printFooterTag("Cycles", depth + 1);
 
 	printInEdges(node, depth + 1);

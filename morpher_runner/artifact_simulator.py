@@ -183,7 +183,9 @@ def run_artifact_simulator(context, validation_mode="functional"):
     command.text = True
     result = run_command(command)
     output = (result.stdout or "") + "\n" + (result.stderr or "")
-    _LOG.info(output, end="" if output.endswith("\n") else "\n")
+    # The log handler always appends a newline, so strip one trailing newline
+    # to reproduce the original print(..., end=...) behaviour exactly.
+    _LOG.info(output[:-1] if output.endswith("\n") else output)
     parsed = _parse_result(output)
     if parsed is None:
       raise RuntimeError("artifact_simulator did not print a parseable Simulation Result.")

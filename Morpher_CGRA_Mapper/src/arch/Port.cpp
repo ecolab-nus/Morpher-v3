@@ -20,7 +20,6 @@ namespace CGRAXMLCompile
 
 Port::Port(std::string name, PortType pType, Module *mod)
 {
-	// TODO Auto-generated constructor stub
 	this->name = name;
 	this->pType = pType;
 	this->mod = mod;

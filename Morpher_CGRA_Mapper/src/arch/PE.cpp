@@ -18,7 +18,6 @@ namespace CGRAXMLCompile
 {
 
 //PE::PE() {
-//	// TODO Auto-generated constructor stub
 //
 //}
 

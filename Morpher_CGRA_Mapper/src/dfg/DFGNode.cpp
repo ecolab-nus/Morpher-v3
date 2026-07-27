@@ -21,7 +21,6 @@ namespace CGRAXMLCompile
 
 DFGNode::DFGNode()
 {
-	// TODO Auto-generated constructor stub
 }
 
 } /* namespace CGRAXMLCompile */

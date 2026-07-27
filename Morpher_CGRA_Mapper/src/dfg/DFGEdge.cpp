@@ -12,7 +12,6 @@ namespace CGRAXMLCompile
 
 DFGEdge::DFGEdge()
 {
-	// TODO Auto-generated constructor stub
 }
 
 } /* namespace CGRAXMLCompile */

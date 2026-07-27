@@ -17,7 +17,6 @@ namespace CGRAXMLCompile
 {
 
 //FU::FU() {
-//	// TODO Auto-generated constructor stub
 //
 //}
 

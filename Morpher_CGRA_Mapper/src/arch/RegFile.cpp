@@ -12,7 +12,6 @@ namespace CGRAXMLCompile
 {
 
 //RegFile::RegFile() {
-//	// TODO Auto-generated constructor stub
 //
 //}
 

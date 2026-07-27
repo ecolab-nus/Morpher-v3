@@ -17,7 +17,6 @@ namespace CGRAXMLCompile
 
 Module::Module(const Module *Parent, std::string name, string type, int t)
 {
-	// TODO Auto-generated constructor stub
 	this->Parent = Parent;
 	this->name = name;
 	this->t = t;

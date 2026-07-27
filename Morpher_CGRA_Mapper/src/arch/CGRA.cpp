@@ -32,7 +32,6 @@ namespace CGRAXMLCompile
 {
 
 //CGRA::CGRA() {
-//	// TODO Auto-generated constructor stub
 //
 //}
 
@@ -716,7 +715,6 @@ bool CGRAXMLCompile::CGRA::ParseJSONArch(string fileName, int II)
 	//just creating CGRA instance for t
 	// ParseModule(json["ARCH"]["CGRA"], NULL, "CGRA_Ins", "CGRA", 0);
 
-	//TODO : remove hardcoding of II=2
 	ParseCGRA((*top_desc)["ARCH"]["CGRA"], II);
 	LOG(JSONARCH)  << "Parsing JSON Success!!!\n";
 

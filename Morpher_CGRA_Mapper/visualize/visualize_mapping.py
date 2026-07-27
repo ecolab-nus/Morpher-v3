@@ -97,19 +97,9 @@ def my_mkdir(dir):
 
 
 def draw_3d():
-    #xml_name = '/home/dmd/Workplace/HiMap2/Morpher_DFG_Generator/applications/aes/hycube_compilation/encrypt_INNERMOST_LN1_PartPred_DFG_without_clustering_1.xml'
-    #xml_name = '//home/dmd/Workplace/Morphor/github_ecolab_repos/Morpher_DFG_Generator/applications/madgwick_fp_v2/MadgwickAHRSupdateIMU_INNERMOST_LN1_PartPred_DFG_1.xml'
-    #xml_name = '/home/dmd/Workplace/HiMap2/Morpher_DFG_Generator/applications/edn/jpegdct_POST_LN111_PartPred_DFG_1.xml'
-    #xml_name = '/home/dmd/Workplace/HiMap2/Morpher_DFG_Generator/applications/nettle-sha256/_nettle_sha256_compress_INNERMOST_LN1_PartPred_DFG_2.xml'
-    #xml_name = '/home/dmd/Workplace/HiMap2/Morpher_DFG_Generator/applications/nsichneu/benchmark_body_INNERMOST_LN1_PartPred_DFG_1.xml'
-    #xml_name = '/home/dmd/Workplace/HiMap2/Morpher_DFG_Generator/applications/picojpeg/idctRows_INNERMOST_LN1_PartPred_DFG_1.xml'
-    #xml_name = '/home/dmd/Workplace/HiMap2/Morpher_DFG_Generator/applications/picojpeg/idctCols_INNERMOST_LN1_PartPred_DFG_1.xml'
     mapping_file = "../applications/hycube/array_add/array_add_INNERMOST_LN1_PartPred_DFG.xmlhycube_original.json_MTP\=1_Iter\=0.mappingwithlatency.txt"
-    
-    # clustering_outcome = '/home/dmd/Workplace/HiMap2/HiMap2_Scikit_Clustering/applications/edn/clustering_outcome.txt'
-    #all_edges = '/home/dmd/Workplace/HiMap2/HiMap2_Scikit_Clustering/applications/edn/all_edges.txt'
-    # all_edges = '/home/dmd/Workplace/HiMap2/HiMap2_Scikit_Clustering/applications/edn/inter_cluster_edges.txt'
-    
+
+
     colordict = {
         0:'red',
         1:'green',

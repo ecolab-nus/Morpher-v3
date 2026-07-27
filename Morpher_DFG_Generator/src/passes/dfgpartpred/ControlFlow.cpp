@@ -430,8 +430,19 @@ void DFGPartPred::RemoveInductionControlLogic() {
 	assert(phi_init_class != -1);
 	dataNode->parentClassification[phi_init_class]=ind_phi_init_par;
 
-	//add its own self as a recurrent edge
-	//FIXME : hardcoding the recurrent edge as parent 2
+	// Add its own self as a recurrent edge.
+	//
+	// The self-edge deliberately reuses phi_init_class -- the same operand slot as the
+	// init parent wired above. That is not a collision: the eliminated phi had exactly one
+	// operand, fed by the preheader init on iteration 0 and by the loop-carried value
+	// afterwards, so both producers legitimately target one port. Seeding that port on
+	// iteration 0 is a CGRA-unscheduled boundary action, outside the mapped steady-state
+	// loop (see morpher_runner/dfg_generator.py "Mapping scope").
+	//
+	// The parentClassification[] write that generateXML performs per emitted edge
+	// (Boundaries.cpp) therefore overwrites line ~431 with dataNode, which is harmless:
+	// the XML carries both edges with their own type=, and the mapper keys childrenOPType
+	// by parent node (Morpher_CGRA_Mapper/src/dfg/DFG.cpp), so neither producer is lost.
 	dataNode->addChildNode(dataNode,EDGE_TYPE_DATA,true);
 	dataNode->addAncestorNode(dataNode,EDGE_TYPE_DATA,true);
 	Edge2OperandIdxMap[dataNode][dataNode]=phi_init_class;
