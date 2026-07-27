@@ -3,7 +3,6 @@ import re
 import shlex
 import sys
 import time
-import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 from pathlib import Path
 
@@ -12,6 +11,10 @@ from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
 from morpher_runner.trace_partition import remap_addr_traces
 from morpher_runner.utilization import estimate_utilization
+
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
 
 
 def resolve_arch_template_path(context):
@@ -74,7 +77,7 @@ def _print_mapper_utilization(context, mapper_arch):
       Path(mapper_arch),
       ii,
   )
-  print(
+  _LOG.info(
       "Utilization: compute=%s%% (%d nodes / %d PEs / II=%d), "
       "memory=%s%% (%d nodes / %d PEs / II=%d), "
       "total=%s%% (%d nodes / %d PEs / II=%d)\n"
@@ -100,7 +103,7 @@ def resolve_pf_node_order(context):
   if mode == "off":
     return "default"
   if mode == "force":
-    print("membound_mapping=force: using PF mem_first node order.")
+    _LOG.info("membound_mapping=force: using PF mem_first node order.")
     return "mem_first"
   if mode != "auto":
     raise RuntimeError("Unsupported membound_mapping mode: %s" % mode)
@@ -113,7 +116,7 @@ def resolve_pf_node_order(context):
     compute_pes = total_pes
 
   if mem_ops <= 0 or mem_pes <= 0 or compute_ops <= 0 or compute_pes <= 0:
-    print(
+    _LOG.info(
       "membound_mapping=auto: using default PF node order "
       "(mem_ops=%d, mem_PEs=%d, compute_ops=%d, compute_PEs=%d)."
       % (mem_ops, mem_pes, compute_ops, compute_pes)
@@ -123,7 +126,7 @@ def resolve_pf_node_order(context):
   mem_ratio = float(mem_ops) / float(mem_pes)
   compute_ratio = float(compute_ops) / float(compute_pes)
   use_mem_first = mem_ratio > compute_ratio
-  print(
+  _LOG.info(
     "membound_mapping=auto: mem_ops/mem_PEs=%.3f (%d/%d), "
     "compute_ops/compute_PEs=%.3f (%d/%d) -> pf_node_order=%s."
     % (
@@ -288,18 +291,18 @@ def run_mapper(context, pf_util_headroom=None):
   config = context.config
   verbose_cmds = os.getenv("MORPHER_VERBOSE_CMDS", "").strip().lower() not in ("", "0", "false", "off", "no")
 
-  print("\n-----Running Morpher_CGRA_Mapper-----\n")
-  print("Memory mode: %s" % config.memory_mode)
+  _LOG.info("\n-----Running Morpher_CGRA_Mapper-----\n")
+  _LOG.info("Memory mode: %s" % config.memory_mode)
   if config.memory_mode == "auto":
-    print("\nUpdating memory allocation..\n")
+    _LOG.info("\nUpdating memory allocation..\n")
 
   commands, mapper_arch = build_mapper_commands(context, pf_util_headroom)
-  print("Arch used by mapper: %s\n" % mapper_arch)
+  _LOG.info("Arch used by mapper: %s\n" % mapper_arch)
   if pf_util_headroom is not None:
-    print(
+    _LOG.info(
       "Starting-II utilization cap override: %d%%.\n" % pf_util_headroom
     )
-  print("Mapper binary emission is disabled; artifact simulation consumes the mapped DFG.\n")
+  _LOG.info("Mapper binary emission is disabled; artifact simulation consumes the mapped DFG.\n")
   total = len(commands)
   for idx, cmd in enumerate(commands, start=1):
     if config.memory_mode == "auto" and total == 2:
@@ -309,13 +312,13 @@ def run_mapper(context, pf_util_headroom=None):
     else:
       step_label = "Run stage"
 
-    print("[%d/%d] %s" % (idx, total, step_label))
+    _LOG.info("[%d/%d] %s" % (idx, total, step_label))
     if verbose_cmds:
-      print("\n  $ %s" % shlex.join(cmd.argv))
+      _LOG.info("\n  $ %s" % shlex.join(cmd.argv))
     start = time.time()
     run_command(cmd)
     elapsed = time.time() - start
-    print("  done (%.2f sec)\n" % elapsed)
+    _LOG.info("  done (%.2f sec)\n" % elapsed)
 
   _print_mapper_utilization(context, mapper_arch)
 
@@ -329,4 +332,4 @@ def run_mapper(context, pf_util_headroom=None):
     decision_path = decision_files[0] if decision_files else None
     rewritten = remap_addr_traces(memtraces, decision_path)
     if rewritten:
-      print("[layout_solver] addr_trace rewrite: %d rows updated\n" % rewritten)
+      _LOG.info("[layout_solver] addr_trace rewrite: %d rows updated\n" % rewritten)

@@ -5,6 +5,10 @@ import os
 from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
 
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
+
 
 class BankSizeTooSmallError(RuntimeError):
   def __init__(self, message, required_banksize=None):
@@ -147,55 +151,55 @@ def run_dfg_opt_with_diagnostics(opt_cmd_argv, kernel, banksize, numberofbanks, 
     )
 
     if unsupported_dims_error:
-      print("Error: DFG generation does not support this kernel's array dimensionality.")
-      print("Morpher currently supports only up to 2D arrays for mapped memory accesses.")
+      _LOG.info("Error: DFG generation does not support this kernel's array dimensionality.")
+      _LOG.info("Morpher currently supports only up to 2D arrays for mapped memory accesses.")
       for line in output.splitlines():
         if "DFG generation error in UnsupportedArrayDimensions" in line:
-          print(line)
+          _LOG.info(line)
           break
       raise subprocess.CalledProcessError(returncode, opt_cmd_argv)
 
     if bank_size_error:
-      print("Error: DFG generation failed during SPM bank allocation.")
-      print(
+      _LOG.info("Error: DFG generation failed during SPM bank allocation.")
+      _LOG.info(
         "Config: numberofbanks=%d, banksize=%d bytes, total_mem=%d bytes."
         % (numberofbanks, banksize, numberofbanks * banksize)
       )
       suggested_banksize, oversized = suggest_larger_banksize("%s_opt.ll" % kernel, banksize)
       if oversized:
-        print("At least one array is larger than the configured bank size.")
-        print("Arrays larger than banksize (from LLVM IR):")
+        _LOG.info("At least one array is larger than the configured bank size.")
+        _LOG.info("Arrays larger than banksize (from LLVM IR):")
         for name, size_bytes in oversized[:8]:
-          print("  - %s: %d bytes" % (name, size_bytes))
+          _LOG.info("  - %s: %d bytes" % (name, size_bytes))
       else:
-        print("No single oversized array was found in LLVM IR.")
-        print("The allocation likely overflowed a bank due to cumulative placement.")
-      print("Suggested banksize for retry: at least %d bytes.\n" % suggested_banksize)
+        _LOG.info("No single oversized array was found in LLVM IR.")
+        _LOG.info("The allocation likely overflowed a bank due to cumulative placement.")
+      _LOG.info("Suggested banksize for retry: at least %d bytes.\n" % suggested_banksize)
       raise BankSizeTooSmallError(
         "DFG generation failed during SPM bank allocation.",
         required_banksize=suggested_banksize,
       )
 
     if result.stdout:
-      print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+      _LOG.info(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
     if result.stderr:
-      print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+      _LOG.info(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
     raise subprocess.CalledProcessError(result.returncode, opt_cmd_argv)
 
   required_banksize = None
   # Preserve the useful legacy summary without flooding stdout with full pass logs.
   for line in output.splitlines():
     if "DFG node count:" in line:
-      print(line)
+      _LOG.info(line)
       continue
     if "Required SPM bank size for provisional layout:" in line:
-      print(line)
+      _LOG.info(line)
       match = _REQUIRED_BANKSIZE_RE.search(line)
       if match:
         required_banksize = int(match.group(1))
       continue
     if "Continuing DFG generation with effective bank size:" in line:
-      print(line)
+      _LOG.info(line)
 
   return {
     "required_banksize": required_banksize,

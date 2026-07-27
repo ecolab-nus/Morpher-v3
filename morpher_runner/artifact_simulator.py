@@ -10,6 +10,10 @@ from morpher_runner.exec import Command
 from morpher_runner.exec import run_command
 from morpher_runner.memory_profile import combine_profiles
 
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
+
 
 def collect_trace_files(context):
   kernel = context.kernel
@@ -137,7 +141,7 @@ def build_artifact_sim_command(
 
 
 def run_artifact_simulator(context, validation_mode="functional"):
-  print("\n-----Running Morpher artifact_simulator (%s)-----\n" % validation_mode)
+  _LOG.info("\n-----Running Morpher artifact_simulator (%s)-----\n" % validation_mode)
   aggregate_path = None
   if validation_mode == "event_driven":
     aggregate_path = os.path.join(
@@ -149,7 +153,7 @@ def run_artifact_simulator(context, validation_mode="functional"):
       pass
   files = collect_trace_files(context)
   if not files:
-    print(
+    _LOG.info(
       "Artifact simulation SKIPPED: no trace files in %s for kernel '%s'.\n"
       "  (Common cause: unroll factor exceeds the runtime loop trip count, so\n"
       "  the instrumented binary's unrolled body never executes. See the\n"
@@ -158,7 +162,7 @@ def run_artifact_simulator(context, validation_mode="functional"):
     )
     return
   samplefiles = select_trace_samples(files, context.config.max_test_samples)
-  print("Trace samples: %d\n" % len(samplefiles))
+  _LOG.info("Trace samples: %d\n" % len(samplefiles))
 
   matches = 0
   mismatches = 0
@@ -179,7 +183,7 @@ def run_artifact_simulator(context, validation_mode="functional"):
     command.text = True
     result = run_command(command)
     output = (result.stdout or "") + "\n" + (result.stderr or "")
-    print(output, end="" if output.endswith("\n") else "\n")
+    _LOG.info(output, end="" if output.endswith("\n") else "\n")
     parsed = _parse_result(output)
     if parsed is None:
       raise RuntimeError("artifact_simulator did not print a parseable Simulation Result.")
@@ -205,11 +209,11 @@ def run_artifact_simulator(context, validation_mode="functional"):
         os.unlink(path)
       except OSError:
         pass
-    print("Memory profile: %s" % aggregate_path)
+    _LOG.info("Memory profile: %s" % aggregate_path)
 
-  print("Matches: %d Mismatches: %d" % (matches, mismatches))
+  _LOG.info("Matches: %d Mismatches: %d" % (matches, mismatches))
   if mismatches == 0:
-    print("Artifact simulation test passed!!!")
+    _LOG.info("Artifact simulation test passed!!!")
 
 
 def _parse_result(output):

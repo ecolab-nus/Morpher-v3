@@ -7,6 +7,10 @@ from datetime import datetime
 
 import yaml
 
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
+
 
 def _resolve_memory_mode(config_dict):
   mode = config_dict.get("memory_mode")
@@ -50,7 +54,7 @@ def _print_deprecation_warning(config_dict):
   if "simd" in config_dict:
     deprecated_keys.append("simd")
   if deprecated_keys:
-    print(
+    _LOG.info(
       "Warning: deprecated config keys in use (%s). "
       "Please migrate to memory_mode + arch_template_json, and move SIMD capability into the architecture JSON."
       % ", ".join(deprecated_keys)
@@ -232,7 +236,7 @@ def _parse_mapper_preset(config_dict):
       used_overrides.append(key)
 
   if used_overrides:
-    print(
+    _LOG.info(
       "Warning: mapper_preset=%s overridden by explicit mapper keys (%s). "
       "Prefer using the preset alone unless you are intentionally doing advanced tuning."
       % (preset_name, ", ".join(used_overrides))

@@ -10,8 +10,11 @@ no-ops.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
 
 
 def _find_decision_file(search_dir: Path) -> Path | None:
@@ -89,13 +92,13 @@ def remap_addr_traces(memtraces_dir: str | Path, decision_path: str | Path | Non
     if changed:
       with open(trace_path, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
-      print(f"[trace_partition] Rewrote {trace_path.name} ({rewritten} rows so far)")
+      _LOG.info(f"[trace_partition] Rewrote {trace_path.name} ({rewritten} rows so far)")
   return rewritten
 
 
 if __name__ == "__main__":
   import sys
   if len(sys.argv) < 2:
-    print("usage: trace_partition.py <memtraces_dir> [decision_json]")
+    _LOG.info("usage: trace_partition.py <memtraces_dir> [decision_json]")
     sys.exit(1)
   remap_addr_traces(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)

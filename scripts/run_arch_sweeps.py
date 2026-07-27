@@ -6,10 +6,8 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
-import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -19,10 +17,18 @@ from typing import Any
 
 import yaml
 
+_REPO_IMPORT_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_IMPORT_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_IMPORT_ROOT)
 
-_ACTIVE_PROCESSES: set[subprocess.Popen] = set()
-_ACTIVE_PROCESSES_LOCK = threading.Lock()
-_SHUTDOWN_REQUESTED = threading.Event()
+from morpher_runner import proc
+from morpher_runner.proc import register_process
+from morpher_runner.proc import shutdown_executor
+from morpher_runner.proc import terminate_active_process_groups
+from morpher_runner.proc import terminate_process_group
+from morpher_runner.proc import unregister_process
+
+_SHUTDOWN_REQUESTED = proc.SHUTDOWN_REQUESTED
 _ACTIVE_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 _ACTIVE_EXECUTOR_LOCK = threading.Lock()
 
@@ -31,104 +37,24 @@ class SweepInterrupted(Exception):
     """Raised when sweep shutdown has been requested."""
 
 
-def request_shutdown() -> None:
-    _SHUTDOWN_REQUESTED.set()
+def _cancel_active_executor() -> None:
+    """Sweep-specific shutdown hook: stop dispatching queued experiments."""
     with _ACTIVE_EXECUTOR_LOCK:
         executor = _ACTIVE_EXECUTOR
     if executor is not None:
         shutdown_executor(executor, wait=False, cancel_futures=True)
+
+
+def request_shutdown() -> None:
+    _SHUTDOWN_REQUESTED.set()
+    _cancel_active_executor()
     terminate_active_process_groups()
 
 
-def child_pids(pid: int) -> list[int]:
-    try:
-        output = subprocess.check_output(["pgrep", "-P", str(pid)], text=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
-    return [int(line) for line in output.splitlines() if line.strip().isdigit()]
-
-
-def descendant_pids(pid: int) -> list[int]:
-    out: list[int] = []
-    stack = child_pids(pid)
-    while stack:
-        child = stack.pop()
-        out.append(child)
-        stack.extend(child_pids(child))
-    return out
-
-
-def signal_pid_or_group(pid: int, sig: int) -> None:
-    try:
-        pgid = os.getpgid(pid)
-    except ProcessLookupError:
-        return
-    try:
-        os.killpg(pgid, sig)
-    except ProcessLookupError:
-        pass
-    try:
-        os.kill(pid, sig)
-    except ProcessLookupError:
-        pass
-
-
-def shutdown_executor(
-    executor: concurrent.futures.ThreadPoolExecutor,
-    *,
-    wait: bool,
-    cancel_futures: bool,
-) -> None:
-    try:
-        executor.shutdown(wait=wait, cancel_futures=cancel_futures)
-    except TypeError:
-        executor.shutdown(wait=wait)
-
-
-def terminate_process_group(process: subprocess.Popen, grace_sec: float = 3.0) -> None:
-    descendants = descendant_pids(process.pid)
-    for pid in sorted(descendants, reverse=True):
-        signal_pid_or_group(pid, signal.SIGTERM)
-
-    signal_pid_or_group(process.pid, signal.SIGTERM)
-
-    try:
-        process.wait(timeout=grace_sec)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-
-    descendants = descendant_pids(process.pid)
-    for pid in sorted(descendants, reverse=True):
-        signal_pid_or_group(pid, signal.SIGKILL)
-    signal_pid_or_group(process.pid, signal.SIGKILL)
-    process.wait()
-
-
-def register_process(process: subprocess.Popen) -> None:
-    with _ACTIVE_PROCESSES_LOCK:
-        _ACTIVE_PROCESSES.add(process)
-
-
-def unregister_process(process: subprocess.Popen) -> None:
-    with _ACTIVE_PROCESSES_LOCK:
-        _ACTIVE_PROCESSES.discard(process)
-
-
-def terminate_active_process_groups() -> None:
-    with _ACTIVE_PROCESSES_LOCK:
-        processes = list(_ACTIVE_PROCESSES)
-    for process in processes:
-        terminate_process_group(process)
-
-
 def install_signal_cleanup() -> None:
-    def handle_signal(signum: int, _frame: object) -> None:
-        request_shutdown()
-        raise SystemExit(128 + signum)
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    # The shared handler sets SHUTDOWN_REQUESTED and reaps registered children;
+    # the callback additionally cancels this sweep's pending futures.
+    proc.install_signal_cleanup(on_shutdown=_cancel_active_executor)
 
 
 def run_process_group(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess:

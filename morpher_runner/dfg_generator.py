@@ -2,7 +2,6 @@ import json
 import os
 import re
 import time
-import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 from pathlib import Path
 
@@ -22,6 +21,10 @@ from morpher_runner.utils import BankSizeTooSmallError
 from morpher_runner.utils import build_llvm_tool_env
 from morpher_runner.utils import resolve_llvm_tool
 from morpher_runner.utils import run_dfg_opt_with_diagnostics
+
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
 
 
 MEMORY_OP_PREFIXES = (
@@ -71,7 +74,7 @@ def _classify_staged_dfg_nodes(xml_path):
 
 def _print_staged_dfg_summary(xml_path):
   counts = _classify_staged_dfg_nodes(xml_path)
-  print(
+  _LOG.info(
     "Staged DFG summary: total_nodes=%d, scalar_compute=%d, vector_compute=%d, memory_ops=%d\n"
     % (
       counts["total"],
@@ -316,7 +319,7 @@ def _run_dfg_pass_with_banksize_retry(context, skeleton_ir):
 
   for attempt in range(1, max_attempts + 1):
     if attempt > 1:
-      print(
+      _LOG.info(
         "Retrying DFG generation with larger banksize=%d bytes (attempt %d/%d).\n"
         % (config.banksize, attempt, max_attempts)
       )
@@ -338,7 +341,7 @@ def _run_dfg_pass_with_banksize_retry(context, skeleton_ir):
           )
         config.banksize = required_banksize
       if config.banksize != original_banksize:
-        print(
+        _LOG.info(
           "DFG bank allocation required banksize=%d bytes; continuing with that effective size.\n"
           % config.banksize
         )
@@ -346,7 +349,7 @@ def _run_dfg_pass_with_banksize_retry(context, skeleton_ir):
     except BankSizeTooSmallError as exc:
       last_error = exc
       if not _can_auto_grow_banksize(context):
-        print(
+        _LOG.info(
           "Auto-growing banksize is disabled for memory_mode=%s with spm_mode=%s because the selected "
           "static architecture JSON would become inconsistent.\n"
           % (context.config.memory_mode, context.config.spm_mode)
@@ -460,7 +463,7 @@ def validate_iter_manifest(context):
     reason = manifest.get("reason")
     if not isinstance(reason, str) or not reason:
       raise RuntimeError("Skipped iterator manifest %s is missing its reason." % manifest_path)
-    print("Iterator externalization skipped conservatively: %s\n" % reason)
+    _LOG.info("Iterator externalization skipped conservatively: %s\n" % reason)
 
   # In a combined verified-SIMD path, the other manifest determines whether
   # this is an intermediate or final index space. Cross-manifest validation is
@@ -484,7 +487,7 @@ def validate_iter_manifest(context):
       any(not isinstance(name, str) for name in artifact_vars)):
     raise RuntimeError("Iterator manifest %s has invalid artifact_vars_pruned." % manifest_path)
 
-  print(
+  _LOG.info(
     "Iterator manifest verified: %s removed_nodes=%d, remaining_nodes=%d\n"
     % (manifest_path.name, removed_count, final_count)
   )
@@ -562,7 +565,7 @@ def _validate_one_agi_manifest(manifest_path):
   if int(manifest.get("boundary_output_count", -1)) != boundary_outputs:
     raise RuntimeError("AGI manifest %s boundary_output_count is inconsistent." % manifest_path)
 
-  print(
+  _LOG.info(
     "AGI manifest verified: %s removed_nodes=%d, remaining_nodes=%d, boundary_inputs=%d, boundary_outputs=%d\n"
     % (manifest_path.name, removed_count, remaining_count, boundary_inputs, boundary_outputs)
   )
@@ -737,7 +740,7 @@ def validate_simd_manifest(context):
     boundary_trace_vars.add(scalar_init_trace_var)
     boundary_trace_vars.add(scalar_exit_trace_var)
 
-  print(
+  _LOG.info(
     "SIMD manifest verified: %s packed_groups=%d, exit_reductions=%d, "
     "original_nodes=%d, final_nodes=%d\n"
     % (
@@ -749,7 +752,7 @@ def validate_simd_manifest(context):
     )
   )
   if exit_reduction_sources:
-    print(
+    _LOG.info(
       "Mapping scope: steady-state loop DFG only.\n"
       "CGRA-unscheduled boundary work: vector-accumulator preheader initialization; "
       "exit VRED, scalar combine, and result store.\n"
@@ -897,7 +900,7 @@ def validate_boundary_manifest(context):
   if (not isinstance(pruned_vars, list) or
       any(not isinstance(name, str) or not name for name in pruned_vars)):
     raise RuntimeError("Boundary manifest %s has invalid pruned_artifact_vars." % manifest_path)
-  print(
+  _LOG.info(
     "Boundary manifest verified: %s states=%d final_nodes=%d\n"
     "Mapping scope: steady-state loop DFG only; register reset/seeding and "
     "live-out drains are CGRA-unscheduled boundary actions.\n"
@@ -1002,35 +1005,35 @@ def run_dfg_generator(
   verified_simd_active = simd_active and config.simd_pack == "verified"
   context.selected_simd_enabled = simd_active
 
-  print("-----Running Morpher_DFG_Generator-----\n")
+  _LOG.info("-----Running Morpher_DFG_Generator-----\n")
   if config.arch_simd_enabled:
     if simd_active:
-      print(
+      _LOG.info(
         "Architecture-driven SIMD packing enabled for this candidate: width=%d, scalar_broadcast=%s\n"
         % (config.arch_simd_width, "true" if config.arch_scalar_broadcast else "false")
       )
     else:
-      print(
+      _LOG.info(
         "SIMD hardware enabled, but this candidate is narrower than SIMD_WIDTH=%d; "
         "mapping scalar lanes without SIMD packing.\n"
         % config.arch_simd_width
       )
   if unroll_factor > 1:
-    print(
+    _LOG.info(
       "Requested Morpher scalar loop unroll: factor=%d (remainders preserved; not SIMD width)\n"
       % unroll_factor
     )
   if config.auto_unroll_fuse_innermost_loops and config.auto_unroll_enabled:
-    print(
+    _LOG.info(
       "Requested Morpher innermost loop fusion where LLVM can prove legality.\n"
     )
   if interchange_loops:
-    print(
+    _LOG.info(
       "Requested LLVM loop interchange candidate for the uniquely annotated perfect nest.\n"
     )
   if systolic_jam is not None:
     candidate_index, factor0, factor1 = systolic_jam
-    print(
+    _LOG.info(
       "Requested systolic unroll-and-jam: candidate=%d factors=%dx%d.\n"
       % (candidate_index, factor0, factor1)
     )
@@ -1038,7 +1041,7 @@ def run_dfg_generator(
       unroll_factor > 1
       and not simd_active
       and config.auto_unroll_scalar_reduction_policy != "none"):
-    print(
+    _LOG.info(
       "Requested scalar reduction lowering: policy=%s terms=%d\n"
       % (
         config.auto_unroll_scalar_reduction_policy,
@@ -1052,20 +1055,20 @@ def run_dfg_generator(
 
   ir_commands = build_ir_generation_commands(context)
 
-  print("Generating IR..\n")
+  _LOG.info("Generating IR..\n")
   run_command(ir_commands[0])
 
-  print("Optimizing IR..\n")
+  _LOG.info("Optimizing IR..\n")
   run_command(ir_commands[1])
 
   skeleton_ir = "%s_opt.ll" % kernel
   if interchange_loops:
-    print("Trying legal/profitable loop interchange before unrolling..\n")
+    _LOG.info("Trying legal/profitable loop interchange before unrolling..\n")
     run_command(build_loop_interchange_command(context))
     skeleton_ir = "%s_li_opt.ll" % kernel
   if systolic_jam is not None:
     candidate_index, factor0, factor1 = systolic_jam
-    print("Applying detected systolic unroll-and-jam recipe..\n")
+    _LOG.info("Applying detected systolic unroll-and-jam recipe..\n")
     command = build_systolic_unroll_jam_command(
       context, candidate_index, factor0, factor1, skeleton_ir,
       dataflow=systolic_dataflow, schedule=systolic_schedule,
@@ -1075,12 +1078,12 @@ def run_dfg_generator(
       kernel, candidate_index, factor0, factor1
     )
   if _unroll_pass_required(config, unroll_factor):
-    print("Unrolling annotated loop for DFG candidate..\n")
+    _LOG.info("Unrolling annotated loop for DFG candidate..\n")
     run_command(build_unroll_command(context, unroll_factor, skeleton_ir))
     skeleton_ir = "%s_uf%d_opt.ll" % (kernel, unroll_factor)
 
   dfg_artifact_label = "xml" if config.suppress_dfg_dot else "xml/dot"
-  print("Generating DFG (%s_PartPredDFG.%s) and data layout (%s_mem_alloc.txt)..\n" % (kernel, dfg_artifact_label, kernel))
+  _LOG.info("Generating DFG (%s_PartPredDFG.%s) and data layout (%s_mem_alloc.txt)..\n" % (kernel, dfg_artifact_label, kernel))
   _run_dfg_pass_with_banksize_retry(context, skeleton_ir)
 
   validate_dfg_outputs(context)
@@ -1129,9 +1132,9 @@ def run_dfg_generator(
       cwd=dfg_kernel,
     ))
   elif not config.generate_dfg_pdf:
-    print("DFG PDF generation disabled (generate_dfg_pdf=false).\n")
+    _LOG.info("DFG PDF generation disabled (generate_dfg_pdf=false).\n")
   else:
-    print("DFG PDF generation skipped because DOT emission is disabled.\n")
+    _LOG.info("DFG PDF generation skipped because DOT emission is disabled.\n")
   dfg_xml = "%s/%s_PartPredDFG.xml" % (dfg_kernel.rstrip("/"), kernel)
   mapper_xml = dfg_xml
   simd_artifact_vars_pruned = (
@@ -1165,12 +1168,12 @@ def run_dfg_generator(
   remove_glob(dfg_kernel, "*.log")
 
   if not config.enable_simulation:
-    print("Simulation disabled (enable_simulation=false): skipping code instrumentation and trace generation.\n")
+    _LOG.info("Simulation disabled (enable_simulation=false): skipping code instrumentation and trace generation.\n")
     remove_glob(dfg_kernel, "*.ll")
     return
 
 
-  print("\nCode instrumentation..\n")
+  _LOG.info("\nCode instrumentation..\n")
   run_commands(build_instrumentation_commands(context))
 
   trace_limit = int(config.max_test_samples)
@@ -1179,8 +1182,8 @@ def run_dfg_generator(
 
   trace_env = os.environ.copy()
   trace_env["MORPHER_MAX_TRACES"] = str(trace_limit)
-  print("Trace generation limit (MORPHER_MAX_TRACES): %d" % trace_limit)
-  print("Running instrumented code to generate the data memory content (memtraces/%s_trace_x.txt)..\n" % kernel)
+  _LOG.info("Trace generation limit (MORPHER_MAX_TRACES): %d" % trace_limit)
+  _LOG.info("Running instrumented code to generate the data memory content (memtraces/%s_trace_x.txt)..\n" % kernel)
   start_time = time.time()
   with open("%s/final_log.txt" % dfg_kernel.rstrip("/"), "w", encoding="utf-8") as stdout_log:
     with open("%s/final_err_log.txt" % dfg_kernel.rstrip("/"), "w", encoding="utf-8") as stderr_log:
@@ -1195,12 +1198,12 @@ def run_dfg_generator(
       )
   elapsed = time.time() - start_time
   trace_count = count_trace_files("%s/memtraces" % dfg_kernel.rstrip("/"), kernel)
-  print("Instrumentation run complete in %.2f sec. Generated %d trace file(s)." % (elapsed, trace_count))
+  _LOG.info("Instrumentation run complete in %.2f sec. Generated %d trace file(s)." % (elapsed, trace_count))
   if result.returncode != 0:
     printable_code = result.returncode if result.returncode >= 0 else (128 + (-result.returncode))
-    print("Warning: instrumented binary ./final exited with code %d; simulation traces will not be available." % printable_code)
+    _LOG.info("Warning: instrumented binary ./final exited with code %d; simulation traces will not be available." % printable_code)
   elif trace_count == 0 and unroll_factor > 1:
-    print(
+    _LOG.info(
       "Warning: 0 trace files generated despite a clean instrumented run.\n"
       "  The unroll factor (%d) likely exceeds the runtime loop trip count: the\n"
       "  unrolled body never executes, only the scalar remainder. Lower\n"
@@ -1212,7 +1215,7 @@ def run_dfg_generator(
     if os.path.isfile(trace_zero):
       copy_file(trace_zero, context.simulator_kernel)
     else:
-      print("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
+      _LOG.info("Warning: no %s_trace_0.txt found; continuing with available trace files." % kernel)
   copy_file("%s/%s_mem_alloc.txt" % (dfg_kernel.rstrip("/"), kernel), context.simulator_kernel)
 
   if boundary_mapping is not None:

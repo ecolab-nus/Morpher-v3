@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import json
-import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 

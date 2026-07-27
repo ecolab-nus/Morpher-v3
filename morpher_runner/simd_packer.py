@@ -11,6 +11,10 @@ from pathlib import Path
 import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
 from defusedxml.ElementTree import parse as _safe_parse
 
+from morpher_runner.log import get_logger
+
+_LOG = get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class SimdMapping:
@@ -72,7 +76,7 @@ def remap_agi_subgraph_externalidx(search_dir: Path, reindex: dict[int, int]) ->
       except AttributeError:
         pass
       agi_path.write_text(ET.tostring(root, encoding="unicode") + "\n", encoding="utf-8")
-      print(f"[agi_remap] Rewrote externalIdx in {agi_path.name}")
+      _LOG.info(f"[agi_remap] Rewrote externalIdx in {agi_path.name}")
 
 
 def reindex_addr_trace(input_path: str | Path, output_path: str | Path,

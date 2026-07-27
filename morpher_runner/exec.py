@@ -1,9 +1,24 @@
-import os
-import signal
 import subprocess
-import threading
 from dataclasses import dataclass
 from typing import List, Optional
+
+# Process-group lifecycle lives in morpher_runner.proc so the runners and the
+# scripts/ entry points all share one registry and one signal handler.
+from morpher_runner.proc import install_signal_cleanup
+from morpher_runner.proc import register_process as _register_process
+from morpher_runner.proc import signal_active_process_groups
+from morpher_runner.proc import terminate_active_process_groups
+from morpher_runner.proc import terminate_process_group as _terminate_process_group
+from morpher_runner.proc import unregister_process as _unregister_process
+
+__all__ = [
+  "Command",
+  "run_command",
+  "run_commands",
+  "install_signal_cleanup",
+  "signal_active_process_groups",
+  "terminate_active_process_groups",
+]
 
 
 @dataclass
@@ -16,83 +31,6 @@ class Command:
   env: Optional[dict] = None
   stdout: Optional[object] = None
   stderr: Optional[object] = None
-
-
-_ACTIVE_PROCESSES = set()
-_ACTIVE_PROCESSES_LOCK = threading.Lock()
-_SIGNAL_CLEANUP_INSTALLED = False
-
-
-def _terminate_process_group(process):
-  try:
-    pgid = os.getpgid(process.pid)
-  except ProcessLookupError:
-    return
-
-  try:
-    os.killpg(pgid, signal.SIGTERM)
-  except ProcessLookupError:
-    return
-
-  try:
-    process.wait(timeout=3)
-    return
-  except subprocess.TimeoutExpired:
-    pass
-
-  try:
-    os.killpg(pgid, signal.SIGKILL)
-  except ProcessLookupError:
-    return
-  process.wait()
-
-
-def _register_process(process):
-  with _ACTIVE_PROCESSES_LOCK:
-    _ACTIVE_PROCESSES.add(process)
-
-
-def _unregister_process(process):
-  with _ACTIVE_PROCESSES_LOCK:
-    _ACTIVE_PROCESSES.discard(process)
-
-
-def terminate_active_process_groups():
-  with _ACTIVE_PROCESSES_LOCK:
-    processes = list(_ACTIVE_PROCESSES)
-  for process in processes:
-    _terminate_process_group(process)
-
-
-def signal_active_process_groups(signum):
-  with _ACTIVE_PROCESSES_LOCK:
-    processes = list(_ACTIVE_PROCESSES)
-  for process in processes:
-    try:
-      pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-      continue
-    try:
-      os.killpg(pgid, signum)
-    except ProcessLookupError:
-      continue
-
-
-def install_signal_cleanup():
-  global _SIGNAL_CLEANUP_INSTALLED
-  if _SIGNAL_CLEANUP_INSTALLED:
-    return
-
-  def handle_signal(signum, _frame):
-    signal_active_process_groups(signal.SIGTERM)
-    raise SystemExit(128 + signum)
-
-  try:
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-  except ValueError:
-    return
-  _SIGNAL_CLEANUP_INSTALLED = True
 
 
 def run_command(command):

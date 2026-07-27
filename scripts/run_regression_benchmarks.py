@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import re
-import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -16,38 +14,27 @@ from typing import Any
 
 import yaml
 
+_REPO_IMPORT_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_IMPORT_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_IMPORT_ROOT)
 
-def terminate_process_group(process: subprocess.Popen, grace_sec: float = 3.0) -> None:
-    try:
-        pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-        return
-
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-
-    try:
-        process.wait(timeout=grace_sec)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
-    process.wait()
+from morpher_runner.proc import install_signal_cleanup
+from morpher_runner.proc import register_process
+from morpher_runner.proc import terminate_process_group
+from morpher_runner.proc import unregister_process
 
 
 def run_process_group(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+    install_signal_cleanup()
     process = subprocess.Popen(cmd, cwd=cwd, start_new_session=True)
+    register_process(process)
     try:
         process.wait()
     except BaseException:
         terminate_process_group(process)
         raise
+    finally:
+        unregister_process(process)
     return subprocess.CompletedProcess(cmd, process.returncode)
 
 

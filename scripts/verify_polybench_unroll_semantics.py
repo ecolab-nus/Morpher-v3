@@ -15,7 +15,6 @@ the fixture returns only one output element.
 """
 
 import argparse
-import os
 import re
 import shutil
 import subprocess

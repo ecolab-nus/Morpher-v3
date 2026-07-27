@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 from collections import deque
 from pathlib import Path
@@ -20,6 +19,7 @@ import yaml
 
 from morpher_runner.context import build_context
 from morpher_runner.context import resolve_arch_template_path
+from morpher_runner.log import configure_logging
 from morpher_runner.artifact_simulator import run_artifact_simulator
 from morpher_runner.dfg_generator import build_ir_generation_commands
 from morpher_runner.dfg_generator import run_dfg_generator
@@ -1180,6 +1180,9 @@ def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag
 
 
 if __name__ == "__main__":
+  # Explicit at the entry point so runner diagnostics are configured before any
+  # module emits; morpher_runner.log also self-configures if imported directly.
+  configure_logging()
   _kernel_run_dir = None
   _csource = _function = _config = _run_tag = None
   _start = None
