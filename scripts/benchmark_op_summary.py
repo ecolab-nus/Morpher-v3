@@ -22,7 +22,8 @@ import signal
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -270,7 +271,7 @@ def write_summary_config(
 
 def classify_xml(xml_path: Path) -> dict[str, int]:
     text = xml_path.read_text(encoding="utf-8")
-    root = ET.fromstring(f"<Root>\n{text}\n</Root>")
+    root = _safe_fromstring(f"<Root>\n{text}\n</Root>")
     dfg = root.find("DFG")
     if dfg is None:
         raise RuntimeError(f"DFG XML missing <DFG> root: {xml_path}")

@@ -9,3 +9,4 @@ PLAN.md
 __pycache__/
 *.py[cod]
 workspace/
+generated/

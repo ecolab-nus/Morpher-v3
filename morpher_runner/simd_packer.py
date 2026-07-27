@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
+from defusedxml.ElementTree import parse as _safe_parse
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ def remap_agi_subgraph_externalidx(search_dir: Path, reindex: dict[int, int]) ->
     return
   for agi_path in sorted(search_dir.glob("*_AGI_subgraph.xml")):
     try:
-      tree = ET.parse(agi_path)
+      tree = _safe_parse(agi_path)
     except ET.ParseError:
       continue
     root = tree.getroot()

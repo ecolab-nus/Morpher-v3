@@ -91,10 +91,9 @@ def set_axes_equal(ax):
 
 
 def my_mkdir(dir):
-    try:
-        os.makedirs(dir) 
-    except:
-        pass
+    # exist_ok tolerates a pre-existing dir but still surfaces real errors
+    # (e.g. permission denied) instead of the old bare-except that hid them.
+    os.makedirs(dir, exist_ok=True)
 
 
 def draw_3d():

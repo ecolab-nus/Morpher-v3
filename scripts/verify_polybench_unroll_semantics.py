@@ -199,7 +199,7 @@ def dfg_op_counts(tag, bench, unroll_factor):
   )
   if not xml.exists():
     xml = xml.with_name(f"{bench}_PartPredDFG.xml")
-  text = xml.read_text(encoding="utf-8", errors="ignore")
+  text = xml.read_text(encoding="utf-8")
   ops = Counter(op.strip() for op in re.findall(r"<OP>(.*?)</OP>", text, re.S))
   arith = sum(v for k, v in ops.items() if k in ARITH_OPS)
   return arith, ops

@@ -3,7 +3,8 @@ import re
 import shlex
 import sys
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 from pathlib import Path
 
 from morpher_runner.context import resolve_arch_template_path as resolve_shared_arch_template_path
@@ -40,7 +41,7 @@ def _count_staged_dfg_ops(context):
   dfg_path = os.path.join(context.mapper_kernel, "%s_PartPredDFG.xml" % context.kernel)
   if not os.path.isfile(dfg_path):
     return 0, 0
-  root = ET.fromstring("<Root>\n%s\n</Root>" % Path(dfg_path).read_text(encoding="utf-8"))
+  root = _safe_fromstring("<Root>\n%s\n</Root>" % Path(dfg_path).read_text(encoding="utf-8"))
   mem_ops = 0
   compute_ops = 0
   for op_elem in root.findall(".//OP"):

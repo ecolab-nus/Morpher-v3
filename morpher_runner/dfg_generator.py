@@ -2,7 +2,8 @@ import json
 import os
 import re
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 from pathlib import Path
 
 from morpher_runner.exec import Command
@@ -38,7 +39,7 @@ MEMORY_OP_PREFIXES = (
 def _read_unwrapped_xml(path):
   with open(path, "r", encoding="utf-8") as stream:
     text = stream.read()
-  return ET.fromstring("<Root>\n%s\n</Root>" % text)
+  return _safe_fromstring("<Root>\n%s\n</Root>" % text)
 
 
 def _classify_staged_dfg_nodes(xml_path):

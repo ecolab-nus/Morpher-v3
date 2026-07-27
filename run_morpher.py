@@ -11,7 +11,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 from collections import deque
 from pathlib import Path
 
@@ -315,7 +316,7 @@ def _final_graph_recurrence_lower_bound(dfg_xml):
   mapped incumbent.
   """
   text = Path(dfg_xml).read_text(encoding="utf-8")
-  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  root = _safe_fromstring("<Root>\n%s\n</Root>" % text)
   dfg = root.find("DFG")
   if dfg is None:
     return 1
@@ -365,7 +366,7 @@ def _resource_lower_bound_ii(dfg_xml, arch_op_classes):
   if arch_op_classes is None:
     return 1
   text = Path(dfg_xml).read_text(encoding="utf-8")
-  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  root = _safe_fromstring("<Root>\n%s\n</Root>" % text)
   dfg = root.find("DFG")
   if dfg is None:
     return 1
@@ -392,7 +393,7 @@ def _resource_lower_bound_ii(dfg_xml, arch_op_classes):
 def _candidate_graph_metrics(candidate_dirs, kernel, factor, loop_order, arch_op_classes=None):
   dfg_xml = Path(candidate_dirs["mapper"]) / ("%s_PartPredDFG.xml" % kernel)
   text = dfg_xml.read_text(encoding="utf-8")
-  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  root = _safe_fromstring("<Root>\n%s\n</Root>" % text)
   nodes = root.find("DFG").findall("Node")
   memory_nodes = sum(
     1 for node in nodes
@@ -1099,7 +1100,10 @@ def _estimate_result_utilization(csource, function, config_path, run_tag, achiev
           cfg.get("arch_template_json", ""),
       ))
     return estimate_utilization(dfg_xml, arch_json, achieved_ii).csv_fields()
-  except Exception:
+  except Exception as exc:
+    # Best-effort: a util-estimate failure must not abort the run, but stay
+    # visible so silently-empty utilization columns don't go unnoticed.
+    print("warning: utilization estimate failed: %s" % exc, file=sys.stderr)
     return empty
 
 
@@ -1124,8 +1128,10 @@ def _write_run_artifacts(kernel_run_dir, csource, function, config_path, run_tag
         if m:
           achieved_ii = int(m.group(1))
           ii_mapper_status = m.group(2)
-  except Exception:
-    pass
+  except Exception as exc:
+    # Best-effort achieved-II extraction; leave achieved_ii=None on failure
+    # but surface why rather than swallowing silently.
+    print("warning: could not parse achieved II from result.txt: %s" % exc, file=sys.stderr)
 
   util_fields = _estimate_result_utilization(
       csource, function, config_path, run_tag, achieved_ii

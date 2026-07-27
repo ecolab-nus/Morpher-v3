@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import json
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # building only; parsing goes through defusedxml
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 
 @dataclass(frozen=True)
@@ -60,8 +61,8 @@ def estimate_utilization(
 def count_dfg_nodes(dfg_xml: Path) -> tuple[int, int]:
   if not dfg_xml.is_file():
     return 0, 0
-  text = dfg_xml.read_text(encoding="utf-8", errors="ignore")
-  root = ET.fromstring("<Root>\n%s\n</Root>" % text)
+  text = dfg_xml.read_text(encoding="utf-8")
+  root = _safe_fromstring("<Root>\n%s\n</Root>" % text)
   compute_nodes = 0
   memory_nodes = 0
   for op_elem in root.findall(".//OP"):

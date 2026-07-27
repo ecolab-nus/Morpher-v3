@@ -143,43 +143,55 @@ def dump_header(test):
 def generate_cm_data_addr(ins_inp, TIMEEXEC):
     
     ###### step 1: split CM instructions by tiles
+    # NOTE: steps 1-3 shell out to grep/sed/cat via argv lists (no shell string
+    # interpolation), so a filename like `ins_inp` cannot break the command or
+    # inject shell syntax, and paths with spaces/quotes work correctly.
     num_inst_per_tile = 0
     for cluster in HY.clusters_cm_to_write:
         for i in HY.CLUSTER_ROW_INDEXES[cluster]:
             for j in HY.CLUSTER_COL_INDEXES[cluster]:
 
-                tile_num = (i*HY.TILES_NUM_ROWS) + j  
-                os.system("grep -i " + "\"Y=" + str(i) + " " + "X=" + str(j) + "\"" + " " + ins_inp + " >" + " ./mem_files/tile" + str(tile_num) + "_inst.trc")
+                tile_num = (i*HY.TILES_NUM_ROWS) + j
+                tile_file = "./mem_files/tile" + str(tile_num) + "_inst.trc"
+                # grep exits 1 when a tile matches no instructions; that is
+                # expected here, so a non-zero exit is not treated as an error.
+                with open(tile_file, "w") as tile_out:
+                    subprocess.run(
+                        ["grep", "-i", "Y=" + str(i) + " X=" + str(j), ins_inp],
+                        stdout=tile_out,
+                        check=False,
+                    )
 
     ###### step 2: prune instructions, convert 64b to 16b
     for cluster in HY.clusters_cm_to_write:
         for i in HY.CLUSTER_ROW_INDEXES[cluster]:
             for j in HY.CLUSTER_COL_INDEXES[cluster]:
-                tile_num = (i*HY.TILES_NUM_ROWS) + j  
+                tile_num = (i*HY.TILES_NUM_ROWS) + j
+                tile_file = "./mem_files/tile" + str(tile_num) + "_inst.trc"
 
-                os.system("sed -i " + "\'s/Y=" + str(i) + " " + "X=" + str(j) + ",//\'" + " ./mem_files/tile" + str(tile_num) + "_inst.trc")
-               # os.system("grep -c ^" +  " ./mem_files/tile" + str(tile_num) + "_inst.trc")
+                subprocess.run(
+                    ["sed", "-i", "s/Y=" + str(i) + " X=" + str(j) + ",//", tile_file],
+                    check=True,
+                )
                 #### convert to 16b
-                # Construct cmdtorun according to bit widths
+                # Construct the sed script according to bit widths
                 split_iterations = int(HY.CM_WIDTH/HY.DATA_WIDTH)
-                cmdtorun = "sed -i \'"
+                sed_script = ""
                 for x in range(1, split_iterations):
                     if(x!=1):
-                        cmdtorun = cmdtorun + ";"
-                    cmdtorun = cmdtorun + "s/./&\\n/" + str(x*HY.DATA_WIDTH + (x-1))
-                cmdtorun = cmdtorun + "\' ./mem_files/tile" + str(tile_num) + "_inst.trc" 
-                
-                os.system(cmdtorun)
+                        sed_script = sed_script + ";"
+                    sed_script = sed_script + "s/./&\\n/" + str(x*HY.DATA_WIDTH + (x-1))
+                subprocess.run(["sed", "-i", sed_script, tile_file], check=True)
+
     ###### step 3: GENERATE CM binaries
-    cmdtorun = "cat "
+    tile_files = []
     for cluster in HY.clusters_cm_to_write:
         for i in HY.CLUSTER_ROW_INDEXES[cluster]:
             for j in HY.CLUSTER_COL_INDEXES[cluster]:
                 tile_num = (i*HY.TILES_NUM_ROWS) + j
-                cmdtorun = cmdtorun + "./mem_files/tile" + str(tile_num) + "_inst.trc "
-    cmdtorun = cmdtorun + "> ./mem_files/ins.trc"
-
-    os.system(cmdtorun)
+                tile_files.append("./mem_files/tile" + str(tile_num) + "_inst.trc")
+    with open("./mem_files/ins.trc", "w") as ins_out:
+        subprocess.run(["cat", *tile_files], stdout=ins_out, check=True)
 
     cm_addr_file = open("./mem_files/addr_ins.trc","w+")
     if(HY.WRITE_CM):
