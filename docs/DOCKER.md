@@ -48,6 +48,8 @@ docker build -t morpher-v3:llvm18 .
 ```
 The final `.` selects this directory as the build context. `-t` tags the image with a name. Docker installs dependencies and compiles all three components. Later builds reuse unchanged layers. Local builds do not require a Docker Hub account.
 
+> On Apple Silicon, you may have to run the build command specifying the platform if you get any warning or errors: `docker build --platform=linux/amd64 -t morpher-v3:llvm18 .` 
+
 ## 3. Open and use Morpher with an interactive container
 From the repository root in your host terminal:
 ```bash
@@ -150,6 +152,7 @@ Save source changes in your host repo, then rebuild from its root:
 ```bash
 docker build -t morpher-v3:llvm18 .
 ```
+> On Apple Silicon, you may have to run the build command specifying the platform if you get any warning or errors: `docker build --platform=linux/amd64 -t morpher-v3:llvm18 .` 
 
 Rebuilding updates the image tag, but existing containers keep their original filesystem. Exit/remove the old container and use `docker run` again.
 
