@@ -64,6 +64,8 @@ docker run --rm -it \
 
 > Containers are transient and once you terminate a container session, any content generated during runtime is destroyed. That is, if you run the container using the same image again, the outputs and changes from the previous container you terminated are not propagated. In order to preserve outputs, we create and link the `workspace` and `generated` folders from inside the container to our own versions of the same folders in the host machine.
 
+> In Apple silicon you may get a warning, you may have to add `docker run --platform=linux/amd64 [... rest of the command...]`.
+
 | Argument | What it does |
 | -------- | ------------ |
 | `-it` | Opens terminal inside container in interactive mode. |
@@ -119,6 +121,7 @@ docker run --rm -it \
   -v "$PWD:/opt/morpher" \
   morpher-v3:llvm18 bash
 ```
+> In Apple silicon you may get a warning, you may have to add `docker run --platform=linux/amd64 [... rest of the command...]`.
 
 This exposes your host files at `/opt/morpher`, it does not copy the image's files onto your host. The mount hides the compiled files bundled there, so build the mounted checkout inside the container before its first run:
 
