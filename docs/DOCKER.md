@@ -44,7 +44,7 @@ cd Morpher-v3
 
 From the repository root containing the `Dockerfile` run:
 ```bash
-docker build --platform linux/amd64 -t morpher-v3:llvm18 .
+docker build -t morpher-v3:llvm18 .
 ```
 The final `.` selects this directory as the build context. `-t` tags the image with a name. Docker installs dependencies and compiles all three components. Later builds reuse unchanged layers. Local builds do not require a Docker Hub account.
 
@@ -53,7 +53,7 @@ From the repository root in your host terminal:
 ```bash
 mkdir -p generated workspace
 
-docker run --rm -it --platform linux/amd64 \
+docker run --rm -it \
   --name morpher-v3-dev \
   -v "$PWD/generated:/opt/morpher/generated" \
   -v "$PWD/workspace:/opt/morpher/workspace" \
@@ -112,7 +112,7 @@ On Linux, add `--user "$(id -u):$(id -g)" --env HOME=/tmp` before the image name
 ### Developing with the full repository mounted
 For active development, share your entire host checkout with the container. Run from the repository root in your host terminal, after exiting/removing any container with the same name:
 ```bash
-docker run --rm -it --platform linux/amd64 \
+docker run --rm -it \
   --name morpher-v3-dev \
   -v "$PWD:/opt/morpher" \
   morpher-v3:llvm18 bash
@@ -148,14 +148,14 @@ The root `.gitignore` excludes `generated/, workspace/,` and all three component
 ## 7. Rebuild after changes
 Save source changes in your host repo, then rebuild from its root:
 ```bash
-docker build --platform linux/amd64 -t morpher-v3:llvm18 .
+docker build -t morpher-v3:llvm18 .
 ```
 
 Rebuilding updates the image tag, but existing containers keep their original filesystem. Exit/remove the old container and use `docker run` again.
 
 If compilation runs out of memory, reduce parallelism:
 ```bash
-docker build --platform linux/amd64 \
+docker build \
   --build-arg BUILD_JOBS=1 -t morpher-v3:llvm18 .
 ```
 For Docker connection errors, check Docker Desktop or the Docker Engine service. For Morpher failures, inspect the detailed log path printed by the runner.
