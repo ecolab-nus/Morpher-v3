@@ -885,7 +885,7 @@ void ExpandPattern(json &input, json &connections, json &submods)
 	}
 }
 
-bool CGRAXMLCompile::CGRA::PreprocessPattern(json &top)
+void CGRAXMLCompile::CGRA::PreprocessPattern(json &top)
 {
 
 	json submods;
@@ -2657,7 +2657,7 @@ void CGRAXMLCompile::CGRA::InsertVariable2SPMAddrInfo(json &output_json)
 	}
 }
 
-bool CGRAXMLCompile::CGRA::PreprocessInterSubmodConns(json &arch)
+void CGRAXMLCompile::CGRA::PreprocessInterSubmodConns(json &arch)
 {
 
 	unordered_set<string> sockets;

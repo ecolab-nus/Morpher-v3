@@ -398,8 +398,8 @@ public:
 	std::map<Port *, std::set<DFGNode *>> *getcongestedPortsPtr() { return &congestedPorts; }
 	std::map<Port *, std::set<DFGNode *>> *getconflictedPortsPtr() { return &conflictedPorts; }
 
-	bool checkConflictedPortCompatibility();
-	bool checkRegALUConflicts();
+	void checkConflictedPortCompatibility();
+	void checkRegALUConflicts();
 	bool checkDPFree(DataPath *dp, DFGNode *node, int &penalty);
 
 	bool updateConflictedTimeSteps(int timeStep, int conflicts);
