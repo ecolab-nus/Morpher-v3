@@ -150,8 +150,8 @@ public:
 
 
 	bool ParseJSONArch(string fileName, int II);
-	bool PreprocessPattern(json& top);
-	bool PreprocessInterSubmodConns(json& top);
+	void PreprocessPattern(json& top);
+	void PreprocessInterSubmodConns(json& top);
 		std::shared_ptr<const json> top_desc;
 
 	unordered_set<PE*> getAllPEList();

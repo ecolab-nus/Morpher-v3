@@ -2670,7 +2670,7 @@ bool CGRAXMLCompile::PathFinderMapper::clearCurrMapping()
 	return true;
 }
 
-bool CGRAXMLCompile::PathFinderMapper::checkConflictedPortCompatibility()
+void CGRAXMLCompile::PathFinderMapper::checkConflictedPortCompatibility()
 {
 
 	std::stack<Module *> searchStack;
@@ -2736,7 +2736,7 @@ bool CGRAXMLCompile::PathFinderMapper::checkConflictedPortCompatibility()
 	}
 }
 
-bool CGRAXMLCompile::PathFinderMapper::checkRegALUConflicts()
+void CGRAXMLCompile::PathFinderMapper::checkRegALUConflicts()
 {
 	for (int t = 0; t < this->cgra->get_t_max(); ++t)
 	{
