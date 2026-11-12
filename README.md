@@ -59,7 +59,7 @@ Sanity check that all three binaries exist:
 ```bash
 ls Morpher_DFG_Generator/build/src/libdfggenPass.so \
    Morpher_CGRA_Mapper/build/src/cgra_xml_mapper \
-   simulator/artifact_simulator/build/src/artifact_simulator
+   simulator/artifact_simulator/build/artifact_simulator
 ```
 
 If your distro exposes only versioned LLVM binaries, `MORPHER_LLVM_SUFFIX=-18` resolves suffixed tools from `PATH`; `MORPHER_CMAKE_ARGS` passes extra CMake flags to `build_all.sh`.
