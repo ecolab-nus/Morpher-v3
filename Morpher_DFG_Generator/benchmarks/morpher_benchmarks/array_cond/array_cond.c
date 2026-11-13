@@ -53,8 +53,8 @@ int main(){
 int i,j;
 
 for (i=0;i<SIZE; i++){
-      A[i] = i * 2 + 5;
-      B[i] = i * 3 + 8;
+      A[i] = i * 3 + 1;
+      B[i] = i * 2 + 8;
       C[i] = 0;
     }
     
