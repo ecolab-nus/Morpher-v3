@@ -142,6 +142,25 @@ std::vector<int> canonicalOrder(const DFGGraph &graph) {
 
 namespace {
 
+const EdgeRef *findSingleDataInput(const DFGNode &node) {
+  const EdgeRef *input = nullptr;
+  for (const EdgeRef &edge : node.inputs) {
+    if (edge.type == "P" || edge.type == "PS") {
+      continue;
+    }
+    if (input != nullptr) {
+      return nullptr;
+    }
+    input = &edge;
+  }
+  return input;
+}
+
+bool hasInputEdge(const DFGNode &node, const char *type) {
+  return std::any_of(node.inputs.begin(), node.inputs.end(),
+                     [type](const EdgeRef &edge) { return edge.type == type; });
+}
+
 // A memory access uses the implicit layout when nothing else determines its
 // address: no GEP offset, no const, no possible dynamic-offset operand.
 // This mirrors the runtime branch structure of memoryAddresses().
@@ -481,18 +500,37 @@ Value NodeExecutor::execute(const DFGNode &node, const OperandSource &operands,
     a = seedIt->second;
     consumedRecurrenceSeeds_.insert(node.idx);
   }
-  if (!a.isValid()) {
-    a = firstDataInput(node, operands);
-  }
+
   Value b = inputByType(node, operands, "I2");
-  if (!b.isValid()) {
-    b = secondDataInput(node, operands);
-  }
-  if (!b.isValid() && node.hasConst) {
-    b = node.simdPacked ? Value::broadcast(node.constValue, node.simdLanes) : Value(node.constValue);
-  }
-  if (!a.isValid() && node.hasConst) {
-    a = node.simdPacked ? Value::broadcast(node.constValue, node.simdLanes) : Value(node.constValue);
+
+  const EdgeRef *singleDataInput = node.hasConst ? findSingleDataInput(node) : nullptr;
+  const auto immediate = [&]() {
+    return node.simdPacked ? Value::broadcast(node.constValue, node.simdLanes)
+                           : Value(node.constValue);
+  };
+
+  if (singleDataInput &&
+      (singleDataInput->type == "I1" || singleDataInput->type == "I2")) {
+    // The typed edge supplies one operand. Fill the other slot only if it is empty.
+    Value &immediateSlot = singleDataInput->type == "I1" ? b : a;
+    if (!immediateSlot.isValid()) {
+      immediateSlot = immediate();
+    }
+    if (!a.isValid() || !b.isValid()) {
+      return Value::invalid();
+    }
+  } else {
+    if (!a.isValid()) {
+      a = firstDataInput(node, operands);
+    }
+    if (!b.isValid()) {
+      b = secondDataInput(node, operands);
+    }
+    if (node.hasConst && !b.isValid() && !hasInputEdge(node, "I2")) {
+      b = immediate();
+    } else if (node.hasConst && !a.isValid() && !hasInputEdge(node, "I1")) {
+      a = immediate();
+    }
   }
 
   // MAC / VMAC: multiply-accumulate with an *implicit* accumulator register
